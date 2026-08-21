@@ -119,6 +119,7 @@ codex-os release --candidate
 ## 6. 版本与依赖冻结规则
 
 - Python：3.12.x，补丁版本由 `uv.lock` 冻结。
+- Docker Linux 执行镜像：`python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2`；使用 [Docker Official Image](https://hub.docker.com/layers/library/python/3.12-slim-bookworm/) 的多架构 index digest，更新必须经安全扫描、测试和独立提交。
 - Pydantic：2.x；Typer：0.12+；pytest：8.x；Ruff：0.6+；Pyright：1.1+。
 - SQLite：随 Python 运行环境提供，启用 WAL、外键约束和 FTS5。
 - V1 不引入 LangGraph、CrewAI、MetaGPT、AutoGen、OpenHands、Mem0、Zep、Penpot 或 Excalidraw 作为核心运行时依赖；对应能力采用自有接口或外部设计工具接入。
