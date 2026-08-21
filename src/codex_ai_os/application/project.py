@@ -59,9 +59,7 @@ class ProjectInitializer:
                 allow_unicode=True,
                 sort_keys=False,
             )
-            if documents.write_atomic(
-                ".codex-os/project.yaml", config_text, overwrite=False
-            ):
+            if documents.write_atomic(".codex-os/project.yaml", config_text, overwrite=False):
                 created.append(".codex-os/project.yaml")
 
         for relative, content in _runtime_entry_files().items():
@@ -116,4 +114,15 @@ def _runtime_entry_files() -> dict[str, str]:
             indent=2,
         )
         + "\n",
+        ".codex-os/execution-policy.yaml": (
+            "schema_version: '1.0'\n"
+            "sandbox: docker\n"
+            "network: disabled\n"
+            "allowed_network_hosts: []\n"
+            "allowed_mounts: [worktree, artifacts, cache]\n"
+            "allowed_commands: [git, python, pytest, ruff, pyright]\n"
+            "approval_for: [network, migration, delete, credential, release]\n"
+            "max_duration_seconds: 1800\n"
+            "allow_host_execution: false\n"
+        ),
     }

@@ -2,6 +2,7 @@ from pathlib import Path
 
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.domain.config import ProjectType
+from codex_ai_os.infrastructure.config import load_execution_policy
 from codex_ai_os.infrastructure.database import Database
 
 
@@ -30,6 +31,7 @@ def test_project_initialization_is_idempotent_and_preserves_user_content(tmp_pat
     assert first.document_report.ok
     assert second.document_report.ok
     assert first.context_path.is_file()
+    assert load_execution_policy(tmp_path).sandbox.value == "docker"
     assert Database(first.database_path).current_version() == "0003"
 
 

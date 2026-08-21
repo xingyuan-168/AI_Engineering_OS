@@ -11,7 +11,9 @@ from codex_ai_os.adapters.docker import (
     SandboxExecutor,
     SandboxRequest,
 )
-from codex_ai_os.infrastructure.config import load_project_config
+from codex_ai_os.adapters.podman import PodmanSandbox
+from codex_ai_os.domain.config import SandboxBackend
+from codex_ai_os.infrastructure.config import load_execution_policy, load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentManager
 from codex_ai_os.infrastructure.executions import (
@@ -40,7 +42,13 @@ class ExecutionService:
         database.migrate()
         self.store = ExecutionStore(database)
         self.worktrees = WorktreeStore(database)
-        self.sandbox = sandbox or DockerSandbox(self.config.root)
+        policy = load_execution_policy(self.config.root)
+        if sandbox is not None:
+            self.sandbox = sandbox
+        elif policy.sandbox is SandboxBackend.PODMAN:
+            self.sandbox = PodmanSandbox(self.config.root, policy=policy)
+        else:
+            self.sandbox = DockerSandbox(self.config.root, policy=policy)
         self.documents = DocumentManager(self.config.root)
 
     def execute(self, request: SandboxRequest) -> ExecutionRecord:

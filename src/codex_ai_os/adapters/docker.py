@@ -87,6 +87,8 @@ class SandboxExecutor(Protocol):
 class DockerSandbox:
     """Run one argv command in a non-root, offline, resource-limited container."""
 
+    engine_name = "Docker"
+
     def __init__(
         self,
         project_root: Path,
@@ -165,9 +167,10 @@ class DockerSandbox:
     def run(self, request: SandboxRequest) -> SandboxResult:
         if not self.docker_executable:
             raise DockerSandboxError(
-                "SANDBOX_UNAVAILABLE", "Docker CLI is not available on the host"
+                "SANDBOX_UNAVAILABLE",
+                f"{self.engine_name} CLI is not available on the host",
             )
-        self._require_docker_ready(request.image)
+        self._require_engine_ready(request.image)
         command = self.build_command(request)
         started_at = _utc_now()
         timeout = float(request.timeout_seconds or self.policy.max_duration_seconds)
@@ -203,7 +206,7 @@ class DockerSandbox:
             ended_at=_utc_now(),
         )
 
-    def _require_docker_ready(self, image: str) -> None:
+    def _require_engine_ready(self, image: str) -> None:
         assert self.docker_executable is not None
         version = self.runner(
             [self.docker_executable, "version", "--format", "{{.Server.Version}}"],
@@ -226,9 +229,7 @@ class DockerSandbox:
 
     def _validate_request(self, request: SandboxRequest) -> None:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", request.execution_id):
-            raise DockerSandboxError(
-                "SANDBOX_POLICY_VIOLATION", "execution_id is unsafe"
-            )
+            raise DockerSandboxError("SANDBOX_POLICY_VIOLATION", "execution_id is unsafe")
         if request.task_id != request.worktree.task_id:
             raise DockerSandboxError(
                 "SANDBOX_POLICY_VIOLATION", "execution task does not own the worktree"
@@ -259,7 +260,7 @@ class DockerSandbox:
 def _validate_image(image: str) -> None:
     if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", image):
         raise DockerSandboxError(
-            "SANDBOX_POLICY_VIOLATION", "Docker image must use a full sha256 digest"
+            "SANDBOX_POLICY_VIOLATION", "OCI image must use a full sha256 digest"
         )
 
 
@@ -270,9 +271,7 @@ def _validate_command(command: tuple[str, ...], policy: ExecutionPolicy) -> None
             "SANDBOX_POLICY_VIOLATION", f"command is not allowed: {executable}"
         )
     if any("\x00" in argument or len(argument) > 8192 for argument in command):
-        raise DockerSandboxError(
-            "SANDBOX_POLICY_VIOLATION", "command contains an unsafe argument"
-        )
+        raise DockerSandboxError("SANDBOX_POLICY_VIOLATION", "command contains an unsafe argument")
     if command[0] == "git":
         forbidden = {"clean", "push", "reset"}
         if any(argument in {"-C", "--git-dir", "--work-tree"} for argument in command[1:]):
@@ -290,9 +289,7 @@ def _validate_command(command: tuple[str, ...], policy: ExecutionPolicy) -> None
 def _validate_mount_source(source: Path, expected_root: Path, project_root: Path) -> None:
     raw = source if source.is_absolute() else project_root / source
     if "," in str(raw):
-        raise DockerSandboxError(
-            "SANDBOX_POLICY_VIOLATION", "mount source cannot contain a comma"
-        )
+        raise DockerSandboxError("SANDBOX_POLICY_VIOLATION", "mount source cannot contain a comma")
     try:
         resolved = raw.resolve(strict=True)
         allowed = expected_root.resolve(strict=True)

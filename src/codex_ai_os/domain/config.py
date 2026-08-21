@@ -40,6 +40,11 @@ class GitPushPolicy(StrEnum):
     FIXTURE_LOCAL_ONLY = "fixture_local_only"
 
 
+class SandboxBackend(StrEnum):
+    DOCKER = "docker"
+    PODMAN = "podman"
+
+
 class ProjectConfig(StrictModel):
     schema_version: Literal["1.0"] = "1.0"
     project_id: str = Field(pattern=r"^PROJECT-[A-Z0-9][A-Z0-9-]*$")
@@ -73,13 +78,11 @@ class ProjectConfig(StrictModel):
 
 class ExecutionPolicy(StrictModel):
     schema_version: Literal["1.0"] = "1.0"
-    sandbox: Literal["docker"] = "docker"
+    sandbox: SandboxBackend = SandboxBackend.DOCKER
     network: NetworkMode = NetworkMode.DISABLED
     allowed_network_hosts: frozenset[str] = frozenset()
     allowed_mounts: frozenset[str] = frozenset({"worktree", "artifacts", "cache"})
-    allowed_commands: frozenset[str] = frozenset(
-        {"git", "python", "pytest", "ruff", "pyright"}
-    )
+    allowed_commands: frozenset[str] = frozenset({"git", "python", "pytest", "ruff", "pyright"})
     approval_for: frozenset[str] = frozenset(
         {"network", "migration", "delete", "credential", "release"}
     )

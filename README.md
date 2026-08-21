@@ -61,7 +61,7 @@ Python CLI + application services
         |
 Workflow / Approval / Documents / Git Evidence
         |
-SQLite state + Markdown/Git facts + Docker execution
+SQLite state + Markdown/Git facts + Docker/Podman execution
 ```
 
 ## Git 规则
@@ -71,6 +71,6 @@ SQLite state + Markdown/Git facts + Docker execution
 ## 支持边界
 
 - Windows 本地运行，Python 3.12。
-- Docker Desktop 是写操作和高风险执行的默认沙箱。
+- Docker Desktop 是默认沙箱；项目级基础策略可显式选择兼容同一安全契约的 Podman。
 - Codex Host/MCP 是模型编排主路径；`codex exec` 仅为环境验证后的可选叶子适配器。
 - V1 不包含 Web 控制台、DeepSeek Harness、公共插件发布或远程多租户服务。

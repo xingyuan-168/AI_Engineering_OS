@@ -9,7 +9,12 @@ from typing import Any, cast
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from codex_ai_os.domain.config import ExecutionPolicy, NetworkMode, ProjectConfig
+from codex_ai_os.domain.config import (
+    DEFAULT_EXECUTION_POLICY,
+    ExecutionPolicy,
+    NetworkMode,
+    ProjectConfig,
+)
 
 
 class ConfigError(ValueError):
@@ -37,6 +42,13 @@ def load_yaml_model[ModelT: BaseModel](path: Path, model: type[ModelT]) -> Model
 
 def load_project_config(project_root: Path) -> ProjectConfig:
     return load_yaml_model(project_root / ".codex-os" / "project.yaml", ProjectConfig)
+
+
+def load_execution_policy(project_root: Path) -> ExecutionPolicy:
+    path = project_root / ".codex-os" / "execution-policy.yaml"
+    if not path.is_file():
+        return DEFAULT_EXECUTION_POLICY
+    return load_yaml_model(path, ExecutionPolicy)
 
 
 def merge_execution_policy(

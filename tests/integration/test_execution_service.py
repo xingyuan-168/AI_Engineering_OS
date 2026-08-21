@@ -12,6 +12,7 @@ from codex_ai_os.adapters.docker import (
     command_hash,
 )
 from codex_ai_os.adapters.git import GitEvidenceResult, GitEvidenceVerifier
+from codex_ai_os.adapters.podman import PodmanSandbox
 from codex_ai_os.adapters.worktree import WorktreeSpec, WorktreeState
 from codex_ai_os.application.execution import ExecutionService, ExecutionServiceError
 from codex_ai_os.application.project import ProjectInitializer
@@ -126,8 +127,7 @@ def test_nonzero_execution_is_failed_and_marks_dirty_worktree(tmp_path: Path) ->
     assert assignment.dirty is True
     with service.store.database.connection() as connection:
         dirty_events = connection.execute(
-            "SELECT COUNT(*) FROM events WHERE task_id = ? "
-            "AND event_type = 'worktree.dirty'",
+            "SELECT COUNT(*) FROM events WHERE task_id = ? AND event_type = 'worktree.dirty'",
             (request.task_id,),
         ).fetchone()[0]
     assert dirty_events == 1
@@ -147,6 +147,22 @@ def test_unavailable_sandbox_is_persisted_as_failure(tmp_path: Path) -> None:
     assert record.error_code == "SANDBOX_UNAVAILABLE"
     assert record.stderr_ref is not None
     assert (tmp_path / record.stderr_ref).is_file()
+
+
+def test_execution_service_selects_configured_podman_backend(tmp_path: Path) -> None:
+    ProjectInitializer().initialize(
+        tmp_path,
+        project_id="PROJECT-PODMAN",
+        name="Podman fixture",
+        project_type=ProjectType.BACKEND,
+    )
+    policy_path = tmp_path / ".codex-os" / "execution-policy.yaml"
+    policy_path.write_text(
+        policy_path.read_text(encoding="utf-8").replace("sandbox: docker", "sandbox: podman"),
+        encoding="utf-8",
+    )
+
+    assert isinstance(ExecutionService(tmp_path).sandbox, PodmanSandbox)
 
 
 def _assigned_request(root: Path) -> SandboxRequest:

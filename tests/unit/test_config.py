@@ -8,8 +8,14 @@ from codex_ai_os.domain.config import (
     NetworkMode,
     ProjectConfig,
     ProjectType,
+    SandboxBackend,
 )
-from codex_ai_os.infrastructure.config import ConfigError, load_yaml_model, merge_execution_policy
+from codex_ai_os.infrastructure.config import (
+    ConfigError,
+    load_execution_policy,
+    load_yaml_model,
+    merge_execution_policy,
+)
 
 
 def test_project_config_resolves_source_inside_root(tmp_path: Path) -> None:
@@ -59,6 +65,7 @@ def test_yaml_loader_rejects_unknown_fields(tmp_path: Path) -> None:
         ({"allow_host_execution": True}, "host execution"),
         ({"max_duration_seconds": 1801}, "cannot increase"),
         ({"approval_for": ["delete"]}, "cannot remove"),
+        ({"sandbox": "podman"}, "sandbox"),
     ],
 )
 def test_policy_merge_rejects_relaxation(override: dict[str, object], message: str) -> None:
@@ -86,3 +93,14 @@ def test_policy_merge_allows_tightening() -> None:
     assert tightened.allowed_commands == frozenset({"git", "python", "pytest"})
     assert tightened.max_duration_seconds == 600
     assert "write" in tightened.approval_for
+
+
+def test_execution_policy_loader_supports_explicit_podman(tmp_path: Path) -> None:
+    policy_dir = tmp_path / ".codex-os"
+    policy_dir.mkdir()
+    (policy_dir / "execution-policy.yaml").write_text(
+        "schema_version: '1.0'\nsandbox: podman\n",
+        encoding="utf-8",
+    )
+
+    assert load_execution_policy(tmp_path).sandbox is SandboxBackend.PODMAN
