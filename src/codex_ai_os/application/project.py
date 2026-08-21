@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from codex_ai_os.domain.config import ProjectConfig, ProjectType, RiskLevel
+from codex_ai_os.domain.config import GitPushPolicy, ProjectConfig, ProjectType, RiskLevel
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentCheckReport, DocumentManager
@@ -35,6 +35,7 @@ class ProjectInitializer:
         name: str,
         project_type: ProjectType,
         risk_level: RiskLevel = RiskLevel.MEDIUM,
+        git_push_policy: GitPushPolicy = GitPushPolicy.REMOTE_REQUIRED,
     ) -> ProjectInitResult:
         root = project_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -51,6 +52,7 @@ class ProjectInitializer:
                 root=root,
                 project_type=project_type,
                 risk_level=risk_level,
+                git_push_policy=git_push_policy,
             )
             config_text = yaml.safe_dump(
                 _serializable_config(config),

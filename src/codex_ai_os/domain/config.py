@@ -35,6 +35,11 @@ class NetworkMode(StrEnum):
     ALLOWLIST = "allowlist"
 
 
+class GitPushPolicy(StrEnum):
+    REMOTE_REQUIRED = "remote_required"
+    FIXTURE_LOCAL_ONLY = "fixture_local_only"
+
+
 class ProjectConfig(StrictModel):
     schema_version: Literal["1.0"] = "1.0"
     project_id: str = Field(pattern=r"^PROJECT-[A-Z0-9][A-Z0-9-]*$")
@@ -46,6 +51,7 @@ class ProjectConfig(StrictModel):
     active_workflow: str = "new-project"
     approval_policy: Literal["critical-gates-human"] = "critical-gates-human"
     default_agent_profile: str = "standard"
+    git_push_policy: GitPushPolicy = GitPushPolicy.REMOTE_REQUIRED
 
     @field_validator("root")
     @classmethod

@@ -66,6 +66,7 @@ class ChangeKind(StrEnum):
 class PushStatus(StrEnum):
     NOT_REQUIRED = "not_required"
     PUSHED = "pushed"
+    LOCAL_ONLY = "local_only"
     FAILED = "failed"
 
 
@@ -148,10 +149,14 @@ class TaskCompletion(StrictModel):
                 raise ValueError("read-only completion must use push_status=not_required")
             return self
 
-        if not self.branch or not self.commit_sha or not self.remote_name:
-            raise ValueError("repository completion requires branch, commit_sha, and remote_name")
-        if self.push_status is not PushStatus.PUSHED:
-            raise ValueError("repository completion requires push_status=pushed")
+        if not self.branch or not self.commit_sha:
+            raise ValueError("repository completion requires branch and commit_sha")
+        if self.push_status not in {PushStatus.PUSHED, PushStatus.LOCAL_ONLY}:
+            raise ValueError("repository completion requires pushed or local-only Git evidence")
+        if self.push_status is PushStatus.PUSHED and not self.remote_name:
+            raise ValueError("pushed repository completion requires remote_name")
+        if self.push_status is PushStatus.LOCAL_ONLY and self.remote_name is not None:
+            raise ValueError("local-only repository completion cannot claim a remote")
         if not re.fullmatch(r"[0-9a-fA-F]{7,40}", self.commit_sha):
             raise ValueError("commit_sha must be a 7-40 character hexadecimal Git SHA")
         if not self.artifact_paths_and_hashes:

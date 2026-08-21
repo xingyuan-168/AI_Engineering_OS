@@ -20,6 +20,7 @@ from codex_ai_os.application.worktree import (
     WorktreeService,
     WorktreeServiceError,
 )
+from codex_ai_os.domain.config import GitPushPolicy
 from codex_ai_os.domain.ids import new_id
 from codex_ai_os.domain.workflow import (
     AUTOMATIC_NEXT_PHASE,
@@ -174,7 +175,10 @@ class WorkflowEngine:
         if completion.change_kind.value == "repository":
             try:
                 verifier = self.git_evidence or GitEvidenceService(
-                    Path(task.worktree) if task.worktree is not None else self.config.root
+                    Path(task.worktree) if task.worktree is not None else self.config.root,
+                    require_push=(
+                        self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
+                    ),
                 )
                 evidence = verifier.verify(completion)
             except GitEvidenceError as exc:

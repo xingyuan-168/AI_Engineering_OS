@@ -20,8 +20,8 @@ class GitEvidenceError(RuntimeError):
 class GitEvidenceResult:
     branch: str
     commit_sha: str
-    remote_name: str
-    remote_url: str
+    remote_name: str | None
+    remote_url: str | None
     artifact_hashes: dict[str, str]
     verified_at: str
 
@@ -36,15 +36,24 @@ class GitEvidenceVerifier(Protocol):
 class GitEvidenceService:
     """Validate a pushed task commit and its committed artifact content."""
 
-    def __init__(self, project_root: Path, *, timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        *,
+        timeout_seconds: float = 30.0,
+        require_push: bool = True,
+    ) -> None:
         self.root = project_root.resolve()
         self.timeout_seconds = timeout_seconds
+        self.require_push = require_push
 
     def verify(self, completion: TaskCompletion) -> GitEvidenceResult:
         if completion.change_kind is not ChangeKind.REPOSITORY:
             raise GitEvidenceError("Git evidence verification requires change_kind=repository")
-        if not completion.branch or not completion.commit_sha or not completion.remote_name:
-            raise GitEvidenceError("branch, commit SHA, and remote name are required")
+        if not completion.branch or not completion.commit_sha:
+            raise GitEvidenceError("branch and commit SHA are required")
+        if self.require_push and completion.push_status.value != "pushed":
+            raise GitEvidenceError("project policy requires pushed Git evidence")
 
         top_level = Path(self._text("rev-parse", "--show-toplevel")).resolve()
         if top_level != self.root:
@@ -72,20 +81,25 @@ class GitEvidenceService:
                 f"task commit must be current HEAD: head={head_sha}, evidence={commit_sha}"
             )
 
-        remote_url = self._text("remote", "get-url", completion.remote_name)
-        remote_ref = f"refs/heads/{branch}"
-        remote_line = self._text(
-            "ls-remote",
-            "--exit-code",
-            completion.remote_name,
-            remote_ref,
-        )
-        remote_sha = remote_line.split(maxsplit=1)[0] if remote_line else ""
-        if remote_sha != commit_sha:
-            raise GitEvidenceError(
-                f"remote branch does not contain current HEAD: remote={remote_sha or 'missing'}, "
-                f"head={commit_sha}"
+        remote_name = completion.remote_name
+        remote_url: str | None = None
+        if completion.push_status.value == "pushed":
+            if remote_name is None:
+                raise GitEvidenceError("pushed Git evidence requires a remote name")
+            remote_url = self._text("remote", "get-url", remote_name)
+            remote_ref = f"refs/heads/{branch}"
+            remote_line = self._text(
+                "ls-remote",
+                "--exit-code",
+                remote_name,
+                remote_ref,
             )
+            remote_sha = remote_line.split(maxsplit=1)[0] if remote_line else ""
+            if remote_sha != commit_sha:
+                raise GitEvidenceError(
+                    f"remote branch does not contain current HEAD: "
+                    f"remote={remote_sha or 'missing'}, head={commit_sha}"
+                )
 
         verified_hashes: dict[str, str] = {}
         for raw_path, expected_hash in completion.artifact_paths_and_hashes.items():
@@ -127,7 +141,7 @@ class GitEvidenceService:
         return GitEvidenceResult(
             branch=branch,
             commit_sha=commit_sha,
-            remote_name=completion.remote_name,
+            remote_name=remote_name,
             remote_url=remote_url,
             artifact_hashes=verified_hashes,
             verified_at=datetime.now(UTC).isoformat(),

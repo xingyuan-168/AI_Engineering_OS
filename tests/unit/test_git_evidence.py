@@ -67,6 +67,35 @@ def test_git_evidence_requires_regular_committed_artifact(tmp_path: Path) -> Non
         GitEvidenceService(repo).verify(completion)
 
 
+def test_local_only_evidence_is_limited_to_explicit_fixture_policy(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _git(tmp_path, "init", "-b", "main", str(repo))
+    _git(repo, "config", "user.name", "Test User")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    (repo / "evidence.txt").write_text("local evidence\n", encoding="utf-8")
+    _git(repo, "add", "evidence.txt")
+    _git(repo, "commit", "-m", "test: local fixture evidence")
+    commit_sha = _git(repo, "rev-parse", "HEAD")
+    completion = TaskCompletion(
+        task_id="TASK-FIXTURE",
+        change_kind=ChangeKind.REPOSITORY,
+        branch="main",
+        commit_sha=commit_sha,
+        push_status=PushStatus.LOCAL_ONLY,
+        artifact_paths_and_hashes={
+            "evidence.txt": hashlib.sha256(b"local evidence\n").hexdigest()
+        },
+    )
+
+    with pytest.raises(GitEvidenceError, match="requires pushed"):
+        GitEvidenceService(repo).verify(completion)
+
+    result = GitEvidenceService(repo, require_push=False).verify(completion)
+    assert result.commit_sha == commit_sha
+    assert result.remote_name is None
+    assert result.remote_url is None
+
+
 def _repository_with_remote(tmp_path: Path) -> tuple[Path, Path, str]:
     remote = tmp_path / "remote.git"
     repo = tmp_path / "repo"

@@ -32,11 +32,11 @@ def test_approval_action_requires_gate() -> None:
         NextAction(kind=ActionKind.APPROVAL)
 
 
-def test_repository_completion_requires_pushed_git_evidence() -> None:
+def test_repository_completion_requires_delivery_evidence() -> None:
     with pytest.raises(ValidationError, match="requires branch"):
         TaskCompletion(task_id="TASK-1", change_kind=ChangeKind.REPOSITORY)
 
-    with pytest.raises(ValidationError, match="requires push_status=pushed"):
+    with pytest.raises(ValidationError, match="requires pushed or local-only"):
         TaskCompletion(
             task_id="TASK-1",
             change_kind=ChangeKind.REPOSITORY,
@@ -60,6 +60,19 @@ def test_repository_completion_accepts_complete_evidence() -> None:
     )
 
     assert completion.push_status is PushStatus.PUSHED
+
+
+def test_repository_completion_accepts_explicit_local_fixture_evidence() -> None:
+    completion = TaskCompletion(
+        task_id="TASK-1",
+        change_kind=ChangeKind.REPOSITORY,
+        branch="agent/backend/TASK-1",
+        commit_sha="a" * 40,
+        push_status=PushStatus.LOCAL_ONLY,
+        artifact_paths_and_hashes={"src/app.py": "b" * 64},
+    )
+
+    assert completion.remote_name is None
 
 
 def test_read_only_completion_cannot_claim_push() -> None:

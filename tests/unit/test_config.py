@@ -4,6 +4,7 @@ import pytest
 
 from codex_ai_os.domain.config import (
     DEFAULT_EXECUTION_POLICY,
+    GitPushPolicy,
     NetworkMode,
     ProjectConfig,
     ProjectType,
@@ -21,6 +22,7 @@ def test_project_config_resolves_source_inside_root(tmp_path: Path) -> None:
 
     assert config.root == tmp_path.resolve()
     assert config.source_of_truth == (tmp_path / "docs").resolve()
+    assert config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
 
 
 def test_project_config_rejects_source_outside_root(tmp_path: Path) -> None:

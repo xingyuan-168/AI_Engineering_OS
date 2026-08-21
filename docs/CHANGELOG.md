@@ -20,6 +20,7 @@
 - 增加 Docker 执行策略适配器：镜像 digest 锁定、非 root、断网、只读根文件系统、最小权限、显式挂载、资源/超时限制及日志脱敏。
 - 增加执行审计服务与迁移，事务记录 command hash、镜像、挂载、容器、退出码、失败码、脱敏日志引用及 Worktree dirty 事件。
 - 将 Workflow 与 Worktree/Git 证据闭环接通：`next_action` 返回任务 Branch/Worktree，后续任务继承前一提交，越权制品或分配失败会阻塞运行。
+- 增加显式 `fixture_local_only` Git 策略，仅供无独立远端的隔离试点；普通项目继续默认并强制 `remote_required`。
 
 ### Governance
 
