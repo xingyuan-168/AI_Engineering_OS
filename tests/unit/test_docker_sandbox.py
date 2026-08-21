@@ -151,6 +151,7 @@ def test_run_checks_daemon_and_image_and_redacts_output(tmp_path: Path) -> None:
         ["run", "--rm"],
     ]
     assert result.exit_code == 0
+    assert result.worktree_dirty is False
     assert result.image_digest.startswith("sha256:")
     assert "secret123" not in result.stdout
     assert "ghp_" not in result.stdout

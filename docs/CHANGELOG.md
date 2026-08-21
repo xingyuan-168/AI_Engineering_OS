@@ -18,6 +18,7 @@
 - 增加确定性任务 Branch/Worktree 的路径、冲突、磁盘与 Git 预检；仅允许经批准清理已合并且干净的 Worktree，并保留任务 Branch。
 - 将 Worktree 分配、任务 Branch/路径和 `reserved/created/blocked/cleaned` 事件事务化写入 SQLite，并用唯一索引保证每个任务只有一个分配。
 - 增加 Docker 执行策略适配器：镜像 digest 锁定、非 root、断网、只读根文件系统、最小权限、显式挂载、资源/超时限制及日志脱敏。
+- 增加执行审计服务与迁移，事务记录 command hash、镜像、挂载、容器、退出码、失败码、脱敏日志引用及 Worktree dirty 事件。
 
 ### Governance
 

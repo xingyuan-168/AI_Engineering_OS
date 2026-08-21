@@ -30,7 +30,7 @@ def test_project_initialization_is_idempotent_and_preserves_user_content(tmp_pat
     assert first.document_report.ok
     assert second.document_report.ok
     assert first.context_path.is_file()
-    assert Database(first.database_path).current_version() == "0002"
+    assert Database(first.database_path).current_version() == "0003"
 
 
 def test_project_registration_and_init_event_are_persisted(tmp_path: Path) -> None:

@@ -13,8 +13,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
 from codex_ai_os.adapters.worktree import (
+    GitWorktreeError,
     GitWorktreeManager,
     WorktreeManager,
     WorktreeSpec,
@@ -70,11 +72,16 @@ class SandboxResult:
     exit_code: int
     stdout: str
     stderr: str
+    worktree_dirty: bool
     started_at: str
     ended_at: str
 
 
 ProcessRunner = Callable[[list[str], float], subprocess.CompletedProcess[bytes]]
+
+
+class SandboxExecutor(Protocol):
+    def run(self, request: SandboxRequest) -> SandboxResult: ...
 
 
 class DockerSandbox:
@@ -179,14 +186,19 @@ class DockerSandbox:
             ) from exc
         stdout = _redact_and_limit(completed.stdout, self.max_output_bytes)
         stderr = _redact_and_limit(completed.stderr, self.max_output_bytes)
+        try:
+            worktree_dirty = self.worktree_manager.inspect(request.worktree).dirty
+        except GitWorktreeError as exc:
+            raise DockerSandboxError("WORKTREE_BLOCKED", str(exc)) from exc
         return SandboxResult(
             execution_id=request.execution_id,
-            command_hash=_command_hash(request.command),
+            command_hash=command_hash(request.command),
             image_digest=request.image.rsplit("@", 1)[1],
             container_name=_container_name(request.execution_id),
             exit_code=completed.returncode,
             stdout=stdout,
             stderr=stderr,
+            worktree_dirty=worktree_dirty,
             started_at=started_at,
             ended_at=_utc_now(),
         )
@@ -318,7 +330,7 @@ def _container_name(execution_id: str) -> str:
     return f"codex-os-{execution_id.lower()}"
 
 
-def _command_hash(command: tuple[str, ...]) -> str:
+def command_hash(command: tuple[str, ...]) -> str:
     encoded = json.dumps(command, ensure_ascii=False, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
