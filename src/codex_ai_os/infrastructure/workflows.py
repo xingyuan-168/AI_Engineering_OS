@@ -147,6 +147,7 @@ class WorkflowStore:
         target_status: RunStatus,
         checkpoint: dict[str, Any],
         next_task: TaskRecord | None,
+        verified_git_evidence: dict[str, Any] | None = None,
     ) -> WorkflowRun:
         completion_json = completion.model_dump_json()
         now = _utc_now()
@@ -214,7 +215,52 @@ class WorkflowStore:
                     task_id=task.id,
                     event_type="task.completed",
                     idempotency_key=f"{run.id}:{new_version}:task.completed:{task.id}",
-                    payload=completion.model_dump(mode="json"),
+                    payload={
+                        **completion.model_dump(mode="json"),
+                        "git_verification": verified_git_evidence,
+                    },
+                )
+                consumer = (
+                    next_task.agent
+                    if next_task is not None
+                    else f"gate:{checkpoint.get('pending_gate') or 'workflow'}"
+                )
+                handoff_id = new_id("HANDOFF")
+                connection.execute(
+                    """
+                    INSERT INTO handoffs(
+                        id, run_id, task_id, producer, consumer, status,
+                        artifact_refs_json, commit_refs_json, tests_json,
+                        risks_json, open_questions_json, created_at, accepted_at
+                    ) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?, '[]', '[]', ?, NULL)
+                    """,
+                    (
+                        handoff_id,
+                        run.id,
+                        task.id,
+                        task.agent,
+                        consumer,
+                        _json(completion.artifact_paths_and_hashes),
+                        _json(verified_git_evidence or {}),
+                        _json(completion.verification_results),
+                        now,
+                    ),
+                )
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=task.id,
+                    event_type="handoff.created",
+                    idempotency_key=f"{run.id}:{new_version}:handoff.created:{task.id}",
+                    payload={
+                        "handoff_id": handoff_id,
+                        "producer": task.agent,
+                        "consumer": consumer,
+                        "artifacts": completion.artifact_paths_and_hashes,
+                        "git_verification": verified_git_evidence,
+                        "verification_results": completion.verification_results,
+                    },
                 )
                 _insert_event(
                     connection,

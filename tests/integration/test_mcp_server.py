@@ -4,9 +4,12 @@ import asyncio
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from mcp import Client, StdioServerParameters, stdio_client
 
+from codex_ai_os.adapters.git import GitEvidenceResult, GitEvidenceService
 from codex_ai_os.cli.mcp_server import mcp
+from codex_ai_os.domain.workflow import TaskCompletion
 
 
 def test_mcp_lists_the_public_runtime_tools() -> None:
@@ -93,7 +96,23 @@ def test_mcp_initializes_and_starts_a_workflow(tmp_path: Path) -> None:
     }
 
 
-def test_mcp_host_handshake_completes_the_full_fixture_workflow(tmp_path: Path) -> None:
+def test_mcp_host_handshake_completes_the_full_fixture_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def allow_fixture_evidence(
+        _service: GitEvidenceService, completion: TaskCompletion
+    ) -> GitEvidenceResult:
+        return GitEvidenceResult(
+            branch=completion.branch or "missing",
+            commit_sha=completion.commit_sha or "missing",
+            remote_name=completion.remote_name or "missing",
+            remote_url="test://origin",
+            artifact_hashes=dict(completion.artifact_paths_and_hashes),
+            verified_at="2026-08-21T00:00:00+00:00",
+        )
+
+    monkeypatch.setattr(GitEvidenceService, "verify", allow_fixture_evidence)
+
     async def exercise() -> tuple[dict[str, Any], dict[str, Any]]:
         async with Client(mcp, raise_exceptions=True) as client:
             await client.call_tool(

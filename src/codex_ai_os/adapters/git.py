@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
@@ -22,6 +23,7 @@ class GitEvidenceResult:
     remote_name: str
     remote_url: str
     artifact_hashes: dict[str, str]
+    verified_at: str
 
 
 class GitEvidenceVerifier(Protocol):
@@ -128,6 +130,7 @@ class GitEvidenceService:
             remote_name=completion.remote_name,
             remote_url=remote_url,
             artifact_hashes=verified_hashes,
+            verified_at=datetime.now(UTC).isoformat(),
         )
 
     def _text(self, *arguments: str) -> str:

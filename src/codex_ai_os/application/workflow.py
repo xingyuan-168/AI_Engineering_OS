@@ -10,6 +10,11 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
+from codex_ai_os.adapters.git import (
+    GitEvidenceError,
+    GitEvidenceService,
+    GitEvidenceVerifier,
+)
 from codex_ai_os.domain.ids import new_id
 from codex_ai_os.domain.workflow import (
     AUTOMATIC_NEXT_PHASE,
@@ -50,11 +55,17 @@ class WorkflowResult:
 
 
 class WorkflowEngine:
-    def __init__(self, project_root: Path) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        *,
+        git_evidence: GitEvidenceVerifier | None = None,
+    ) -> None:
         self.config = load_project_config(project_root.resolve())
         database = Database(self.config.root / ".codex-os" / "state" / "state.db")
         database.migrate()
         self.store = WorkflowStore(database)
+        self.git_evidence = git_evidence or GitEvidenceService(self.config.root)
 
     def start(self, goal: str, *, workflow_name: str = "new-project") -> WorkflowResult:
         normalized_goal = goal.strip()
@@ -132,6 +143,21 @@ class WorkflowEngine:
                 40,
             )
 
+        verified_git_evidence: dict[str, Any] | None = None
+        if completion.change_kind.value == "repository":
+            try:
+                evidence = self.git_evidence.verify(completion)
+            except GitEvidenceError as exc:
+                raise WorkflowError("GIT_EVIDENCE_INVALID", str(exc), 40) from exc
+            verified_git_evidence = {
+                "branch": evidence.branch,
+                "commit_sha": evidence.commit_sha,
+                "remote_name": evidence.remote_name,
+                "remote_url": evidence.remote_url,
+                "artifact_hashes": evidence.artifact_hashes,
+                "verified_at": evidence.verified_at,
+            }
+
         next_version = run.state_version + 1
         next_task: TaskRecord | None = None
         if gate := GATE_AFTER_PHASE.get(run.workflow_phase):
@@ -174,6 +200,7 @@ class WorkflowEngine:
                 target_status=target_status,
                 checkpoint=checkpoint,
                 next_task=next_task,
+                verified_git_evidence=verified_git_evidence,
             )
         except WorkflowConflictError as exc:
             raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc

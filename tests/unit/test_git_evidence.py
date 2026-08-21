@@ -19,6 +19,7 @@ def test_git_evidence_accepts_current_pushed_commit_and_blob_hash(tmp_path: Path
     assert result.commit_sha == commit_sha
     assert result.remote_name == "origin"
     assert result.artifact_hashes == {"evidence.txt": expected}
+    assert result.verified_at.endswith("+00:00")
 
 
 @pytest.mark.parametrize(

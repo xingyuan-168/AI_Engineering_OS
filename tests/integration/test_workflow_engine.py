@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from codex_ai_os.adapters.git import (
+    GitEvidenceError,
+    GitEvidenceResult,
+    GitEvidenceVerifier,
+)
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
 from codex_ai_os.domain.config import ProjectType
@@ -25,7 +33,24 @@ def _engine(tmp_path: Path) -> WorkflowEngine:
         name="Workflow pilot",
         project_type=ProjectType.BACKEND,
     )
-    return WorkflowEngine(tmp_path)
+    return WorkflowEngine(tmp_path, git_evidence=_AllowingGitEvidence())
+
+
+class _AllowingGitEvidence(GitEvidenceVerifier):
+    def verify(self, completion: TaskCompletion) -> GitEvidenceResult:
+        return GitEvidenceResult(
+            branch=completion.branch or "missing",
+            commit_sha=completion.commit_sha or "missing",
+            remote_name=completion.remote_name or "missing",
+            remote_url="test://origin",
+            artifact_hashes=dict(completion.artifact_paths_and_hashes),
+            verified_at="2026-08-21T00:00:00+00:00",
+        )
+
+
+class _RejectingGitEvidence(GitEvidenceVerifier):
+    def verify(self, completion: TaskCompletion) -> GitEvidenceResult:
+        raise GitEvidenceError("remote branch is stale")
 
 
 def _completion(task_id: str, marker: str = "a") -> TaskCompletion:
@@ -112,10 +137,18 @@ def test_full_new_project_gate_sequence(tmp_path: Path) -> None:
         event_count = connection.execute(
             "SELECT COUNT(*) FROM events WHERE run_id = ?", (run_id,)
         ).fetchone()[0]
+        handoff_count = connection.execute("SELECT COUNT(*) FROM handoffs").fetchone()[0]
+        event_payload: Any = connection.execute(
+            "SELECT payload_json FROM events WHERE run_id = ? AND event_type = 'task.completed' "
+            "ORDER BY sequence LIMIT 1",
+            (run_id,),
+        ).fetchone()[0]
     assert task_count == 8
     assert approval_count == 5
     assert artifact_count == 8
-    assert event_count == 35
+    assert event_count == 43
+    assert handoff_count == 8
+    assert '"verified_at":"2026-08-21T00:00:00+00:00"' in str(event_payload)
 
 
 def test_gate_cannot_be_bypassed_or_mismatched(tmp_path: Path) -> None:
@@ -194,6 +227,83 @@ def test_mutating_task_requires_git_evidence(tmp_path: Path) -> None:
         )
 
 
+def test_invalid_git_evidence_does_not_advance_state(tmp_path: Path) -> None:
+    ProjectInitializer().initialize(
+        tmp_path,
+        project_id="PROJECT-WORKFLOW",
+        name="Workflow pilot",
+        project_type=ProjectType.BACKEND,
+    )
+    engine = WorkflowEngine(tmp_path, git_evidence=_RejectingGitEvidence())
+    started = engine.start("Build ERP procurement API")
+    assert started.active_task is not None
+
+    with pytest.raises(WorkflowError, match="remote branch is stale") as raised:
+        engine.complete_task(started.run.id, _completion(started.active_task.id))
+
+    assert raised.value.code == "GIT_EVIDENCE_INVALID"
+    current = engine.status(started.run.id)
+    assert current.run.state_version == 0
+    assert current.run.run_status is RunStatus.RUNNING
+
+
+def test_real_pushed_git_evidence_creates_verified_handoff(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    project = tmp_path / "project"
+    _git(tmp_path, "init", "--bare", str(remote))
+    _git(tmp_path, "init", "-b", "main", str(project))
+    _git(project, "config", "user.name", "Test User")
+    _git(project, "config", "user.email", "test@example.invalid")
+    ProjectInitializer().initialize(
+        project,
+        project_id="PROJECT-REAL-GIT",
+        name="Real Git workflow",
+        project_type=ProjectType.BACKEND,
+    )
+    _git(project, "add", ".")
+    _git(project, "commit", "-m", "test: initialize project")
+    _git(project, "remote", "add", "origin", str(remote))
+    _git(project, "push", "-u", "origin", "main")
+
+    engine = WorkflowEngine(project)
+    started = engine.start("Build ERP procurement API")
+    assert started.active_task is not None
+    artifact = project / "docs" / "PROJECT_MASTER.md"
+    artifact.write_text(
+        artifact.read_text(encoding="utf-8") + "\nVerified intake evidence.\n",
+        encoding="utf-8",
+    )
+    _git(project, "add", "docs/PROJECT_MASTER.md")
+    _git(project, "commit", "-m", "docs: add intake evidence")
+    _git(project, "push", "origin", "main")
+    commit_sha = _git(project, "rev-parse", "HEAD")
+    committed = _git_bytes(project, "show", f"{commit_sha}:docs/PROJECT_MASTER.md")
+    digest = hashlib.sha256(committed).hexdigest()
+
+    result = engine.complete_task(
+        started.run.id,
+        TaskCompletion(
+            task_id=started.active_task.id,
+            change_kind=ChangeKind.REPOSITORY,
+            branch="main",
+            commit_sha=commit_sha,
+            remote_name="origin",
+            push_status=PushStatus.PUSHED,
+            artifact_paths_and_hashes={"docs/PROJECT_MASTER.md": digest},
+            verification_results=("document governance: passed",),
+        ),
+    )
+
+    assert result.run.run_status is RunStatus.NEEDS_APPROVAL
+    with engine.store.database.connection() as connection:
+        handoff = connection.execute(
+            "SELECT producer, consumer, commit_refs_json FROM handoffs"
+        ).fetchone()
+    assert handoff["producer"] == "product-manager"
+    assert handoff["consumer"] == "gate:G0"
+    assert commit_sha in str(handoff["commit_refs_json"])
+
+
 def test_stale_state_version_is_rejected(tmp_path: Path) -> None:
     engine = _engine(tmp_path)
     started = engine.start("Build ERP procurement API")
@@ -206,3 +316,19 @@ def test_stale_state_version_is_rejected(tmp_path: Path) -> None:
             checkpoint=stale_run.checkpoint,
             next_task=None,
         )
+
+
+def _git(cwd: Path, *arguments: str) -> str:
+    return _git_bytes(cwd, *arguments).decode("utf-8").strip()
+
+
+def _git_bytes(cwd: Path, *arguments: str) -> bytes:
+    result = subprocess.run(
+        ["git", "-C", str(cwd), *arguments],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    return result.stdout
