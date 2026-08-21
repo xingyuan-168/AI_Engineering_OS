@@ -1,0 +1,88 @@
+# Codex Plugin 规范
+
+版本：V2.0-derived-plugin
+状态：可执行实现规格基线
+当前宿主：Codex Host；DeepSeek Harness 仅作为未来适配器。
+
+## 1. 定位
+
+Plugin 是 Codex Host 与 AI Engineering OS 本地 CLI Runtime 之间的适配层。Plugin 提供 Skill 发现、命令入口和 Hook 转发，但不拥有项目事实、Workflow 状态或执行安全策略。
+
+## 2. 宿主与插件职责
+
+### Codex Host 负责
+
+- 模型调用和 Session 管理。
+- Tool Runtime、Agent 对话上下文和宿主交互。
+- 宿主级权限和用户确认界面。
+
+### AI Engineering OS 负责
+
+- 项目管理、Workflow、Skill 和 Agent 配置。
+- 文档治理、Memory、审批、审计和发布门禁。
+- SQLite 状态、事件、产物索引和 Docker/Podman 执行策略。
+
+Plugin 不得直接绕过 CLI Runtime 修改项目文件、SQLite 状态或执行高风险命令。
+
+## 3. 生命周期
+
+`discovered -> installed -> enabled -> running -> disabled -> upgraded/uninstalled`。
+
+- 安装前校验 manifest、版本、权限和兼容矩阵。
+- 启用时注册 Skill 和 Hook，失败则保持 disabled。
+- 停用不得删除项目文档、状态库或审计数据。
+- 升级前保存 Plugin 配置和版本，失败可恢复上一版本。
+- 卸载只删除 Plugin 自身文件，不删除用户项目数据。
+
+## 4. Hook 契约
+
+```yaml
+hook: workflow.started | workflow.paused | workflow.resumed
+       | task.created | task.completed | task.failed
+       | approval.requested | approval.approved | approval.rejected
+       | release.candidate
+payload_ref: event_id
+workflow_id: WF-001
+task_id: TASK-001
+created_at: RFC3339
+```
+
+Hook 必须幂等、可超时、可失败隔离。Plugin Hook 失败只记录错误并触发策略定义的重试，不得回滚已提交的核心状态或绕过审批。
+
+## 5. 调用接口
+
+Plugin 向 CLI Runtime 提交结构化请求：
+
+```yaml
+request_id: REQ-001
+operation: skill.invoke | workflow.start | workflow.status | approval.request
+project_id: PROJECT-001
+workflow_id: WF-001
+payload: {}
+idempotency_key: string
+```
+
+Runtime 返回 `ok`、`status`、`data`、`error` 和 `request_id`。Plugin 只展示或转发结果，不自行解释状态。
+
+## 6. 权限边界
+
+Plugin 默认只能读取 Skill/Agent 元数据和显示 Runtime 返回值。写项目文件、写 SQLite、执行命令、访问网络、读取凭据必须通过 Runtime 授权；项目 `.codex/` 只能收紧权限，不能放宽全局安全策略。
+
+## 7. 版本兼容
+
+| Plugin API | CLI Runtime | 结果 |
+| --- | --- | --- |
+| 同主版本、支持的次版本 | 支持 | 正常启用 |
+| 主版本不同 | 任意 | 禁止启用 |
+| Plugin 次版本更高 | Runtime 较旧 | 禁止启用并提示升级 |
+| Plugin 次版本较低 | Runtime 较新 | 仅在兼容窗口内启用 |
+
+兼容矩阵写入 manifest 和 `CHANGELOG.md`；Hook Schema 变更必须增加版本字段。
+
+## 8. DeepSeek Harness 适配边界
+
+V1 不验收 DeepSeek Harness。未来适配通过 `HarnessAdapter` 抽象接入，只映射模型调用、Session、Tool Runtime 和宿主事件，不改变 Workflow、Skill、Agent、Memory、审批或执行策略。
+
+## 9. 完成定义
+
+Plugin 规范只有在生命周期、Hook、调用协议、权限、版本兼容、失败隔离、卸载保留和未来适配边界均有测试场景时才算完成。

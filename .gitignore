@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# AI Engineering OS runtime state
+.codex-os/state/
+.codex-os/logs/
+.codex-os/cache/
+.codex-os/tmp/
+.worktrees/
+
+# Local secrets and editor state
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp
+*.tmp
+
+# Operating system files
+.DS_Store
+Thumbs.db
