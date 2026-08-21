@@ -16,6 +16,7 @@
 - 增加 11 个工程 Skill、7 个项目级自定义 Agent profile 和可复核的插件生命周期 Hooks。
 - 增加 `task_complete` 的真实 Git/远端/制品校验、验证时间及事务化 handoff 证据。
 - 增加确定性任务 Branch/Worktree 的路径、冲突、磁盘与 Git 预检；仅允许经批准清理已合并且干净的 Worktree，并保留任务 Branch。
+- 将 Worktree 分配、任务 Branch/路径和 `reserved/created/blocked/cleaned` 事件事务化写入 SQLite，并用唯一索引保证每个任务只有一个分配。
 
 ### Governance
 

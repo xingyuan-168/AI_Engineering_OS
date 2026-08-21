@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 
 class GitWorktreeError(RuntimeError):
@@ -28,6 +29,30 @@ class WorktreeState:
     spec: WorktreeSpec
     head_commit: str
     dirty: bool
+
+
+class WorktreeManager(Protocol):
+    def plan(
+        self,
+        *,
+        workflow_id: str,
+        agent: str,
+        task_id: str,
+        base_ref: str = "HEAD",
+    ) -> WorktreeSpec: ...
+
+    def create(
+        self,
+        *,
+        workflow_id: str,
+        agent: str,
+        task_id: str,
+        base_ref: str = "HEAD",
+    ) -> WorktreeState: ...
+
+    def inspect(self, spec: WorktreeSpec) -> WorktreeState: ...
+
+    def remove(self, spec: WorktreeSpec, *, approved: bool, merged_into: str) -> None: ...
 
 
 class GitWorktreeManager:

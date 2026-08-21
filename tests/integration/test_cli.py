@@ -39,7 +39,7 @@ def test_init_status_and_check_docs_json_contract(tmp_path: Path) -> None:
     status_result = runner.invoke(app, ["status", str(tmp_path), "--json"])
     assert status_result.exit_code == 0, status_result.output
     status_payload = _json_output(status_result.output)
-    assert status_payload["data"]["schema_version"] == "0001"
+    assert status_payload["data"]["schema_version"] == "0002"
     assert status_payload["data"]["events"] == 1
 
     docs_result = runner.invoke(app, ["check-docs", str(tmp_path), "--json"])
