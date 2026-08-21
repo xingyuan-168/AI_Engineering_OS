@@ -2,11 +2,11 @@
 
 AI Engineering OS 是面向 Codex 的 Windows 本地工程工作流运行时。它把需求、研究、设计、实现、验证、发布和记忆组织为可审批、可恢复、可审计的状态机，并以 Git 提交和制品哈希作为交付证据。
 
-## 当前目标
+## 当前状态
 
-首个纵向切片实现 `new-project`：从空 Git 仓库和业务目标开始，经过 G0-G4 门禁，在隔离 worktree 与 Docker 沙箱中完成一个 FastAPI + SQLite ERP 后端发布候选。
+V1 实现已覆盖 `new-project`、`feature-development`、`bug-fix` 和 `release`：从业务目标开始，经过 G0-G4 门禁，在隔离 Worktree 与 Docker/Podman 策略沙箱中形成可审计发布候选。
 
-当前已具备 Python 3.12 包、严格配置、SQLite 迁移、追加式事件、项目初始化、文档治理、`new-project` 状态机、Codex 私有插件和 stdio MCP 主路径。沙箱执行和 ERP 试点在后续里程碑加入。
+当前已具备 Python 3.12 包、严格配置、SQLite 迁移、追加式事件、文档治理、双轴工作流、审批、Git/Handoff 证据、Worktree、Docker/Podman 适配、Memory 生命周期、Codex 私有插件、stdio MCP 主路径和 ERP 纵向试点。当前主机缺少 Docker/Podman，真实 OCI 容器启动仍由 `doctor` 阻塞；详见 [V1 验收报告](docs/V1_RELEASE_REPORT.md)。
 
 ## 本地开发
 
@@ -38,7 +38,7 @@ codex-os mcp
 
 仓库级私有插件位于 `plugins/ai-engineering-os/`，marketplace 位于 `.agents/plugins/marketplace.json`。先以 uv 安装 `codex-os` runtime，插件的 Windows 启动器会从 `PATH` 或 uv 默认用户目录启动 stdio 服务。MCP 公开 `project_init`、Workflow 控制、审批、`task_complete`、文档检查、验证、发布候选和记忆检索工具。
 
-插件捆绑 11 个工程 Skill 和 SessionStart/PreToolUse Hooks；项目级 `.codex/agents/` 定义产品、架构、后端、数据库、QA、安全和 Reviewer profile。插件 Hook 属于非托管 Hook，安装或变更后必须通过 `/hooks` 复核并信任其当前 hash，不能把 Hook 当作唯一安全边界。
+插件捆绑 19 个工程 Skill 和 SessionStart/PreToolUse Hooks；项目级 `.codex/agents/` 定义产品、架构、后端、数据库、QA、安全和 Reviewer profile。插件 Hook 属于非托管 Hook，安装或变更后必须通过 `/hooks` 复核并信任其当前 hash，不能把 Hook 当作唯一安全边界。
 
 ## 事实源
 

@@ -29,6 +29,7 @@
 - 增加项目隔离的 Memory 候选、来源 hash 激活、Secret 拦截、检索和来源变更失效生命周期。
 - 增加 Podman OCI 沙箱适配器和项目级基础策略选择；`doctor` 接受 Docker 或 Podman 中至少一个可用，默认仍为 Docker。
 - 补齐 V1 的产品、交互、UI、API、Agent、Execution 和变更工作流 Skills，并增加可校验的 frontend/backend/large 增量 Profiles。
+- 增加 V1 发布候选验收报告，归档构建、测试、Git 证据及 OCI、Codex Host 和 G4 阻塞项。
 
 ### Governance
 

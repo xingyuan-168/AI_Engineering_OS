@@ -4,6 +4,8 @@
 状态：可执行实现规格基线
 适用：Windows 本地 CLI、Codex Plugin、项目配置和沙箱运行时。
 
+当前 `0.1.0` 发布候选的逐项结果和未通过门禁见 [V1_RELEASE_REPORT.md](V1_RELEASE_REPORT.md)；本模板中的未勾选项不得因实现完成而自动视为通过。
+
 ## 1. 版本与依赖
 
 - [ ] 版本号、Git tag、构建提交和变更范围已确定。
