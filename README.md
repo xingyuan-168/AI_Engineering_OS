@@ -6,7 +6,28 @@ AI Engineering OS 是面向 Codex 的 Windows 本地工程工作流运行时。�
 
 首个纵向切片实现 `new-project`：从空 Git 仓库和业务目标开始，经过 G0-G4 门禁，在隔离 worktree 与 Docker 沙箱中完成一个 FastAPI + SQLite ERP 后端发布候选。
 
-当前分支处于实现阶段；可运行 CLI、插件和试点将在对应里程碑提交中逐步加入。
+当前已具备 Python 3.12 包、严格配置、SQLite 迁移、追加式事件、项目初始化、文档治理和首批 CLI。Workflow、插件、沙箱执行和试点在后续里程碑加入。
+
+## 本地开发
+
+```powershell
+uv sync --frozen --all-groups
+uv run ruff check .
+uv run pyright
+uv run pytest --cov=codex_ai_os
+uv run codex-os doctor --json
+```
+
+当前命令：
+
+```text
+codex-os doctor
+codex-os init <project-root> --project-id PROJECT-001 --name example
+codex-os status <project-root>
+codex-os check-docs <project-root>
+```
+
+所有命令支持 `--json`；启用后 stdout 只包含统一 JSON 响应，日志和面向用户的说明不混入 stdout。
 
 ## 事实源
 

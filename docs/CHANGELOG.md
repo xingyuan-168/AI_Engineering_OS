@@ -1,6 +1,27 @@
 # 变更记录
 
-## [Unreleased] - 2026-08-20
+## [Unreleased] - 2026-08-21
+
+### Added
+
+- 建立 Python 3.12/uv 可复现包与 Ruff、Pyright、pytest、pip-audit 质量门禁。
+- 增加严格 Pydantic 配置和只能收紧的执行策略覆盖。
+- 增加 SQLite WAL/外键迁移、checksum、迁移前备份和追加式幂等事件。
+- 增加幂等项目初始化、原子文档写入、来源 hash 上下文和文档治理检查。
+- 增加 `doctor`、`init`、`status`、`check-docs` CLI 及纯 JSON 输出契约。
+
+### Governance
+
+- 绑定 GitHub 远端，实施每个逻辑变更提交并立即推送的交付协议。
+- 新增 ADR-0002，统一双轴状态、G0-G4、Host Hook、Skill 路径、沙箱和迁移语义。
+- 新增根目录 `AGENTS.md`，区分用户请求、项目事实和原始输入文档。
+
+### Environment
+
+- 当前 Windows 环境已验证 Git、uv、Python 3.12 与 SQLite FTS5。
+- Docker Desktop/WSL 尚未由非管理员进程安装；`doctor` 使用退出码 50 明确阻塞沙箱执行。
+
+### Documentation baseline (2026-08-20)
 
 - 根据 Codex AI Engineering OS V2.0 需求建立项目文档基线。
 - 增加项目总文档、实施计划、技术栈、边界和开源研究文档。
