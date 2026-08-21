@@ -1,7 +1,9 @@
 # ERP 采购试点实施报告
 
-日期：2026-08-21  
-实施分支：`codex/m5-erp-pilot`  
+日期：2026-08-21
+
+实施分支：`codex/m5-erp-pilot`
+
 实现提交：`d28f4bd4dec8f627770ca2b5c02d831df4d27fad`
 
 ## 结果
