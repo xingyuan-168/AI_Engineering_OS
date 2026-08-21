@@ -48,7 +48,8 @@ Workflow 运行时、CLI、SQLite、Memory 检索和宿主适配均通过接口�
 
 ```text
 Codex Host
-  -> Plugin / Project .codex/
+  -> Plugin skills/ + Project .agents/skills/
+  -> Project .codex/ Host config and hooks
   -> Codex Adapter
   -> Local CLI Runtime
   -> Workflow / Approval / Document / Agent
@@ -64,7 +65,7 @@ Markdown/Git、ADR 和 CHANGELOG 是事实来源；SQLite 保存 Workflow、Task
 
 ## 配置加载
 
-内置安全默认值 -> 全局 Plugin -> 项目 `.codex/` -> `project.yaml`/`.codex-os/` -> CLI 显式参数。安全字段只允许收紧，不能由项目配置放宽。
+内置安全默认值 -> Plugin 默认配置 -> 全局 `.codex-os/` -> 项目 `.codex-os/` -> Workflow 配置 -> CLI 显式参数。`.codex/` 不参与 OS YAML 合并。安全字段只允许收紧，不能由项目配置放宽。
 
 ## 关键数据流
 

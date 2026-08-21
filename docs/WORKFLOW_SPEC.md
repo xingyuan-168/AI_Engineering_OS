@@ -3,37 +3,50 @@
 版本：V2.0-derived-workflow
 状态：可执行实现规格基线
 
-## 1. 状态集合
+## 1. 工作流阶段与运行状态
 
-| 状态 | 进入条件 | 必须产物 | 失败去向 |
+`workflow_phase` 表示业务进度：
+
+| 阶段 | 进入条件 | 必须产物 | 失败处理 |
 | --- | --- | --- | --- |
 | `intake` | 已有业务目标 | 项目清单、问题清单、Routing Decision | `blocked` |
 | `requirements` | G0 通过 | 产品需求、用户故事、业务规则 | `blocked` |
-| `research` | 需求和范围明确 | 开源研究、License 记录 | `blocked` |
-| `design` | G1 通过 | 架构、技术栈、API、数据库、安全、UI（如适用） | `blocked` |
+| `research` | G1 通过 | 开源研究、License 记录 | `blocked` |
+| `design` | G1 通过且研究输入齐全 | 架构、技术栈、API、数据库、安全、UI（如适用） | `blocked` |
 | `implementation` | G2 通过且 Agent 交接依赖满足 | 代码提交、任务产物、Handoff | `failed` |
 | `verify` | 实现任务完成 | 测试、Review、安全扫描 | `failed` |
 | `release` | G3 通过 | 发布候选物、变更记录、回滚包 | `blocked` |
 | `memory` | 发布候选物完成 | ADR、失败记录、索引 | `failed` |
 | `completed` | G4 通过且 Memory 完成 | 完整证据包 | 终态 |
-| `blocked` | 信息、审批或依赖不足 | 阻塞报告 | 人工解除 |
-| `needs_approval` | 路由边界、用户覆盖或高风险冲突 | 路由报告、影响分析、审批请求 | 人工批准、拒绝或回到 `intake` |
-| `failed` | 不可自动恢复的错误 | 失败报告 | 人工重试或取消 |
+
+`run_status` 表示执行生命周期：
+
+| 状态 | 含义 |
+| --- | --- |
+| `created` | 已创建但尚未开始 |
+| `running` | 当前阶段正在执行 |
+| `needs_approval` | 等待指定审批，不允许自动超时通过 |
+| `paused` | 用户或策略暂停，检查点已保存 |
+| `blocked` | 信息、依赖、安全条件或合并冲突未满足 |
+| `failed` | 执行失败且自动重试已耗尽或不适用 |
+| `cancelled` | 用户明确取消 |
+| `completed` | `workflow_phase=completed` 且全部证据齐全 |
 
 ## 2. 合法转换
 
 ```text
 intake -> requirements -> research -> design -> implementation
 implementation -> verify -> release -> memory -> completed
-任一活动状态 -> blocked（缺信息/审批/依赖）
-intake -> needs_approval（路由边界、冲突或用户覆盖）
-needs_approval -> intake（批准后重新确认路由，拒绝则 blocked）
-implementation/verify/memory -> failed（超过重试或不可恢复）
-blocked -> 原状态（解除条件满足）
-failed -> 原状态（人工确认重新执行）
+
+run_status: created -> running
+running -> needs_approval | paused | blocked | failed | completed
+needs_approval -> running | blocked | cancelled
+paused -> running | blocked | cancelled
+blocked -> running | cancelled
+failed -> running | cancelled
 ```
 
-禁止跳过顺序进入 `implementation`、`release` 或 `completed`。`bug-fix` 可从 `intake` 进入 `requirements` 的精简分支，但仍必须完成影响检查和 G3 质量验证。
+阶段与运行状态必须在同一 `state_version` 事务中更新。禁止跳过顺序进入 `implementation`、`release` 或 `completed`。`bug-fix` 可从 `intake` 进入 `requirements` 的精简分支，但仍必须完成影响检查和 G3 质量验证。
 
 ## 3. G0-G4 门禁
 

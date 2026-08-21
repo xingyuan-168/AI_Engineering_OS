@@ -3,6 +3,7 @@
 - 状态：Accepted
 - 日期：2026-08-20
 - 范围：Workflow、Agent、Execution 和 Memory 的 V1 实现
+- 后续决策：第 2 条“优先评估 LangGraph 作为实现依赖”已由 [ADR-0002](ADR-0002-v1-runtime-contract-convergence.md) 取代；本文件其余决策继续有效。
 
 ## 背景
 

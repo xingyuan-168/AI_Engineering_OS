@@ -132,6 +132,6 @@ codex-os release --candidate
 
 - Codex 宿主负责模型推理、Skill 触发和 Agent 对话；本地 CLI 不重复实现模型 API 客户端。
 - 本地 CLI 负责配置校验、Workflow、审批、事件、沙箱、文件策略、SQLite 和发布候选物。
-- 全局 `.codex-plugin/` 提供默认 Skill；项目 `.codex/` 提供项目级覆盖，安全字段只能收紧。
+- Plugin 的 `skills/` 提供默认 Skill；仓库新增项目专属 Skill 使用 `.agents/skills/`。提示词、模板和允许路径的运行时覆盖放在 `.codex-os/`，同名 Skill 不合并。
 - Windows 是 V1 唯一支持平台；核心接口保持平台无关，但不承诺 Linux/macOS 安装验收。
 - Docker/Podman 是代码修改、测试和高风险命令的默认执行环境；不可用时不自动降级到宿主机。

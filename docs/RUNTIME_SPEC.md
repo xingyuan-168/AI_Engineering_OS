@@ -27,24 +27,26 @@
 ## 3. 生命周期
 
 ```text
-created -> running -> waiting_approval -> paused
-                      |                       |
-                      v                       v
-                    failed <-------------- resumed
-                      |
-                      v
-                  completed
+created -> running -> needs_approval -> running
+              |  \-> paused ---------> running
+              |  \-> blocked --------> running
+              |  \-> failed ---------> running
+              \----> completed
+needs_approval | paused | blocked | failed -> cancelled
 ```
 
 ### 生命周期规则
 
 - `created`：已创建 Workflow，但未开始执行。
 - `running`：当前步骤正在执行，只允许一个活动状态转换。
-- `waiting_approval`：等待指定门禁的人工决定，不能自动超时通过。
+- `needs_approval`：等待指定门禁的人工决定，不能自动超时通过。
 - `paused`：用户或策略主动暂停，保留检查点和未完成任务。
+- `blocked`：输入、依赖、安全条件、路径或合并状态不满足，必须给出解除动作。
 - `failed`：步骤失败或超过重试上限，必须保留失败事件和恢复建议。
 - `completed`：所有产物、验证、审批和记忆记录齐全。
 - `cancelled`：用户明确取消；与失败不同，不自动重试。
+
+`run_status` 只描述上述生命周期；业务进度单独保存在 `workflow_phase`，取值和 Gate 位置以 [WORKFLOW_SPEC.md](WORKFLOW_SPEC.md) 为准。两者共享单调递增的 `state_version`。
 
 ## 4. 运行上下文
 

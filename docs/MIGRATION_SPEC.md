@@ -10,9 +10,9 @@
 
 ## 2. 表和约束
 
-### `schema_meta`
+### `schema_migrations`
 
-`schema_version`、`app_version`、`applied_at`、`checksum`。只能有一条当前版本记录，迁移历史追加保存。
+`version` 主键、`name`、`app_version`、`checksum`、`applied_by`、`applied_at`。每个成功迁移只追加一行；当前版本由 `applied_at` 和版本顺序上的最后一条记录推导。
 
 ### `workflows`
 
@@ -75,7 +75,7 @@
 1. 读取当前 Schema 版本和迁移 checksum。
 2. 创建数据库备份并校验可读性。
 3. 在事务中按顺序执行未应用迁移。
-4. 更新 `schema_meta` 并提交。
+4. 向 `schema_migrations` 追加成功记录并提交。
 5. 运行外键、索引、事件计数和关键查询校验。
 6. 失败时回滚事务；备份不可恢复时进入 `blocked`。
 7. 新增表迁移必须同时创建项目、Workflow、Task 外键/索引，并回填来源 hash 和审计引用；不能以空值绕过旧记录校验。

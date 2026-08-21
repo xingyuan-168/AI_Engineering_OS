@@ -24,9 +24,9 @@ V1 使用 SQLite 保存运行状态、任务、审批、执行事件和文档索
 
 `path`、`doc_type`、`status`、`content_hash`、`source_commit`、`updated_at`。
 
-### `schema_meta`
+### `schema_migrations`
 
-记录当前 Schema 版本、应用版本、迁移时间和 checksum；迁移历史只追加。
+追加记录版本、名称、应用版本、checksum、执行人和迁移时间；当前 Schema 版本由最后一条成功记录推导。
 
 ### `artifacts`
 
