@@ -36,6 +36,9 @@ packages = ["src/codex_ai_os"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
+markers = [
+  "real_oci: opt-in integration tests that require a running local OCI engine and pre-pulled locked image",
+]
 
 [tool.coverage.run]
 branch = true
