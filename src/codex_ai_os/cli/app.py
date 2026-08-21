@@ -9,8 +9,10 @@ import typer
 
 from codex_ai_os.application.doctor import DoctorService
 from codex_ai_os.application.project import ProjectInitializer
+from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError, WorkflowResult
 from codex_ai_os.cli.output import emit, error_envelope, success_envelope
 from codex_ai_os.domain.config import ProjectType, RiskLevel
+from codex_ai_os.domain.workflow import Gate
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
 from codex_ai_os.infrastructure.documents import DocumentManager
@@ -21,6 +23,8 @@ app = typer.Typer(
     no_args_is_help=True,
     pretty_exceptions_show_locals=False,
 )
+run_app = typer.Typer(help="Start a registered workflow.", no_args_is_help=True)
+app.add_typer(run_app, name="run")
 
 
 @app.command("doctor")
@@ -94,9 +98,22 @@ def init_command(
 @app.command("status")
 def status_command(
     project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
+    run_id: Annotated[str | None, typer.Option("--run-id")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
     """Show project runtime and document status."""
+
+    if run_id is not None:
+        try:
+            result = WorkflowEngine(project_root).status(run_id)
+        except WorkflowError as exc:
+            _workflow_fail(exc, json_output)
+            return
+        except (ConfigError, MigrationError, ValueError, OSError) as exc:
+            _fail("CONFIG_INVALID", str(exc), 2, json_output)
+            return
+        _emit_workflow(result, json_output=json_output)
+        return
 
     try:
         config = load_project_config(project_root.resolve())
@@ -165,6 +182,169 @@ def check_docs_command(
         human="Document governance checks failed.",
     )
     raise typer.Exit(code=10)
+
+
+@run_app.command("new-project")
+def run_new_project_command(
+    goal: Annotated[str, typer.Option("--goal", help="Business goal for the project.")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
+) -> None:
+    """Start or return the active idempotent new-project run for a goal."""
+
+    try:
+        result = WorkflowEngine(project_root).start(goal)
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_workflow(result, json_output=json_output)
+
+
+@app.command("step")
+def step_command(
+    run_id: Annotated[str, typer.Argument(help="Workflow run ID.")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
+) -> None:
+    """Return the current deterministic next action without executing it."""
+
+    try:
+        result = WorkflowEngine(project_root).status(run_id)
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_workflow(result, json_output=json_output)
+
+
+@app.command("approve")
+def approve_command(
+    run_id: Annotated[str, typer.Argument(help="Workflow run ID.")],
+    gate: Annotated[Gate, typer.Option("--gate")],
+    reason: Annotated[str, typer.Option("--reason")],
+    reviewer: Annotated[str, typer.Option("--reviewer")] = "user",
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
+) -> None:
+    """Approve the exact gate currently requested by a workflow."""
+
+    _approval_command(
+        run_id,
+        gate=gate,
+        approved=True,
+        reviewer=reviewer,
+        reason=reason,
+        project_root=project_root,
+        json_output=json_output,
+    )
+
+
+@app.command("reject")
+def reject_command(
+    run_id: Annotated[str, typer.Argument(help="Workflow run ID.")],
+    gate: Annotated[Gate, typer.Option("--gate")],
+    reason: Annotated[str, typer.Option("--reason")],
+    reviewer: Annotated[str, typer.Option("--reviewer")] = "user",
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
+) -> None:
+    """Reject the current gate and block the workflow with a recorded reason."""
+
+    _approval_command(
+        run_id,
+        gate=gate,
+        approved=False,
+        reviewer=reviewer,
+        reason=reason,
+        project_root=project_root,
+        json_output=json_output,
+    )
+
+
+@app.command("resume")
+def resume_command(
+    run_id: Annotated[str, typer.Argument(help="Workflow run ID.")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
+) -> None:
+    """Resume a paused, blocked, or failed workflow from its checkpoint."""
+
+    try:
+        result = WorkflowEngine(project_root).resume(run_id)
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_workflow(result, json_output=json_output)
+
+
+def _approval_command(
+    run_id: str,
+    *,
+    gate: Gate,
+    approved: bool,
+    reviewer: str,
+    reason: str,
+    project_root: Path,
+    json_output: bool,
+) -> None:
+    try:
+        result = WorkflowEngine(project_root).submit_approval(
+            run_id,
+            gate=gate,
+            approved=approved,
+            reviewer=reviewer,
+            reason=reason,
+        )
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_workflow(result, json_output=json_output)
+
+
+def _emit_workflow(result: WorkflowResult, *, json_output: bool) -> None:
+    action = (
+        result.next_action.model_dump(mode="json") if result.next_action is not None else None
+    )
+    data: dict[str, Any] = {
+        "project_id": result.run.project_id,
+        "workflow_name": result.run.workflow_name,
+        "goal": result.run.goal,
+        "active_task": (
+            result.active_task.model_dump(mode="json")
+            if result.active_task is not None
+            else None
+        ),
+    }
+    emit(
+        success_envelope(
+            data,
+            run_id=result.run.id,
+            run_status=result.run.run_status.value,
+            workflow_phase=result.run.workflow_phase.value,
+            state_version=result.run.state_version,
+            next_action=action,
+        ),
+        json_output=json_output,
+        human=(
+            f"{result.run.id}: phase={result.run.workflow_phase.value}, "
+            f"status={result.run.run_status.value}"
+        ),
+    )
+
+
+def _workflow_fail(error: WorkflowError, json_output: bool) -> None:
+    _fail(error.code, str(error), error.exit_code, json_output)
 
 
 def _fail(code: str, message: str, exit_code: int, json_output: bool) -> None:

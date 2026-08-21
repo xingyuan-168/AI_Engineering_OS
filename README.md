@@ -25,6 +25,11 @@ codex-os doctor
 codex-os init <project-root> --project-id PROJECT-001 --name example
 codex-os status <project-root>
 codex-os check-docs <project-root>
+codex-os run new-project --goal "开发 ERP 采购模块" --project-root <project-root>
+codex-os step <run-id> --project-root <project-root>
+codex-os approve <run-id> --gate G0 --reason "范围已确认" --project-root <project-root>
+codex-os reject <run-id> --gate G0 --reason "范围需补充" --project-root <project-root>
+codex-os resume <run-id> --project-root <project-root>
 ```
 
 所有命令支持 `--json`；启用后 stdout 只包含统一 JSON 响应，日志和面向用户的说明不混入 stdout。

@@ -9,6 +9,8 @@
 - 增加 SQLite WAL/外键迁移、checksum、迁移前备份和追加式幂等事件。
 - 增加幂等项目初始化、原子文档写入、来源 hash 上下文和文档治理检查。
 - 增加 `doctor`、`init`、`status`、`check-docs` CLI 及纯 JSON 输出契约。
+- 增加 `new-project` 双轴状态机、G0-G4、事务化任务/审批/制品事件和恢复。
+- 增加 `run new-project`、`step`、`approve`、`reject`、`resume` CLI。
 
 ### Governance
 
