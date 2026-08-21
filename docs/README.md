@@ -54,11 +54,12 @@
 5. 涉及 UI 的项目必须先完成 `docs/design/` 下的流程、原型、UI 规范、组件和设计 Token 文档。
 6. 进入实现前必须按 `SCOPE -> PROJECT_MASTER -> BOUNDARY_SPEC -> CONFIG_SPEC -> WORKFLOW_ROUTING_RULES -> WORKFLOW_SPEC -> SKILL_SPEC/AGENT_SPEC/AGENT_HANDOFF -> WORKTREE_SPEC -> PLUGIN_SPEC -> EXECUTION_POLICY -> 领域文档 -> TEST_PLAN/PILOT_ACCEPTANCE` 顺序读取相关文档；涉及长期知识时追加读取 `MEMORY_SPEC`，涉及界面时先读取 `design/UX_RESEARCH`。
 7. 当前实现宿主为 Codex Host + Codex Plugin + Windows 本地 CLI Runtime。DeepSeek Harness 仅保留未来 `HarnessAdapter` 兼容接口，不属于 V1 验收范围。
+8. 仓库操作必须遵循根目录 [AGENTS.md](../AGENTS.md) 的事实源、验证和 Git 事务规则。
 
 ## 当前状态
 
 - 需求基线：已从 V2.0 需求文档整理。
 - 文档状态：本批次文档已补齐并通过结构审计；实施前如发生范围变化，必须按变更规则更新。
-- 技术栈状态：见 [TECH_STACK.md](TECH_STACK.md)，首份架构决策见 [ADR-0001](ADR/ADR-0001-mvp-runtime-stack.md)。
+- 技术栈状态：见 [TECH_STACK.md](TECH_STACK.md)；运行时基线见 [ADR-0001](ADR/ADR-0001-mvp-runtime-stack.md)，契约收敛见 [ADR-0002](ADR/ADR-0002-v1-runtime-contract-convergence.md)。
 - 实施状态：见 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)。
 - 实现契约：已补齐运行时、配置、Workflow 路由、Skill、Agent 交接、Plugin、Worktree、边界、Memory、执行、可观测性、迁移、发布和试点验收文档。
