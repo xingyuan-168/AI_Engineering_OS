@@ -1,0 +1,28 @@
+{
+  "name": "ai-engineering-os",
+  "version": "0.1.0",
+  "description": "Auditable local engineering workflows, approvals, Git evidence, and release gates for Codex.",
+  "author": {
+    "name": "xingyuan-168",
+    "url": "https://github.com/xingyuan-168"
+  },
+  "homepage": "https://github.com/xingyuan-168/AI_Engineering_OS",
+  "repository": "https://github.com/xingyuan-168/AI_Engineering_OS",
+  "license": "MIT",
+  "keywords": ["engineering", "governance", "workflow", "git", "mcp"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "AI Engineering OS",
+    "shortDescription": "Run auditable engineering workflows in Codex.",
+    "longDescription": "Start, approve, resume, verify, and release local software projects with deterministic workflow state and Git-backed evidence.",
+    "developerName": "xingyuan-168",
+    "category": "Productivity",
+    "capabilities": ["Workflow orchestration", "Approval gates", "Git evidence"],
+    "defaultPrompt": [
+      "Start an auditable new-project workflow.",
+      "Show the next action for my active workflow.",
+      "Check whether this project is ready to release."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
