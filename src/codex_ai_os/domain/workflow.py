@@ -79,6 +79,8 @@ class NextAction(StrictModel):
     input_artifacts: tuple[str, ...] = ()
     output_schema: dict[str, Any] = Field(default_factory=dict)
     allowed_paths: tuple[str, ...] = ()
+    branch: str | None = None
+    worktree: str | None = None
     risk_level: RiskLevel = RiskLevel.MEDIUM
     requires_repository_change: bool = False
 

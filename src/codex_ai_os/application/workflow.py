@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from pydantic import ValidationError
@@ -14,6 +14,11 @@ from codex_ai_os.adapters.git import (
     GitEvidenceError,
     GitEvidenceService,
     GitEvidenceVerifier,
+)
+from codex_ai_os.application.worktree import (
+    TaskWorktreeAllocator,
+    WorktreeService,
+    WorktreeServiceError,
 )
 from codex_ai_os.domain.ids import new_id
 from codex_ai_os.domain.workflow import (
@@ -60,12 +65,14 @@ class WorkflowEngine:
         project_root: Path,
         *,
         git_evidence: GitEvidenceVerifier | None = None,
+        worktrees: TaskWorktreeAllocator | None = None,
     ) -> None:
         self.config = load_project_config(project_root.resolve())
         database = Database(self.config.root / ".codex-os" / "state" / "state.db")
         database.migrate()
         self.store = WorkflowStore(database)
-        self.git_evidence = git_evidence or GitEvidenceService(self.config.root)
+        self.git_evidence = git_evidence
+        self.worktrees = worktrees or WorktreeService(self.config.root)
 
     def start(self, goal: str, *, workflow_name: str = "new-project") -> WorkflowResult:
         normalized_goal = goal.strip()
@@ -106,7 +113,9 @@ class WorkflowEngine:
             created_at=now,
             updated_at=now,
         )
-        return self._result(self.store.create_run(run, task))
+        created = self.store.create_run(run, task)
+        self._allocate_or_block(created, task, base_ref="HEAD")
+        return self._result(self.store.get_run(created.id))
 
     def status(self, run_id: str) -> WorkflowResult:
         try:
@@ -142,11 +151,32 @@ class WorkflowEngine:
                 "this task changes repository facts and requires pushed Git evidence",
                 40,
             )
+        if task.branch is not None and completion.branch != task.branch:
+            raise WorkflowError(
+                "GIT_EVIDENCE_INVALID",
+                f"completion branch does not match task assignment: "
+                f"task={task.branch}, evidence={completion.branch}",
+                40,
+            )
+        disallowed = [
+            path
+            for path in completion.artifact_paths_and_hashes
+            if not _artifact_path_allowed(path, action.allowed_paths)
+        ]
+        if disallowed:
+            raise WorkflowError(
+                "PATH_POLICY_VIOLATION",
+                f"artifacts are outside task allowed paths: {sorted(disallowed)}",
+                40,
+            )
 
         verified_git_evidence: dict[str, Any] | None = None
         if completion.change_kind.value == "repository":
             try:
-                evidence = self.git_evidence.verify(completion)
+                verifier = self.git_evidence or GitEvidenceService(
+                    Path(task.worktree) if task.worktree is not None else self.config.root
+                )
+                evidence = verifier.verify(completion)
             except GitEvidenceError as exc:
                 raise WorkflowError("GIT_EVIDENCE_INVALID", str(exc), 40) from exc
             verified_git_evidence = {
@@ -173,6 +203,7 @@ class WorkflowEngine:
                 next_action,
                 pending_gate=gate,
                 last_completed_task=task.id,
+                last_commit_sha=completion.commit_sha,
                 evidence_refs=tuple(completion.artifact_paths_and_hashes),
             )
         elif next_phase := AUTOMATIC_NEXT_PHASE.get(run.workflow_phase):
@@ -204,7 +235,13 @@ class WorkflowEngine:
             )
         except WorkflowConflictError as exc:
             raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
-        return self._result(updated)
+        if next_task is not None:
+            self._allocate_or_block(
+                updated,
+                next_task,
+                base_ref=completion.commit_sha or "HEAD",
+            )
+        return self._result(self.store.get_run(updated.id))
 
     def submit_approval(
         self,
@@ -268,7 +305,10 @@ class WorkflowEngine:
             )
         except WorkflowConflictError as exc:
             raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
-        return self._result(updated)
+        if next_task is not None:
+            base_ref = str(run.checkpoint.get("last_commit_sha") or "HEAD")
+            self._allocate_or_block(updated, next_task, base_ref=base_ref)
+        return self._result(self.store.get_run(updated.id))
 
     def resume(self, run_id: str) -> WorkflowResult:
         run = self._get_run(run_id)
@@ -297,12 +337,44 @@ class WorkflowEngine:
             )
         except WorkflowConflictError as exc:
             raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
-        return self._result(updated)
+        if next_task is not None:
+            base_ref = str(run.checkpoint.get("recovery_base_ref") or "HEAD")
+            self._allocate_or_block(updated, next_task, base_ref=base_ref)
+        return self._result(self.store.get_run(updated.id))
 
     def _result(self, run: WorkflowRun) -> WorkflowResult:
         action = _action_from_checkpoint(run.checkpoint)
         active_task = self.store.active_task(run.id)
+        if action is not None and active_task is not None and action.kind is ActionKind.MODEL_TASK:
+            action = action.model_copy(
+                update={
+                    "branch": active_task.branch,
+                    "worktree": active_task.worktree,
+                }
+            )
         return WorkflowResult(run=run, next_action=action, active_task=active_task)
+
+    def _allocate_or_block(
+        self,
+        run: WorkflowRun,
+        task: TaskRecord,
+        *,
+        base_ref: str,
+    ) -> None:
+        try:
+            self.worktrees.allocate(run_id=run.id, task_id=task.id, base_ref=base_ref)
+        except WorktreeServiceError as exc:
+            try:
+                self.store.block_run_for_task(
+                    run=run,
+                    task=task,
+                    error_code=exc.code,
+                    reason=str(exc),
+                    recovery_base_ref=base_ref,
+                )
+            except WorkflowConflictError as conflict:
+                raise WorkflowError("STATE_CONFLICT", str(conflict), 30) from conflict
+            raise WorkflowError(exc.code, str(exc), 40) from exc
 
     def _get_run(self, run_id: str) -> WorkflowRun:
         try:
@@ -386,6 +458,7 @@ def _checkpoint(
     pending_gate: Gate | None = None,
     approved_gate: Gate | None = None,
     last_completed_task: str | None = None,
+    last_commit_sha: str | None = None,
     evidence_refs: tuple[str, ...] = (),
     resumed_from: str | None = None,
 ) -> dict[str, Any]:
@@ -394,6 +467,7 @@ def _checkpoint(
         "pending_gate": pending_gate.value if pending_gate is not None else None,
         "approved_gate": approved_gate.value if approved_gate is not None else None,
         "last_completed_task": last_completed_task,
+        "last_commit_sha": last_commit_sha,
         "evidence_refs": list(evidence_refs),
         "resumed_from": resumed_from,
     }
@@ -426,6 +500,22 @@ def _input_artifacts_for(phase: WorkflowPhase) -> tuple[str, ...]:
         WorkflowPhase.RELEASE: ("verification_evidence",),
         WorkflowPhase.MEMORY: ("release_candidate", "workflow_events"),
     }.get(phase, ())
+
+
+def _artifact_path_allowed(raw_path: str, allowed_paths: tuple[str, ...]) -> bool:
+    normalized = raw_path.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if path.is_absolute() or ".." in path.parts:
+        return False
+    candidate = path.as_posix()
+    for raw_allowed in allowed_paths:
+        allowed = raw_allowed.replace("\\", "/")
+        if allowed.endswith("/"):
+            if candidate.startswith(allowed) and candidate != allowed.rstrip("/"):
+                return True
+        elif candidate == PurePosixPath(allowed).as_posix():
+            return True
+    return False
 
 
 def _utc_now() -> str:

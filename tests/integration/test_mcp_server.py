@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -8,6 +9,8 @@ import pytest
 from mcp import Client, StdioServerParameters, stdio_client
 
 from codex_ai_os.adapters.git import GitEvidenceResult, GitEvidenceService
+from codex_ai_os.adapters.worktree import WorktreeSpec, WorktreeState
+from codex_ai_os.application.worktree import WorktreeService
 from codex_ai_os.cli.mcp_server import mcp
 from codex_ai_os.domain.workflow import TaskCompletion
 
@@ -67,6 +70,7 @@ def test_mcp_initializes_and_starts_a_workflow(tmp_path: Path) -> None:
                     "project_type": "backend",
                 },
             )
+            _initialize_git_repository(tmp_path)
             started = await client.call_tool(
                 "workflow_start",
                 {"project_root": str(tmp_path), "goal": "Build an ERP API"},
@@ -86,6 +90,8 @@ def test_mcp_initializes_and_starts_a_workflow(tmp_path: Path) -> None:
     assert initialized["project_id"] == "PROJECT-MCP"
     assert started["run"]["workflow_phase"] == "intake"
     assert started["next_action"]["kind"] == "model_task"
+    assert started["next_action"]["branch"].startswith("agent/product-manager/")
+    assert ".worktrees" in started["next_action"]["worktree"]
     assert checked == {
         "ok": True,
         "valid": True,
@@ -112,6 +118,25 @@ def test_mcp_host_handshake_completes_the_full_fixture_workflow(
         )
 
     monkeypatch.setattr(GitEvidenceService, "verify", allow_fixture_evidence)
+
+    def allocate_fixture_worktree(
+        _service: WorktreeService,
+        *,
+        run_id: str,
+        task_id: str,
+        base_ref: str = "HEAD",
+    ) -> WorktreeState:
+        spec = WorktreeSpec(
+            workflow_id=run_id,
+            agent="fixture-agent",
+            task_id=task_id,
+            branch=f"agent/fixture-agent/{task_id}",
+            path=tmp_path / ".worktrees" / run_id / "fixture-agent" / task_id,
+            base_commit=base_ref,
+        )
+        return WorktreeState(spec=spec, head_commit=base_ref, dirty=False)
+
+    monkeypatch.setattr(WorktreeService, "allocate", allocate_fixture_worktree)
 
     async def exercise() -> tuple[dict[str, Any], dict[str, Any]]:
         async with Client(mcp, raise_exceptions=True) as client:
@@ -158,6 +183,8 @@ def test_mcp_host_handshake_completes_the_full_fixture_workflow(
                     continue
 
                 artifact_path = action["allowed_paths"][0]
+                if artifact_path.endswith("/"):
+                    artifact_path += "fixture.txt"
                 artifact_hash = "a" * 64
                 if current["run"]["workflow_phase"] == "release":
                     candidate = _structured(
@@ -212,3 +239,24 @@ def test_mcp_host_handshake_completes_the_full_fixture_workflow(
 
 def _structured(result: Any) -> dict[str, Any]:
     return cast(dict[str, Any], result.structured_content)
+
+
+def _initialize_git_repository(root: Path) -> None:
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test User")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "test: initialize MCP project")
+
+
+def _git(root: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()

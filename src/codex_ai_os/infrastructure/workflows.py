@@ -137,6 +137,70 @@ class WorkflowStore:
             ).fetchone()
         return _task_from_row(row) if row is not None else None
 
+    def block_run_for_task(
+        self,
+        *,
+        run: WorkflowRun,
+        task: TaskRecord,
+        error_code: str,
+        reason: str,
+        recovery_base_ref: str,
+    ) -> WorkflowRun:
+        now = _utc_now()
+        new_version = run.state_version + 1
+        checkpoint = {
+            **run.checkpoint,
+            "next_action": None,
+            "blocker": {"code": error_code, "reason": reason, "task_id": task.id},
+            "recovery_base_ref": recovery_base_ref,
+        }
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _assert_run_version(connection, run.id, run.state_version)
+                changed = connection.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'blocked', state_version = state_version + 1,
+                        updated_at = ?
+                    WHERE id = ? AND status IN ('pending', 'running')
+                    """,
+                    (now, task.id),
+                ).rowcount
+                if changed != 1:
+                    raise WorkflowConflictError(f"task is no longer active: {task.id}")
+                _update_run(
+                    connection,
+                    run,
+                    target_phase=run.workflow_phase,
+                    target_status=RunStatus.BLOCKED,
+                    checkpoint=checkpoint,
+                    now=now,
+                )
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=task.id,
+                    event_type="task.blocked",
+                    idempotency_key=f"{run.id}:{new_version}:task.blocked:{task.id}",
+                    payload={"error_code": error_code, "reason": reason},
+                )
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=task.id,
+                    event_type="workflow.blocked",
+                    idempotency_key=f"{run.id}:{new_version}:workflow.blocked",
+                    payload={"error_code": error_code, "reason": reason},
+                )
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
     def complete_task_and_transition(
         self,
         *,

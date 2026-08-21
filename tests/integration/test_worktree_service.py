@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from codex_ai_os.adapters.git import GitEvidenceResult, GitEvidenceVerifier
-from codex_ai_os.adapters.worktree import GitWorktreeError, GitWorktreeManager
+from codex_ai_os.adapters.worktree import (
+    GitWorktreeError,
+    GitWorktreeManager,
+    WorktreeSpec,
+    WorktreeState,
+)
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine
 from codex_ai_os.application.worktree import WorktreeService, WorktreeServiceError
@@ -36,6 +41,25 @@ class _FailingCreateManager(GitWorktreeManager):
         base_ref: str = "HEAD",
     ):
         raise GitWorktreeError("simulated worktree creation failure")
+
+
+class _NoopWorktrees:
+    def allocate(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        base_ref: str = "HEAD",
+    ) -> WorktreeState:
+        spec = WorktreeSpec(
+            workflow_id=run_id,
+            agent="test-agent",
+            task_id=task_id,
+            branch=f"agent/test-agent/{task_id}",
+            path=Path("C:/fixture") / run_id / task_id,
+            base_commit=base_ref,
+        )
+        return WorktreeState(spec=spec, head_commit=base_ref, dirty=False)
 
 
 def test_allocate_is_idempotent_and_persists_task_and_events(tmp_path: Path) -> None:
@@ -149,7 +173,11 @@ def _project_with_active_workflow(tmp_path: Path) -> tuple[Path, WorkflowEngine]
     _git(repo, "commit", "-m", "test: initialize project")
     _git(repo, "remote", "add", "origin", str(remote))
     _git(repo, "push", "-u", "origin", "main")
-    engine = WorkflowEngine(repo, git_evidence=_AllowingGitEvidence())
+    engine = WorkflowEngine(
+        repo,
+        git_evidence=_AllowingGitEvidence(),
+        worktrees=_NoopWorktrees(),
+    )
     engine.start("Build an isolated service")
     return repo, engine
 

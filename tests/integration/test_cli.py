@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -83,6 +84,7 @@ def test_workflow_cli_returns_dual_state_and_next_action(tmp_path: Path) -> None
         ],
     )
     assert initialized.exit_code == 0
+    _initialize_git_repository(tmp_path)
 
     started = runner.invoke(
         app,
@@ -101,6 +103,8 @@ def test_workflow_cli_returns_dual_state_and_next_action(tmp_path: Path) -> None
     assert payload["workflow_phase"] == "intake"
     assert payload["run_status"] == "running"
     assert payload["next_action"]["kind"] == "model_task"
+    assert payload["next_action"]["branch"].startswith("agent/product-manager/")
+    assert ".worktrees" in payload["next_action"]["worktree"]
 
     stepped = runner.invoke(
         app,
@@ -128,6 +132,7 @@ def test_approval_cli_refuses_gate_before_evidence(tmp_path: Path) -> None:
             "backend",
         ],
     )
+    _initialize_git_repository(tmp_path)
     started = runner.invoke(
         app,
         [
@@ -159,3 +164,24 @@ def test_approval_cli_refuses_gate_before_evidence(tmp_path: Path) -> None:
 
     assert approval.exit_code == 20
     assert _json_output(approval.output)["error"]["code"] == "APPROVAL_REQUIRED"
+
+
+def _initialize_git_repository(root: Path) -> None:
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test User")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "test: initialize CLI project")
+
+
+def _git(root: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()

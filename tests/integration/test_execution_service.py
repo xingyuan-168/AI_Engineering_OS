@@ -12,7 +12,7 @@ from codex_ai_os.adapters.docker import (
     command_hash,
 )
 from codex_ai_os.adapters.git import GitEvidenceResult, GitEvidenceVerifier
-from codex_ai_os.adapters.worktree import WorktreeSpec
+from codex_ai_os.adapters.worktree import WorktreeSpec, WorktreeState
 from codex_ai_os.application.execution import ExecutionService, ExecutionServiceError
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine
@@ -59,6 +59,25 @@ class _SuccessfulSandbox:
 class _UnavailableSandbox:
     def run(self, request: SandboxRequest) -> SandboxResult:
         raise DockerSandboxError("SANDBOX_UNAVAILABLE", "Docker daemon is unavailable")
+
+
+class _NoopWorktrees:
+    def allocate(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        base_ref: str = "HEAD",
+    ) -> WorktreeState:
+        spec = WorktreeSpec(
+            workflow_id=run_id,
+            agent="test-agent",
+            task_id=task_id,
+            branch=f"agent/test-agent/{task_id}",
+            path=Path("C:/fixture") / run_id / task_id,
+            base_commit=base_ref,
+        )
+        return WorktreeState(spec=spec, head_commit=base_ref, dirty=False)
 
 
 def test_successful_execution_is_idempotent_and_audited(tmp_path: Path) -> None:
@@ -137,7 +156,11 @@ def _assigned_request(root: Path) -> SandboxRequest:
         name="Execution fixture",
         project_type=ProjectType.BACKEND,
     )
-    engine = WorkflowEngine(root, git_evidence=_AllowingGitEvidence())
+    engine = WorkflowEngine(
+        root,
+        git_evidence=_AllowingGitEvidence(),
+        worktrees=_NoopWorktrees(),
+    )
     started = engine.start("Execute verification in Docker")
     assert started.active_task is not None
     worktree = root / ".worktrees" / started.run.id / started.active_task.agent

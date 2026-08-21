@@ -9,7 +9,7 @@ Use the `ai-engineering-os` MCP server as the workflow authority.
 
 1. Call `project_init` only when `.codex-os/project.yaml` is absent. Then call `workflow_start` with the user's goal.
 2. Treat the returned `next_action` as the complete task contract: use its named skill, respect `allowed_paths`, and do not broaden scope.
-3. For a model task, produce the requested artifacts, run relevant verification, make one logical Git commit, push it, then call `task_complete` with the exact branch, SHA, remote, push status, artifact hashes, and verification results.
+3. For a model task, work only in the exact `next_action.worktree` and `next_action.branch`, and only within `allowed_paths`. Produce the requested artifacts, run relevant verification, make one logical Git commit, push it, then call `task_complete` with the exact branch, SHA, remote, push status, artifact hashes, and verification results.
 4. For an approval action, summarize the evidence and ask the user to approve or reject the exact gate. Never infer approval or advance the gate yourself.
 5. Continue with `workflow_step`; use `workflow_resume` after an interruption or recorded block. Stop when the runtime returns `complete` or a blocker requires user authority.
 

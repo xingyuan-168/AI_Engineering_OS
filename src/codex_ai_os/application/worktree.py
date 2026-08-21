@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Protocol
 
 from codex_ai_os.adapters.worktree import (
     GitWorktreeError,
@@ -25,6 +26,16 @@ class WorktreeServiceError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class TaskWorktreeAllocator(Protocol):
+    def allocate(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        base_ref: str = "HEAD",
+    ) -> WorktreeState: ...
 
 
 class WorktreeService:

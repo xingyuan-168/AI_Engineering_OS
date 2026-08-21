@@ -12,8 +12,10 @@ from codex_ai_os.adapters.git import (
     GitEvidenceResult,
     GitEvidenceVerifier,
 )
+from codex_ai_os.adapters.worktree import WorktreeSpec, WorktreeState
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
+from codex_ai_os.application.worktree import WorktreeServiceError
 from codex_ai_os.domain.config import ProjectType
 from codex_ai_os.domain.workflow import (
     ChangeKind,
@@ -33,7 +35,41 @@ def _engine(tmp_path: Path) -> WorkflowEngine:
         name="Workflow pilot",
         project_type=ProjectType.BACKEND,
     )
-    return WorkflowEngine(tmp_path, git_evidence=_AllowingGitEvidence())
+    return WorkflowEngine(
+        tmp_path,
+        git_evidence=_AllowingGitEvidence(),
+        worktrees=_NoopWorktrees(),
+    )
+
+
+class _NoopWorktrees:
+    def allocate(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        base_ref: str = "HEAD",
+    ) -> WorktreeState:
+        spec = WorktreeSpec(
+            workflow_id=run_id,
+            agent="test-agent",
+            task_id=task_id,
+            branch=f"agent/test-agent/{task_id}",
+            path=Path("C:/fixture") / run_id / task_id,
+            base_commit=base_ref,
+        )
+        return WorktreeState(spec=spec, head_commit=base_ref, dirty=False)
+
+
+class _FailingWorktrees:
+    def allocate(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        base_ref: str = "HEAD",
+    ) -> WorktreeState:
+        raise WorktreeServiceError("WORKTREE_BLOCKED", "simulated allocation failure")
 
 
 class _AllowingGitEvidence(GitEvidenceVerifier):
@@ -53,7 +89,11 @@ class _RejectingGitEvidence(GitEvidenceVerifier):
         raise GitEvidenceError("remote branch is stale")
 
 
-def _completion(task_id: str, marker: str = "a") -> TaskCompletion:
+def _completion(
+    task_id: str,
+    marker: str = "a",
+    artifact_path: str = "docs/PROJECT_MASTER.md",
+) -> TaskCompletion:
     return TaskCompletion(
         task_id=task_id,
         change_kind=ChangeKind.REPOSITORY,
@@ -61,7 +101,7 @@ def _completion(task_id: str, marker: str = "a") -> TaskCompletion:
         commit_sha=marker * 40,
         remote_name="origin",
         push_status=PushStatus.PUSHED,
-        artifact_paths_and_hashes={f"docs/{task_id}.md": marker * 64},
+        artifact_paths_and_hashes={artifact_path: marker * 64},
         verification_results=("checks: passed",),
     )
 
@@ -69,7 +109,13 @@ def _completion(task_id: str, marker: str = "a") -> TaskCompletion:
 def _complete_current(engine: WorkflowEngine, run_id: str, marker: str = "a"):
     current = engine.status(run_id)
     assert current.active_task is not None
-    return engine.complete_task(run_id, _completion(current.active_task.id, marker))
+    assert current.next_action is not None
+    allowed = current.next_action.allowed_paths[0]
+    artifact_path = f"{allowed}{current.active_task.id}.md" if allowed.endswith("/") else allowed
+    return engine.complete_task(
+        run_id,
+        _completion(current.active_task.id, marker, artifact_path),
+    )
 
 
 def test_start_is_idempotent_for_same_active_goal(tmp_path: Path) -> None:
@@ -227,6 +273,55 @@ def test_mutating_task_requires_git_evidence(tmp_path: Path) -> None:
         )
 
 
+def test_artifact_must_stay_inside_next_action_allowed_paths(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    started = engine.start("Build ERP procurement API")
+    assert started.active_task is not None
+    completion = _completion(
+        started.active_task.id,
+        artifact_path="docs/UNASSIGNED.md",
+    )
+
+    with pytest.raises(WorkflowError, match="outside task allowed paths") as raised:
+        engine.complete_task(started.run.id, completion)
+
+    assert raised.value.code == "PATH_POLICY_VIOLATION"
+    assert engine.status(started.run.id).run.state_version == 0
+
+
+def test_worktree_allocation_failure_blocks_run_and_task(tmp_path: Path) -> None:
+    ProjectInitializer().initialize(
+        tmp_path,
+        project_id="PROJECT-WORKFLOW",
+        name="Workflow pilot",
+        project_type=ProjectType.BACKEND,
+    )
+    engine = WorkflowEngine(
+        tmp_path,
+        git_evidence=_AllowingGitEvidence(),
+        worktrees=_FailingWorktrees(),
+    )
+
+    with pytest.raises(WorkflowError, match="simulated allocation failure") as raised:
+        engine.start("Build ERP procurement API")
+
+    assert raised.value.code == "WORKTREE_BLOCKED"
+    with engine.store.database.connection() as connection:
+        run = connection.execute(
+            "SELECT run_status FROM workflow_runs ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        task = connection.execute(
+            "SELECT status FROM tasks ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        blocked_events = connection.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type IN "
+            "('task.blocked', 'workflow.blocked')"
+        ).fetchone()[0]
+    assert run[0] == "blocked"
+    assert task[0] == "blocked"
+    assert blocked_events == 2
+
+
 def test_invalid_git_evidence_does_not_advance_state(tmp_path: Path) -> None:
     ProjectInitializer().initialize(
         tmp_path,
@@ -234,7 +329,11 @@ def test_invalid_git_evidence_does_not_advance_state(tmp_path: Path) -> None:
         name="Workflow pilot",
         project_type=ProjectType.BACKEND,
     )
-    engine = WorkflowEngine(tmp_path, git_evidence=_RejectingGitEvidence())
+    engine = WorkflowEngine(
+        tmp_path,
+        git_evidence=_RejectingGitEvidence(),
+        worktrees=_NoopWorktrees(),
+    )
     started = engine.start("Build ERP procurement API")
     assert started.active_task is not None
 
@@ -268,16 +367,24 @@ def test_real_pushed_git_evidence_creates_verified_handoff(tmp_path: Path) -> No
     engine = WorkflowEngine(project)
     started = engine.start("Build ERP procurement API")
     assert started.active_task is not None
-    artifact = project / "docs" / "PROJECT_MASTER.md"
+    assert started.active_task.worktree is not None
+    assert started.active_task.branch is not None
+    assert started.next_action is not None
+    assert started.next_action.worktree == started.active_task.worktree
+    assert started.next_action.branch == started.active_task.branch
+    task_worktree = Path(started.active_task.worktree)
+    artifact = task_worktree / "docs" / "PROJECT_MASTER.md"
     artifact.write_text(
         artifact.read_text(encoding="utf-8") + "\nVerified intake evidence.\n",
         encoding="utf-8",
     )
-    _git(project, "add", "docs/PROJECT_MASTER.md")
-    _git(project, "commit", "-m", "docs: add intake evidence")
-    _git(project, "push", "origin", "main")
-    commit_sha = _git(project, "rev-parse", "HEAD")
-    committed = _git_bytes(project, "show", f"{commit_sha}:docs/PROJECT_MASTER.md")
+    _git(task_worktree, "add", "docs/PROJECT_MASTER.md")
+    _git(task_worktree, "commit", "-m", "docs: add intake evidence")
+    _git(task_worktree, "push", "-u", "origin", started.active_task.branch)
+    commit_sha = _git(task_worktree, "rev-parse", "HEAD")
+    committed = _git_bytes(
+        task_worktree, "show", f"{commit_sha}:docs/PROJECT_MASTER.md"
+    )
     digest = hashlib.sha256(committed).hexdigest()
 
     result = engine.complete_task(
@@ -285,7 +392,7 @@ def test_real_pushed_git_evidence_creates_verified_handoff(tmp_path: Path) -> No
         TaskCompletion(
             task_id=started.active_task.id,
             change_kind=ChangeKind.REPOSITORY,
-            branch="main",
+            branch=started.active_task.branch,
             commit_sha=commit_sha,
             remote_name="origin",
             push_status=PushStatus.PUSHED,
@@ -302,6 +409,19 @@ def test_real_pushed_git_evidence_creates_verified_handoff(tmp_path: Path) -> No
     assert handoff["producer"] == "product-manager"
     assert handoff["consumer"] == "gate:G0"
     assert commit_sha in str(handoff["commit_refs_json"])
+
+    approved = engine.submit_approval(
+        started.run.id,
+        gate=Gate.G0,
+        approved=True,
+        reviewer="fixture-reviewer",
+        reason="intake evidence accepted",
+    )
+    assert approved.active_task is not None
+    assert approved.active_task.worktree is not None
+    assert approved.active_task.branch is not None
+    assert approved.active_task.branch != started.active_task.branch
+    assert _git(Path(approved.active_task.worktree), "rev-parse", "HEAD") == commit_sha
 
 
 def test_stale_state_version_is_rejected(tmp_path: Path) -> None:

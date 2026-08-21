@@ -5,7 +5,7 @@ description: Implement an approved backend slice with migrations and tests insid
 
 # Backend implementation
 
-Read the approved requirements, API, database, security, and ADR evidence before editing. Implement the smallest coherent vertical slice that satisfies the assigned acceptance criteria; preserve existing public contracts unless the task explicitly changes them.
+Read the approved requirements, API, database, security, and ADR evidence before editing. Enter only the Branch and Worktree returned by `next_action`; never modify the host project root or another task Worktree. Implement the smallest coherent vertical slice that satisfies the assigned acceptance criteria; preserve existing public contracts unless the task explicitly changes them.
 
 Keep validation at trust boundaries, make writes transactional and idempotent where required, avoid embedding secrets, and add migrations that are forward-safe with documented rollback behavior. Add focused unit and integration tests for success and failure paths.
 
