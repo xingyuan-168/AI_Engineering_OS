@@ -27,6 +27,7 @@ from codex_ai_os.domain.workflow import (
     GATE_AFTER_PHASE,
     PHASE_AFTER_APPROVAL,
     PHASE_DEFINITIONS,
+    WORKFLOW_START_PHASE,
     ActionKind,
     Gate,
     NextAction,
@@ -81,10 +82,11 @@ class WorkflowEngine:
         normalized_goal = goal.strip()
         if not normalized_goal:
             raise WorkflowError("CONFIG_INVALID", "goal cannot be empty", 2)
-        if workflow_name != "new-project":
+        start_phase = WORKFLOW_START_PHASE.get(workflow_name)
+        if start_phase is None:
             raise WorkflowError(
                 "CONFIG_INVALID",
-                "only new-project is available in this milestone",
+                f"unsupported workflow: {workflow_name}",
                 2,
             )
 
@@ -98,7 +100,7 @@ class WorkflowEngine:
         run_id = new_id("RUN")
         task, action = self._task_and_action(
             run_id,
-            WorkflowPhase.INTAKE,
+            start_phase,
             state_version=0,
             goal=normalized_goal,
         )
@@ -107,7 +109,7 @@ class WorkflowEngine:
             project_id=self.config.project_id,
             workflow_name=workflow_name,
             goal=normalized_goal,
-            workflow_phase=WorkflowPhase.INTAKE,
+            workflow_phase=start_phase,
             run_status=RunStatus.RUNNING,
             state_version=0,
             risk_level=self.config.risk_level,

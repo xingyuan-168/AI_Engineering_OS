@@ -273,3 +273,10 @@ AUTOMATIC_NEXT_PHASE: dict[WorkflowPhase, WorkflowPhase] = {
     WorkflowPhase.IMPLEMENTATION: WorkflowPhase.VERIFY,
     WorkflowPhase.RELEASE: WorkflowPhase.MEMORY,
 }
+
+WORKFLOW_START_PHASE: dict[str, WorkflowPhase] = {
+    "new-project": WorkflowPhase.INTAKE,
+    "feature-development": WorkflowPhase.REQUIREMENTS,
+    "bug-fix": WorkflowPhase.IMPLEMENTATION,
+    "release": WorkflowPhase.VERIFY,
+}

@@ -67,10 +67,16 @@ def project_init(
 
 
 @mcp.tool()
-def workflow_start(project_root: str, goal: str) -> dict[str, Any]:
-    """Start, or idempotently return, the active new-project workflow for a goal."""
+def workflow_start(
+    project_root: str, goal: str, workflow_name: str = "new-project"
+) -> dict[str, Any]:
+    """Start, or idempotently return, a supported governed workflow for a goal."""
 
-    return _invoke(lambda: _workflow_payload(WorkflowEngine(Path(project_root)).start(goal)))
+    return _invoke(
+        lambda: _workflow_payload(
+            WorkflowEngine(Path(project_root)).start(goal, workflow_name=workflow_name)
+        )
+    )
 
 
 @mcp.tool()

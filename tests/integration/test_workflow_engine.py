@@ -130,6 +130,27 @@ def test_start_is_idempotent_for_same_active_goal(tmp_path: Path) -> None:
     assert first.active_task == second.active_task
 
 
+@pytest.mark.parametrize(
+    ("workflow_name", "phase"),
+    [
+        ("feature-development", WorkflowPhase.REQUIREMENTS),
+        ("bug-fix", WorkflowPhase.IMPLEMENTATION),
+        ("release", WorkflowPhase.VERIFY),
+    ],
+)
+def test_expansion_workflows_start_at_governed_phase(
+    tmp_path: Path, workflow_name: str, phase: WorkflowPhase
+) -> None:
+    engine = _engine(tmp_path)
+
+    result = engine.start("Governed change", workflow_name=workflow_name)
+
+    assert result.run.workflow_name == workflow_name
+    assert result.run.workflow_phase is phase
+    assert result.next_action is not None
+    assert result.next_action.requires_repository_change is True
+
+
 def test_full_new_project_gate_sequence(tmp_path: Path) -> None:
     engine = _engine(tmp_path)
     result = engine.start("Build ERP procurement API")

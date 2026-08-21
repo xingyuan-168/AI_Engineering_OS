@@ -202,7 +202,7 @@ def run_new_project_command(
     """Start or return the active idempotent new-project run for a goal."""
 
     try:
-        result = WorkflowEngine(project_root).start(goal)
+        result = WorkflowEngine(project_root).start(goal, workflow_name="new-project")
     except WorkflowError as exc:
         _workflow_fail(exc, json_output)
         return
@@ -210,6 +210,56 @@ def run_new_project_command(
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
         return
     _emit_workflow(result, json_output=json_output)
+
+
+def _run_named_workflow(
+    workflow_name: str,
+    goal: str,
+    project_root: Path,
+    json_output: bool,
+) -> None:
+    try:
+        result = WorkflowEngine(project_root).start(goal, workflow_name=workflow_name)
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_workflow(result, json_output=json_output)
+
+
+@run_app.command("feature-development")
+def run_feature_development_command(
+    goal: Annotated[str, typer.Option("--goal")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Start a feature-development workflow at detailed requirements."""
+
+    _run_named_workflow("feature-development", goal, project_root, json_output)
+
+
+@run_app.command("bug-fix")
+def run_bug_fix_command(
+    goal: Annotated[str, typer.Option("--goal")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Start a bug-fix workflow at isolated implementation."""
+
+    _run_named_workflow("bug-fix", goal, project_root, json_output)
+
+
+@run_app.command("release")
+def run_release_workflow_command(
+    goal: Annotated[str, typer.Option("--goal")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Start a release workflow at verification."""
+
+    _run_named_workflow("release", goal, project_root, json_output)
 
 
 @app.command("step")

@@ -5,6 +5,7 @@ from codex_ai_os.domain.workflow import (
     AUTOMATIC_NEXT_PHASE,
     GATE_AFTER_PHASE,
     PHASE_AFTER_APPROVAL,
+    WORKFLOW_START_PHASE,
     ActionKind,
     ChangeKind,
     Gate,
@@ -20,6 +21,12 @@ def test_gate_and_automatic_phase_maps_cover_new_project() -> None:
     assert GATE_AFTER_PHASE[WorkflowPhase.MEMORY] is Gate.G4
     assert PHASE_AFTER_APPROVAL[Gate.G4] is WorkflowPhase.COMPLETED
     assert AUTOMATIC_NEXT_PHASE[WorkflowPhase.RESEARCH] is WorkflowPhase.DESIGN
+    assert WORKFLOW_START_PHASE == {
+        "new-project": WorkflowPhase.INTAKE,
+        "feature-development": WorkflowPhase.REQUIREMENTS,
+        "bug-fix": WorkflowPhase.IMPLEMENTATION,
+        "release": WorkflowPhase.VERIFY,
+    }
 
 
 def test_model_task_requires_host_routing_fields() -> None:
