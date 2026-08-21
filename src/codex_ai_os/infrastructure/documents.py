@@ -14,6 +14,16 @@ from codex_ai_os.templates.project_docs import documents_for
 
 LOCAL_LINK = re.compile(r"\[[^\]]+\]\((?:<([^>]+)>|([^ )]+))")
 FORBIDDEN_COPY_NAMES = {"backup", "copy", "final", "new", "v1", "v2"}
+EXCLUDED_GOVERNANCE_TREES = {
+    ".codex-os",
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    ".worktrees",
+    "node_modules",
+}
 
 
 class PathDeniedError(PermissionError):
@@ -115,22 +125,21 @@ class DocumentManager:
                 invalid.append(path.relative_to(self.project_root).as_posix())
             broken.extend(self._broken_links(path, text))
 
-        forbidden = tuple(
-            sorted(
-                path.relative_to(self.project_root).as_posix()
-                for path in self.project_root.rglob("*")
-                if path.is_dir()
-                and path.name.casefold() in FORBIDDEN_COPY_NAMES
-                and ".git" not in path.parts
-            )
-        )
+        forbidden: list[str] = []
+        for path in self.project_root.rglob("*"):
+            if not path.is_dir() or path.name.casefold() not in FORBIDDEN_COPY_NAMES:
+                continue
+            relative = path.relative_to(self.project_root)
+            if any(part.casefold() in EXCLUDED_GOVERNANCE_TREES for part in relative.parts):
+                continue
+            forbidden.append(relative.as_posix())
         return DocumentCheckReport(
             ok=not missing and not broken and not invalid and not forbidden,
             checked_files=checked,
             missing=missing,
             broken_links=tuple(sorted(set(broken))),
             invalid_documents=tuple(sorted(invalid)),
-            forbidden_directories=forbidden,
+            forbidden_directories=tuple(sorted(forbidden)),
         )
 
     def _broken_links(self, source: Path, text: str) -> list[str]:

@@ -37,11 +37,23 @@ def test_document_check_reports_missing_broken_and_invalid_files(tmp_path: Path)
 def test_initialized_documents_pass_governance_check(tmp_path: Path) -> None:
     manager = DocumentManager(tmp_path)
     manager.initialize_documents("ERP", "backend")
+    (tmp_path / ".venv" / "Lib" / "package" / "v1").mkdir(parents=True)
 
     report = manager.check("backend")
 
     assert report.ok
     assert report.checked_files >= 10
+
+
+def test_project_owned_copy_directory_is_still_rejected(tmp_path: Path) -> None:
+    manager = DocumentManager(tmp_path)
+    manager.initialize_documents("ERP", "backend")
+    (tmp_path / "src" / "v1").mkdir(parents=True)
+
+    report = manager.check("backend")
+
+    assert not report.ok
+    assert report.forbidden_directories == ("src/v1",)
 
 
 def test_generated_context_contains_source_hashes(tmp_path: Path) -> None:
