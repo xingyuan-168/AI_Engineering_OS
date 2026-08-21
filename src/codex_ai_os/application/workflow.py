@@ -44,6 +44,7 @@ from codex_ai_os.infrastructure.workflows import (
     WorkflowNotFoundError,
     WorkflowStore,
 )
+from codex_ai_os.infrastructure.worktrees import WorktreeStore
 
 
 class WorkflowError(RuntimeError):
@@ -72,6 +73,7 @@ class WorkflowEngine:
         database = Database(self.config.root / ".codex-os" / "state" / "state.db")
         database.migrate()
         self.store = WorkflowStore(database)
+        self.worktree_store = WorktreeStore(database)
         self.git_evidence = git_evidence
         self.worktrees = worktrees or WorktreeService(self.config.root)
 
@@ -174,12 +176,18 @@ class WorkflowEngine:
         verified_git_evidence: dict[str, Any] | None = None
         if completion.change_kind.value == "repository":
             try:
-                verifier = self.git_evidence or GitEvidenceService(
-                    Path(task.worktree) if task.worktree is not None else self.config.root,
-                    require_push=(
-                        self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
-                    ),
-                )
+                if self.git_evidence is not None:
+                    verifier = self.git_evidence
+                else:
+                    assignment = self.worktree_store.get_for_task(task.id)
+                    verifier = GitEvidenceService(
+                        Path(task.worktree) if task.worktree is not None else self.config.root,
+                        require_push=(
+                            self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
+                        ),
+                        base_commit=(assignment.base_commit if assignment is not None else None),
+                        allowed_paths=action.allowed_paths,
+                    )
                 evidence = verifier.verify(completion)
             except GitEvidenceError as exc:
                 raise WorkflowError("GIT_EVIDENCE_INVALID", str(exc), 40) from exc
@@ -190,6 +198,7 @@ class WorkflowEngine:
                 "remote_url": evidence.remote_url,
                 "artifact_hashes": evidence.artifact_hashes,
                 "verified_at": evidence.verified_at,
+                "changed_paths": list(evidence.changed_paths),
             }
 
         next_version = run.state_version + 1

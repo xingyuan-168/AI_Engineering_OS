@@ -22,6 +22,7 @@
 - 将 Workflow 与 Worktree/Git 证据闭环接通：`next_action` 返回任务 Branch/Worktree，后续任务继承前一提交，越权制品或分配失败会阻塞运行。
 - 增加显式 `fixture_local_only` Git 策略，仅供无独立远端的隔离试点；普通项目继续默认并强制 `remote_required`。
 - 增加 ERP 采购 FastAPI fixture 生成器和真实 API 集成测试，覆盖供应商、采购申请、审批、采购订单、状态查询与幂等 SQLite 迁移。
+- Git 证据校验扩展为审计 base commit 到 task commit 的全部 changed paths，漏报越权文件同样阻塞完成。
 
 ### Governance
 

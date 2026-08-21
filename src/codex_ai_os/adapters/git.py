@@ -24,6 +24,7 @@ class GitEvidenceResult:
     remote_url: str | None
     artifact_hashes: dict[str, str]
     verified_at: str
+    changed_paths: tuple[str, ...] = ()
 
 
 class GitEvidenceVerifier(Protocol):
@@ -42,10 +43,14 @@ class GitEvidenceService:
         *,
         timeout_seconds: float = 30.0,
         require_push: bool = True,
+        base_commit: str | None = None,
+        allowed_paths: tuple[str, ...] = (),
     ) -> None:
         self.root = project_root.resolve()
         self.timeout_seconds = timeout_seconds
         self.require_push = require_push
+        self.base_commit = base_commit
+        self.allowed_paths = allowed_paths
 
     def verify(self, completion: TaskCompletion) -> GitEvidenceResult:
         if completion.change_kind is not ChangeKind.REPOSITORY:
@@ -80,6 +85,25 @@ class GitEvidenceService:
             raise GitEvidenceError(
                 f"task commit must be current HEAD: head={head_sha}, evidence={commit_sha}"
             )
+
+        changed_paths: tuple[str, ...] = ()
+        if self.base_commit is not None:
+            base_commit = self._text(
+                "rev-parse", "--verify", f"{self.base_commit}^{{commit}}"
+            )
+            changed_raw = self._bytes(
+                "diff", "--name-only", "-z", base_commit, commit_sha
+            ).decode("utf-8", errors="strict")
+            changed_paths = tuple(path for path in changed_raw.split("\x00") if path)
+            disallowed = [
+                path
+                for path in changed_paths
+                if not _path_allowed(path, self.allowed_paths)
+            ]
+            if disallowed:
+                raise GitEvidenceError(
+                    f"task commit changes paths outside assignment: {sorted(disallowed)}"
+                )
 
         remote_name = completion.remote_name
         remote_url: str | None = None
@@ -145,6 +169,7 @@ class GitEvidenceService:
             remote_url=remote_url,
             artifact_hashes=verified_hashes,
             verified_at=datetime.now(UTC).isoformat(),
+            changed_paths=changed_paths,
         )
 
     def _text(self, *arguments: str) -> str:
@@ -177,3 +202,14 @@ def _normalize_artifact_path(raw_path: str) -> PurePosixPath:
     if path == PurePosixPath(".") or ".." in path.parts:
         raise GitEvidenceError(f"artifact path is unsafe: {raw_path}")
     return path
+
+
+def _path_allowed(raw_path: str, allowed_paths: tuple[str, ...]) -> bool:
+    candidate = PurePosixPath(raw_path.replace("\\", "/")).as_posix()
+    for raw_allowed in allowed_paths:
+        allowed = raw_allowed.replace("\\", "/")
+        if allowed.endswith("/") and candidate.startswith(allowed):
+            return True
+        if candidate == PurePosixPath(allowed).as_posix():
+            return True
+    return False

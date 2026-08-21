@@ -96,6 +96,27 @@ def test_local_only_evidence_is_limited_to_explicit_fixture_policy(tmp_path: Pat
     assert result.remote_url is None
 
 
+def test_git_evidence_rejects_undeclared_paths_in_task_commit(tmp_path: Path) -> None:
+    repo, _remote, base_commit = _repository_with_remote(tmp_path)
+    (repo / "evidence.txt").write_text("updated evidence\n", encoding="utf-8")
+    (repo / "outside.txt").write_text("undeclared\n", encoding="utf-8")
+    _git(repo, "add", "evidence.txt", "outside.txt")
+    _git(repo, "commit", "-m", "test: include undeclared path")
+    _git(repo, "push", "origin", "main")
+    commit_sha = _git(repo, "rev-parse", "HEAD")
+    completion = _completion(
+        commit_sha,
+        hashlib.sha256(b"updated evidence\n").hexdigest(),
+    )
+
+    with pytest.raises(GitEvidenceError, match="outside assignment"):
+        GitEvidenceService(
+            repo,
+            base_commit=base_commit,
+            allowed_paths=("evidence.txt",),
+        ).verify(completion)
+
+
 def _repository_with_remote(tmp_path: Path) -> tuple[Path, Path, str]:
     remote = tmp_path / "remote.git"
     repo = tmp_path / "repo"
