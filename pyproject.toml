@@ -9,6 +9,7 @@ description = "Local, auditable engineering workflow runtime for Codex"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "mcp>=2,<3",
   "platformdirs>=4.3,<5",
   "pydantic>=2.11,<3",
   "pyyaml>=6.0.2,<7",

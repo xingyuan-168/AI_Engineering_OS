@@ -11,6 +11,8 @@
 - 增加 `doctor`、`init`、`status`、`check-docs` CLI 及纯 JSON 输出契约。
 - 增加 `new-project` 双轴状态机、G0-G4、事务化任务/审批/制品事件和恢复。
 - 增加 `run new-project`、`step`、`approve`、`reject`、`resume` CLI。
+- 增加仓库级 Codex 私有插件、marketplace 和官方 MCP Python SDK 2.x stdio 服务。
+- 增加 11 个 MCP 工具及从 `project_init` 到 G4 完成的 Host 握手集成测试。
 
 ### Governance
 

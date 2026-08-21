@@ -184,6 +184,15 @@ def check_docs_command(
     raise typer.Exit(code=10)
 
 
+@app.command("mcp")
+def mcp_command() -> None:
+    """Run the bundled Model Context Protocol server over stdio."""
+
+    from codex_ai_os.cli.mcp_server import run_server
+
+    run_server()
+
+
 @run_app.command("new-project")
 def run_new_project_command(
     goal: Annotated[str, typer.Option("--goal", help="Business goal for the project.")],
