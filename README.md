@@ -38,6 +38,8 @@ codex-os mcp
 
 仓库级私有插件位于 `plugins/ai-engineering-os/`，marketplace 位于 `.agents/plugins/marketplace.json`。先以 uv 安装 `codex-os` runtime，插件的 Windows 启动器会从 `PATH` 或 uv 默认用户目录启动 stdio 服务。MCP 公开 `project_init`、Workflow 控制、审批、`task_complete`、文档检查、验证、发布候选和记忆检索工具。
 
+插件捆绑 11 个工程 Skill 和 SessionStart/PreToolUse Hooks；项目级 `.codex/agents/` 定义产品、架构、后端、数据库、QA、安全和 Reviewer profile。插件 Hook 属于非托管 Hook，安装或变更后必须通过 `/hooks` 复核并信任其当前 hash，不能把 Hook 当作唯一安全边界。
+
 ## 事实源
 
 - [执行入口](<AI_Engineering_OS_Codex_执行入口文档（1）(2).md>)：文档读取和项目启动顺序。

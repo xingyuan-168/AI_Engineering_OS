@@ -1,0 +1,34 @@
+{
+  "description": "Advisory AI Engineering OS context and defense-in-depth Git policy hooks.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/session_start.py\"",
+            "commandWindows": "py -3 \"${PLUGIN_ROOT}/hooks/session_start.py\"",
+            "timeout": 5,
+            "additionalContextLimit": 400
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/pre_tool_use.py\"",
+            "commandWindows": "py -3 \"${PLUGIN_ROOT}/hooks/pre_tool_use.py\"",
+            "timeout": 5,
+            "additionalContextLimit": 300,
+            "statusMessage": "Checking AI Engineering OS repository policy"
+          }
+        ]
+      }
+    ]
+  }
+}

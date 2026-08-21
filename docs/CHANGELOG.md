@@ -13,6 +13,7 @@
 - 增加 `run new-project`、`step`、`approve`、`reject`、`resume` CLI。
 - 增加仓库级 Codex 私有插件、marketplace 和官方 MCP Python SDK 2.x stdio 服务。
 - 增加 11 个 MCP 工具及从 `project_init` 到 G4 完成的 Host 握手集成测试。
+- 增加 11 个工程 Skill、7 个项目级自定义 Agent profile 和可复核的插件生命周期 Hooks。
 
 ### Governance
 
