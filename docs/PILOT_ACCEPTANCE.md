@@ -1,5 +1,7 @@
 # ERP 采购模块试点验收
 
+实施结果见 [ERP_PILOT_REPORT.md](ERP_PILOT_REPORT.md)。
+
 版本：V2.0-derived-pilot
 状态：可执行验收规格基线
 试点目标：验证从一句业务目标到可审计发布候选物的完整链路。

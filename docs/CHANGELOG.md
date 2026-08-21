@@ -24,6 +24,7 @@
 - 增加 ERP 采购 FastAPI fixture 生成器和真实 API 集成测试，覆盖供应商、采购申请、审批、采购订单、状态查询与幂等 SQLite 迁移。
 - Git 证据校验扩展为审计 base commit 到 task commit 的全部 changed paths，漏报越权文件同样阻塞完成。
 - 增加从空仓库运行 G0–G4 的 ERP 试点驱动器，每阶段独立本地提交并生成测试、安全、Review、SBOM、校验和、回滚、审计与 Memory 证据。
+- 记录 ERP 试点 PA-001～PA-010 验收结果、实现 Commit、质量门禁和 Docker 实容器环境遗留项。
 
 ### Governance
 
