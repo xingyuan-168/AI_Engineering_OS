@@ -15,6 +15,7 @@ dist/
 .codex-os/state/
 .codex-os/logs/
 .codex-os/cache/
+.codex-os/context/
 .codex-os/tmp/
 .worktrees/
 
