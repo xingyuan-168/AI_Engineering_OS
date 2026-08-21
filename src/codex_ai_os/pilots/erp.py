@@ -318,6 +318,45 @@ def _transition_requisition(
         raise HTTPException(status_code=409, detail=f"requisition is not {expected}")
     return {"id": requisition_id, "status": target}
 ''',
+    "tests/test_api.py": '''from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from erp_api.app import create_app
+
+
+def test_procurement_flow(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path / "erp.db"))
+    supplier = client.post(
+        "/suppliers", json={"code": "SUP-001", "name": "Supplier"}
+    ).json()
+    requisition = client.post(
+        "/requisitions",
+        json={
+            "requester": "alice",
+            "justification": "Replenish stock",
+            "items": [
+                {
+                    "sku": "PART-001",
+                    "description": "Part",
+                    "quantity": 2,
+                    "unit_price_cents": 500,
+                }
+            ],
+        },
+    ).json()
+    client.post(f"/requisitions/{requisition['id']}/submit")
+    client.post(
+        f"/requisitions/{requisition['id']}/approve",
+        json={"approver": "manager"},
+    )
+    order = client.post(
+        "/purchase-orders",
+        json={"requisition_id": requisition["id"], "supplier_id": supplier["id"]},
+    )
+    assert order.status_code == 201
+    assert order.json()["total_cents"] == 1000
+''',
     "docs/PRODUCT_REQUIREMENTS.md": """# 产品需求
 
 ## 目标

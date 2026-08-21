@@ -104,7 +104,8 @@ def _runtime_entry_files() -> dict[str, str]:
     return {
         ".gitignore": (
             ".codex-os/state/\n.codex-os/logs/\n.codex-os/cache/\n"
-            ".codex-os/context/\n.codex-os/tmp/\n.worktrees/\n.env\n"
+            ".codex-os/context/\n.codex-os/tmp/\n.worktrees/\n"
+            ".venv/\n__pycache__/\n*.py[cod]\n.pytest_cache/\n.env\n"
         ),
         ".codex/hooks.json": json.dumps(
             {

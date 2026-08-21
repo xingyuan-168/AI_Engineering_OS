@@ -355,6 +355,19 @@ class WorkflowEngine:
             self._allocate_or_block(updated, next_task, base_ref=base_ref)
         return self._result(self.store.get_run(updated.id))
 
+    def pause(self, run_id: str, *, reason: str) -> WorkflowResult:
+        run = self._get_run(run_id)
+        normalized = reason.strip()
+        if not normalized:
+            raise WorkflowError("CONFIG_INVALID", "pause reason is required", 2)
+        if run.run_status is not RunStatus.RUNNING:
+            raise WorkflowError("STATE_CONFLICT", "only a running workflow can pause", 30)
+        try:
+            updated = self.store.pause_transition(run=run, reason=normalized)
+        except WorkflowConflictError as exc:
+            raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
+        return self._result(updated)
+
     def _result(self, run: WorkflowRun) -> WorkflowResult:
         action = _action_from_checkpoint(run.checkpoint)
         active_task = self.store.active_task(run.id)

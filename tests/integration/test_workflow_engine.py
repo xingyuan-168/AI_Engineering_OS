@@ -258,6 +258,27 @@ def test_rejected_gate_blocks_and_resume_creates_new_task(tmp_path: Path) -> Non
     assert resumed.active_task is not None
 
 
+def test_pause_and_resume_preserve_the_active_task(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    started = engine.start("Build ERP procurement API")
+    assert started.active_task is not None
+
+    paused = engine.pause(started.run.id, reason="simulate interruption")
+    resumed = engine.resume(started.run.id)
+
+    assert paused.run.run_status is RunStatus.PAUSED
+    assert resumed.run.run_status is RunStatus.RUNNING
+    assert resumed.active_task is not None
+    assert resumed.active_task.id == started.active_task.id
+    with engine.store.database.connection() as connection:
+        pause_events = connection.execute(
+            "SELECT COUNT(*) FROM events WHERE run_id = ? "
+            "AND event_type = 'workflow.paused'",
+            (started.run.id,),
+        ).fetchone()[0]
+    assert pause_events == 1
+
+
 def test_mutating_task_requires_git_evidence(tmp_path: Path) -> None:
     engine = _engine(tmp_path)
     started = engine.start("Build ERP procurement API")

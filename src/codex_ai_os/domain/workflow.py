@@ -225,7 +225,7 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         "backend-engineer",
         "backend-implementation",
         "Implement the approved backend slice with migrations and tests in the assigned worktree.",
-        ("src/", "tests/", "migrations/", "docs/CHANGELOG.md"),
+        ("src/", "tests/", "migrations/", "pyproject.toml", "docs/CHANGELOG.md"),
         RiskLevel.HIGH,
     ),
     WorkflowPhase.VERIFY: PhaseDefinition(

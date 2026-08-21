@@ -460,6 +460,41 @@ class WorkflowStore:
                 raise
         return self.get_run(run.id)
 
+    def pause_transition(self, *, run: WorkflowRun, reason: str) -> WorkflowRun:
+        now = _utc_now()
+        new_version = run.state_version + 1
+        checkpoint = {**run.checkpoint, "paused_reason": reason}
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _assert_run_version(connection, run.id, run.state_version)
+                _update_run(
+                    connection,
+                    run,
+                    target_phase=run.workflow_phase,
+                    target_status=RunStatus.PAUSED,
+                    checkpoint=checkpoint,
+                    now=now,
+                )
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=(
+                        str(run.checkpoint.get("next_action", {}).get("task_id"))
+                        if isinstance(run.checkpoint.get("next_action"), dict)
+                        else None
+                    ),
+                    event_type="workflow.paused",
+                    idempotency_key=f"{run.id}:{new_version}:workflow.paused",
+                    payload={"reason": reason},
+                )
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
 
 def _assert_run_version(connection: sqlite3.Connection, run_id: str, expected: int) -> None:
     row = connection.execute(
