@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codex-ai-engineering-os"
+version = "0.1.0"
+description = "Local, auditable engineering workflow runtime for Codex"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "platformdirs>=4.3,<5",
+  "pydantic>=2.11,<3",
+  "pyyaml>=6.0.2,<7",
+  "typer>=0.16,<1",
+]
+
+[project.scripts]
+codex-os = "codex_ai_os.cli.app:app"
+
+[dependency-groups]
+dev = [
+  "pip-audit>=2.9,<3",
+  "pyright>=1.1.403,<2",
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
+  "ruff>=0.12,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codex_ai_os"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["codex_ai_os"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+
+[tool.uv]
+package = true
