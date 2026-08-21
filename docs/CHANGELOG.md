@@ -28,6 +28,7 @@
 - 增加 `feature-development`、`bug-fix` 和 `release` 工作流入口，复用相同审批、Git、Worktree 与恢复门禁。
 - 增加项目隔离的 Memory 候选、来源 hash 激活、Secret 拦截、检索和来源变更失效生命周期。
 - 增加 Podman OCI 沙箱适配器和项目级基础策略选择；`doctor` 接受 Docker 或 Podman 中至少一个可用，默认仍为 Docker。
+- 补齐 V1 的产品、交互、UI、API、Agent、Execution 和变更工作流 Skills，并增加可校验的 frontend/backend/large 增量 Profiles。
 
 ### Governance
 

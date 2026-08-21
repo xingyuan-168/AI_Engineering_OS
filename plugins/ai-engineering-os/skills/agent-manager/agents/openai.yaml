@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Manager"
+  short_description: "Assign governed tasks to specialist agents"
+  default_prompt: "Use $agent-manager to assign this workflow's approved tasks."

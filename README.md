@@ -47,6 +47,7 @@ codex-os mcp
 - [系统架构](docs/ARCHITECTURE.md)：组件边界和数据流。
 - [实施规格索引](docs/README.md)：全部领域规范。
 - [仓库指令](AGENTS.md)：Codex 实现、验证和 Git 纪律。
+- [组合 Profiles](profiles/)：frontend、backend 与 large 项目的增量能力和证据要求。
 
 `input/` 保存原始需求，只作为参考；冲突以当前接受的 ADR 和领域规格为准。
 

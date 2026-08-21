@@ -1,0 +1,4 @@
+interface:
+  display_name: "API Design"
+  short_description: "Design versioned APIs from approved contracts"
+  default_prompt: "Use $api-design to define a versioned API contract for this feature."
