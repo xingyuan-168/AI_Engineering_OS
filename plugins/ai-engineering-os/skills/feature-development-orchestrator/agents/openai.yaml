@@ -1,0 +1,4 @@
+interface:
+  display_name: "Feature Development"
+  short_description: "Run governed feature development workflows"
+  default_prompt: "Use $feature-development-orchestrator to deliver this approved feature."

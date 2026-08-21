@@ -1,0 +1,4 @@
+interface:
+  display_name: "Product Design"
+  short_description: "Turn approved requirements into product design"
+  default_prompt: "Use $product-design to create a traceable product design from approved requirements."

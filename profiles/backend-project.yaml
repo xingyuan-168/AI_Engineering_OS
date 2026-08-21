@@ -1,0 +1,13 @@
+schema_version: "1.0"
+name: backend-project
+description: Add API, database, migration, backend implementation, and service verification evidence.
+project_types: [backend, fullstack]
+additional_skills: [api-design, database-design, backend-implementation, testing, security-review]
+required_artifacts:
+  - docs/API_SPEC.md
+  - docs/DATABASE.md
+  - docs/MIGRATION_SPEC.md
+  - docs/TEST_PLAN.md
+additional_reviewers: [database-engineer, qa, security-reviewer, reviewer]
+min_agents: 3
+approval_required: false

@@ -10,11 +10,14 @@
 
 1. 内置安全默认值。
 2. 全局 Codex Plugin 默认配置。
-3. 项目根目录 `.codex/` 配置。
-4. 项目 `project.yaml` 和 `.codex-os/` 配置。
-5. CLI 显式参数。
+3. 用户级 `.codex-os/system.yaml`。
+4. 项目 `.codex-os/project.yaml`。
+5. 项目 `.codex-os/workflows/<name>.yaml`。
+6. CLI 显式参数。
 
 安全字段（容器、网络、宿主路径、凭据策略、生产发布）不允许被低权限配置或单次任务参数放宽。
+
+`.codex/config.toml` 和 `.codex/hooks.json` 属于 Codex Host 配置，不进入 OS YAML 合并。项目专属 Skill 位于 `.agents/skills/`。
 
 ## 2. `project.yaml`
 
@@ -134,7 +137,7 @@ hooks:
   timeout_seconds: 10
   max_retries: 2
 permissions:
-  read_paths: [docs/, .codex/]
+  read_paths: [docs/, .codex/, .codex-os/]
   write_paths: []
   commands: []
   network: disabled

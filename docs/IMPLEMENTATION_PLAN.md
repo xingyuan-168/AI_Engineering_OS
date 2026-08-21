@@ -1,85 +1,87 @@
 # Codex AI Engineering OS 实施计划
 
 版本：V2.0-derived
-状态：可执行文档基线
-实施方式：个人本地 MVP，关键门禁人工确认。
+状态：M0-M6 实现完成；V1 发布候选受环境门禁阻塞
+实施方式：个人本地 MVP，纵向闭环优先，关键门禁人工确认，每个逻辑变更提交并立即推送。
 
 ## 1. 实施结果
 
 交付一个可在本地 Git 仓库运行的最小系统：用户输入业务目标后，系统能初始化文档、选择 Workflow、执行开源调研、拆分任务、调度 Agent、在受控 Worktree 中完成开发，并输出测试、Review、安全和发布记录。
 
-## 2. 阶段计划
+## 2. Git 交付协议
 
-### 阶段 0：规格冻结
+- OS 主仓库远端固定为 `git@github.com:xingyuan-168/AI_Engineering_OS.git`。
+- 每个完整逻辑变更一个 Conventional Commit，验证后立即推送当前里程碑分支。
+- 完成事件必须关联 Branch、Commit SHA、远端推送状态、产物 hash 和验证结果。
+- 禁止 force push 或改写已推送历史；错误通过新提交或 `git revert` 修正。
+- SQLite 运行状态、日志、缓存和临时 Worktree 不进入版本库。
 
-任务：
+## 3. 里程碑计划
 
-- 评审 `docs/README.md` 文档地图中的完整规范集，重点确认项目总文档、范围、架构、配置、Workflow、权限和验收边界。
-- 明确术语、输入输出、风险等级和人工审批边界。
-- 将确认后的文档标记为基线版本。
-
-产物：确认版 `PROJECT_MASTER.md`、`SCOPE.md`、`TECH_STACK.md`、`IMPLEMENTATION_PLAN.md`，以及运行时、配置、Workflow 路由、Skill、Agent 交接、Plugin、Worktree、模块边界、Memory、执行、可观测性、迁移、发布和试点验收契约。
-
-完成条件：没有未处理的范围冲突、关键术语冲突或未定义的发布边界。
-
-### 阶段 1：文档治理与实现契约基线
+### M0：仓库与规格基线
 
 任务：
 
-- 创建标准 `docs/` 和 `docs/design/` 模板。
-- 实现文档完整性、链接、元数据和状态检查。
-- 实现变更影响检查：API、数据库、架构、ADR、CHANGELOG。
-- 增加禁止复制目录和未授权文件写入的检查。
-- 完成 `RUNTIME_SPEC.md`、`CONFIG_SPEC.md`、`WORKFLOW_SPEC.md`、`SKILL_SPEC.md`、`AGENT_SPEC.md`、`EXECUTION_POLICY.md`、`OBSERVABILITY.md`、`MIGRATION_SPEC.md`、`RELEASE_CHECKLIST.md` 和 `PILOT_ACCEPTANCE.md`。
-- 完成 `MEMORY_SPEC.md`、`PLUGIN_SPEC.md`、`WORKTREE_SPEC.md`、`AGENT_HANDOFF.md`、`WORKFLOW_ROUTING_RULES.md`、`BOUNDARY_SPEC.md` 和 `design/UX_RESEARCH.md`，并同步领域文档索引。
-- 完成 Codex Host、CLI、Plugin、项目 `.codex/`、Worktree、Handoff、Memory 和 Docker/Podman 的边界冻结。
+- 绑定并审计 GitHub 远端，建立 `main` 文档基线和里程碑分支。
+- 明确 `workflow_phase`/`run_status`、G0-G4、Host Hook/内部事件、Skill 路径和迁移语义。
+- 固定 Python 3.12、uv 和 Docker Desktop 前置条件；环境缺失必须由 `doctor` 明确阻塞。
+- 新增 `AGENTS.md` 与 ADR-0002，固化事实源和 Git 交付规则。
 
-产物：文档模板、实现契约文档、`check-docs` 规格、影响检查规则、首批 ADR。
+产物：可推送仓库基线、收敛后的规格、仓库指令、环境预检和 ADR。
 
-完成条件：新项目初始化后所有必需文档存在；实现前必读顺序、Schema、状态、权限和验收边界无冲突；本阶段不创建代码。
+完成条件：没有未处理的范围冲突或关键术语冲突；远端可推送；Docker 未就绪时明确记录环境阻塞而不降低安全策略。
 
-### 阶段 2：开源研究与技术选型
+### M1：确定性内核与文档治理
 
 任务：
 
-- 按 [OPEN_SOURCE_RESEARCH.md](OPEN_SOURCE_RESEARCH.md) 的能力矩阵逐项研究。
-- 固定官方仓库、版本/commit、License、依赖和安全信息。
-- 对每个候选项目完成“直接使用 / 二次开发 / 提取设计思想 / 自研”决策。
-- 将最终采用项写入 `TECH_STACK.md`，重大决策写入 ADR。
+- 创建 Python 包、严格 Pydantic 配置、ID、SQLite 迁移和追加式事件存储。
+- 实现原子文件写入、内容 hash、文档完整性、链接和影响检查。
+- 实现 `doctor`、`init`、`status` 和 `check-docs`。
+- 配置按内置→Plugin→用户级→项目级→Workflow→CLI 合并；下层只能收紧安全策略。
 
-产物：开源研究记录、技术选型记录、许可证清单、集成边界说明。
+产物：可安装 CLI、Schema 迁移、运行存储、文档模板和治理报告。
 
-完成条件：每个系统模块都有开源研究结论，且不存在未经核验的外部依赖。
+完成条件：空仓库初始化幂等；未知配置失败；数据库可恢复；文档错误可定位。
 
-### 阶段 3：Workflow Engine MVP
-
-任务：
-
-- 实现 `new-project`、`feature-development`、`bug-fix`、`release`。
-- 实现状态转换、检查点、暂停、恢复、有限重试和事件日志。
-- 实现可解释路由评分、Profile 组合、人工覆盖和 `needs_approval`/`blocked` 恢复路径。
-- 实现 G0-G4 门禁和人工确认接口。
-- 实现项目清单、任务事件和产物索引。
-
-产物：CLI、Workflow 定义、SQLite 状态库、事件日志和恢复测试。
-
-完成条件：任意 Workflow 中断后可以从最近检查点恢复，关键门禁没有审批不能跳过。
-
-### 阶段 4：Skill、Agent 与执行管理
+### M2：`new-project` 工作流
 
 任务：
 
-- 首批实现需求、开源调研、架构、产品、API、数据库、测试、Review、安全和发布 Skill。
-- 实现 Product Manager、Architect、Engineer、QA、Security 和 Reviewer Agent 配置。
-- 实现 Branch/Worktree 创建、任务隔离、产物回收和 Review 合并。
-- 实现 Agent Handoff 的产物、hash、Commit、测试和风险校验；交接不合格时阻塞消费者。
-- 实现命令 allowlist、允许路径、dry-run、敏感操作拦截和执行记录。
+- 实现双轴状态机、G0-G4、检查点、暂停、恢复、有限重试和乐观并发。
+- 实现任务、制品、审批、Handoff、`next_action` 和 `task_complete` Git 证据校验。
+- 先以 Fake Host 适配器覆盖全流程，不依赖模型调用。
+
+产物：`new-project` Workflow、事件、审批和恢复测试。
+
+完成条件：任意阶段中断可恢复，审批不可绕过，重复输入不产生重复任务或制品。
+
+### M3：Codex Plugin 与混合编排
+
+任务：
+
+- 创建 `.codex-plugin/plugin.json`、repo marketplace、Plugin Skills、stdio MCP server 和可信 Hooks。
+- 实现 Host `next_action/task_complete` 握手和 MCP 工具 Schema。
+- 可选 `CodexExecAdapter` 仅在 `doctor` 验证 CLI 与认证后启用。
+
+产物：可验证、可私有安装的 Codex Plugin 和 MCP 集成测试。
+
+完成条件：可从 Codex 启动、审批、恢复并完成 fixture 工作流；Host Hook 不取代 Runtime 授权。
+
+### M4：Agent、Worktree 与执行沙箱
+
+任务：
+
+- 实现 Product、Architect、Backend、Database、QA、Security 和 Reviewer Agent 配置。
+- 实现任务 Branch/Worktree、路径与 junction/symlink 边界、dirty/conflict 阻塞和 Git 证据。
+- 实现 Docker 固定镜像、非 root、默认断网、只读根文件系统、显式挂载和资源限制。
+- 实现 L0-L4 风险策略；无沙箱时拒绝写入和高风险执行。
 
 产物：Skill/Agent 契约、Worktree 管理器、Execution Manager、安全策略。
 
 完成条件：Agent 不能修改未授权路径；所有任务都能关联输入、输出、分支、提交和 Review。
 
-### 阶段 5：ERP 采购模块试点与验收
+### M5：ERP 采购模块试点与验收
 
 任务：
 
@@ -94,7 +96,15 @@
 
 完成条件：从目标输入到发布候选物的全过程可重放、可审计、可恢复。
 
-## 3. 推荐命令面
+### M6：完整 V1 扩展
+
+任务：在纵向试点稳定后增加 `feature-development`、`bug-fix`、`release` Workflow，补齐 frontend/backend/large Profile、剩余 Skill、Memory 生命周期与 Podman 适配器。
+
+产物：完整 V1 Workflow/Skill/Profile 集、兼容测试和发布包。
+
+完成条件：扩展能力不降低 G0-G4、Git 证据、Worktree 隔离或默认沙箱规则。
+
+## 4. 推荐命令面
 
 ```text
 codex-os init
@@ -107,7 +117,7 @@ codex-os verify
 codex-os release --candidate
 ```
 
-## 4. 测试计划
+## 5. 测试计划
 
 ### 单元测试
 
@@ -132,7 +142,7 @@ codex-os release --candidate
 - 所有开源采用结论均有版本和 License 记录。
 - 试点 Workflow 能够中断并恢复。
 
-## 5. 主要风险与应对
+## 6. 主要风险与应对
 
 | 风险 | 应对 |
 | --- | --- |
@@ -143,11 +153,11 @@ codex-os release --candidate
 | 命令执行造成破坏 | allowlist、dry-run、人工确认和完整日志 |
 | 文档与实现漂移 | CI 文档检查、变更影响检查和发布门禁 |
 
-## 6. Definition of Done
+## 7. Definition of Done
 
-一个阶段只有在代码、文档、测试、Review、风险记录和变更记录均完成后才算结束。任何“代码已完成但文档未更新”的状态都视为未完成。
+一个阶段只有在代码、文档、测试、Review、风险记录、提交 SHA 和远端推送证据均完成后才算结束。任何“代码已完成但文档未更新”或“变更未提交推送”的状态都视为未完成。
 
-## 7. 责任与证据
+## 8. 责任与证据
 
 | 阶段 | 责任角色 | 必须保留的证据 |
 | --- | --- | --- |

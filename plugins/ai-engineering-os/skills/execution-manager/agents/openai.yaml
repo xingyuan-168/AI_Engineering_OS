@@ -1,0 +1,4 @@
+interface:
+  display_name: "Execution Manager"
+  short_description: "Run policy-bound sandbox verification tasks"
+  default_prompt: "Use $execution-manager to execute this approved task in its assigned sandbox."

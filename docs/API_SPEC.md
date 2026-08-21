@@ -41,6 +41,11 @@ created_at: RFC3339
 - `COMMAND_DENIED`：命令未通过策略。
 - `DEPENDENCY_UNVERIFIED`：开源依赖版本、License 或安全信息未核验。
 - `RECOVERY_UNAVAILABLE`：没有可用检查点或产物。
+- `EXECUTION_FAILED`：受控命令或测试失败。
+- `SANDBOX_UNAVAILABLE`：默认沙箱不可用，写操作被阻断。
+- `MIGRATION_FAILED`：数据库迁移、备份或恢复失败。
+- `RELEASE_INCOMPLETE`：发布候选证据不完整。
+- `HOST_UNAVAILABLE`：Codex Host 或可选 Exec Adapter 不可用。
 
 ## 核心类型
 
@@ -52,7 +57,10 @@ created_at: RFC3339
 ok: true | false
 request_id: RUN-001
 workflow_id: WF-001
-status: completed | blocked | failed | needs_approval
+run_status: completed | blocked | failed | needs_approval
+workflow_phase: intake | requirements | research | design | implementation | verify | release | memory | completed
+state_version: 1
+next_action: null
 data: {}
 error:
   code: null
@@ -64,4 +72,4 @@ error:
 
 ## 退出码
 
-统一退出码见 [RUNTIME_SPEC.md](RUNTIME_SPEC.md) 第 8 节；CLI 输出必须同时包含机器可读 JSON 和面向用户的摘要。
+统一退出码见 [RUNTIME_SPEC.md](RUNTIME_SPEC.md) 第 9 节。CLI 默认输出面向用户的摘要；传入 `--json` 时 stdout 只输出一个机器可读 JSON 对象，进度和日志写入 stderr。

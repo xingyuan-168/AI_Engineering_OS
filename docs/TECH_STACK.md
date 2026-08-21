@@ -119,7 +119,9 @@ codex-os release --candidate
 ## 6. 版本与依赖冻结规则
 
 - Python：3.12.x，补丁版本由 `uv.lock` 冻结。
+- Docker Linux 执行镜像：`python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2`；使用 [Docker Official Image](https://hub.docker.com/layers/library/python/3.12-slim-bookworm/) 的多架构 index digest，更新必须经安全扫描、测试和独立提交。
 - Pydantic：2.x；Typer：0.12+；pytest：8.x；Ruff：0.6+；Pyright：1.1+。
+- ERP 试点测试依赖：[FastAPI 0.141.1](https://pypi.org/project/fastapi/0.141.1/) 与 [HTTPX 0.28.1](https://pypi.org/project/httpx/0.28.1/)；仅位于开发依赖组，OS Runtime 不依赖 Web 控制面。
 - SQLite：随 Python 运行环境提供，启用 WAL、外键约束和 FTS5。
 - V1 不引入 LangGraph、CrewAI、MetaGPT、AutoGen、OpenHands、Mem0、Zep、Penpot 或 Excalidraw 作为核心运行时依赖；对应能力采用自有接口或外部设计工具接入。
 - 每次新增依赖必须同时更新本文件、许可证清单、锁文件、SBOM 和一条 ADR（如属于重大决策）。
@@ -132,6 +134,6 @@ codex-os release --candidate
 
 - Codex 宿主负责模型推理、Skill 触发和 Agent 对话；本地 CLI 不重复实现模型 API 客户端。
 - 本地 CLI 负责配置校验、Workflow、审批、事件、沙箱、文件策略、SQLite 和发布候选物。
-- 全局 `.codex-plugin/` 提供默认 Skill；项目 `.codex/` 提供项目级覆盖，安全字段只能收紧。
+- Plugin 的 `skills/` 提供默认 Skill；仓库新增项目专属 Skill 使用 `.agents/skills/`。提示词、模板和允许路径的运行时覆盖放在 `.codex-os/`，同名 Skill 不合并。
 - Windows 是 V1 唯一支持平台；核心接口保持平台无关，但不承诺 Linux/macOS 安装验收。
 - Docker/Podman 是代码修改、测试和高风险命令的默认执行环境；不可用时不自动降级到宿主机。

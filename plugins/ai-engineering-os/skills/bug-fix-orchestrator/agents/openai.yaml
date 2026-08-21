@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bug Fix"
+  short_description: "Run governed bug diagnosis and repair workflows"
+  default_prompt: "Use $bug-fix-orchestrator to diagnose and repair this reproducible bug."

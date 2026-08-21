@@ -75,9 +75,9 @@ errors: []
 - `failed`：执行错误或输出不符合 Schema。
 - `needs_approval`：已准备好但必须人工确认。
 
-## 7. 注册与覆盖
+## 7. 注册与定制
 
-Skill 注册时校验名称、版本、Schema、路径和权限。全局 Plugin 提供默认 Skill，项目 `.codex/` 可覆盖提示词、输入模板和允许路径；安全权限只能收紧，不能由项目覆盖放宽。
+Skill 注册时校验名称、版本、Schema、路径和权限。Plugin 的 `skills/` 提供默认 Skill；仓库新增项目专属 Skill 使用 `.agents/skills/`。同名 Skill 不合并，也不作为覆盖机制。项目对提示词、输入模板和允许路径的定制写入 `.codex-os/` 并由 Runtime 合并；安全权限只能收紧。
 
 ## 8. 首批 Skill
 

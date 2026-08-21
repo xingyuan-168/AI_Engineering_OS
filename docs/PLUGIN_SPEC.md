@@ -34,20 +34,13 @@ Plugin 不得直接绕过 CLI Runtime 修改项目文件、SQLite 状态或执�
 - 升级前保存 Plugin 配置和版本，失败可恢复上一版本。
 - 卸载只删除 Plugin 自身文件，不删除用户项目数据。
 
-## 4. Hook 契约
+## 4. Host Hook 与内部事件
 
-```yaml
-hook: workflow.started | workflow.paused | workflow.resumed
-       | task.created | task.completed | task.failed
-       | approval.requested | approval.approved | approval.rejected
-       | release.candidate
-payload_ref: event_id
-workflow_id: WF-001
-task_id: TASK-001
-created_at: RFC3339
-```
+Codex Host Hook 使用宿主支持的生命周期事件，包括 `SessionStart`、`SessionEnd`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`PreCompact`、`PostCompact`、`UserPromptSubmit` 和 `Stop`。V1 插件只注册 `SessionStart`、`PreToolUse` 和 `PostToolUse`：加载项目上下文、在工具调用前执行只读策略检查、在调用后记录审计引用。
 
-Hook 必须幂等、可超时、可失败隔离。Plugin Hook 失败只记录错误并触发策略定义的重试，不得回滚已提交的核心状态或绕过审批。
+`workflow.started`、`workflow.paused`、`task.completed`、`approval.requested` 和 `release.candidate` 等名称属于 OS 内部事件总线，追加写入 SQLite 后可由 MCP 查询；不得写入 Codex Hook 配置并冒充 Host 事件。
+
+Host Hook 必须幂等、可超时、可失败隔离。Plugin Hook 未经用户信任时视为未启用；Hook 失败不得回滚已提交的核心状态。Execution Manager 始终执行最终授权，不能把 Hook 当作唯一安全边界。
 
 ## 5. 调用接口
 
@@ -55,18 +48,21 @@ Plugin 向 CLI Runtime 提交结构化请求：
 
 ```yaml
 request_id: REQ-001
-operation: skill.invoke | workflow.start | workflow.status | approval.request
+operation: project.init | workflow.start | workflow.status | workflow.step
+           | workflow.resume | approval.submit | task.complete
+           | docs.check | verification.run | release.candidate.create
+           | memory.search
 project_id: PROJECT-001
 workflow_id: WF-001
 payload: {}
 idempotency_key: string
 ```
 
-Runtime 返回 `ok`、`status`、`data`、`error` 和 `request_id`。Plugin 只展示或转发结果，不自行解释状态。
+Runtime 返回 `ok`、`request_id`、`run_id`、`run_status`、`workflow_phase`、`state_version`、`next_action`、`data` 和 `error`。Plugin 只展示或转发结果，不自行创建状态。
 
 ## 6. 权限边界
 
-Plugin 默认只能读取 Skill/Agent 元数据和显示 Runtime 返回值。写项目文件、写 SQLite、执行命令、访问网络、读取凭据必须通过 Runtime 授权；项目 `.codex/` 只能收紧权限，不能放宽全局安全策略。
+Plugin 默认只能读取 Skill/Agent 元数据和显示 Runtime 返回值。写项目文件、写 SQLite、执行命令、访问网络、读取凭据必须通过 Runtime 授权；项目 `.codex-os/` 只能收紧权限，不能放宽全局安全策略。项目 `.codex/` 只保存 Host 配置和 Hook。
 
 ## 7. 版本兼容
 

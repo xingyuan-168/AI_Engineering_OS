@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI Design"
+  short_description: "Create implementable interface specifications"
+  default_prompt: "Use $ui-design to create an implementable interface specification."

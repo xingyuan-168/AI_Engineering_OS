@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interaction Design"
+  short_description: "Define accessible user flows and interactions"
+  default_prompt: "Use $interaction-design to define the approved feature's interaction states."
