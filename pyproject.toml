@@ -21,6 +21,8 @@ codex-os = "codex_ai_os.cli.app:app"
 
 [dependency-groups]
 dev = [
+  "fastapi>=0.141.1,<0.142",
+  "httpx>=0.28.1,<0.29",
   "pip-audit>=2.9,<3",
   "pyright>=1.1.403,<2",
   "pytest>=8.3,<10",
@@ -52,6 +54,7 @@ select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/codex_ai_os/templates/*.py" = ["E501", "RUF001"]
+"src/codex_ai_os/pilots/*.py" = ["E501", "RUF001"]
 
 [tool.pyright]
 include = ["src", "tests"]
