@@ -22,7 +22,7 @@
 | PA-004 开源研究 | 通过 | FastAPI/HTTPX 官方来源、版本与 License |
 | PA-005 架构设计 | 通过 | 架构、API、数据库、安全文档与 G2 |
 | PA-006 Agent 与 Worktree | 通过 | 8 个一一关联的 Branch/Worktree/Task |
-| PA-007 沙箱执行 | 受控通过 | Docker 缺失时 `SANDBOX_UNAVAILABLE`/exit 50；禁止宿主降级。真实容器启动待环境具备后复验 |
+| PA-007 沙箱执行 | 通过 | 生产 `PodmanSandbox` 在真实受管 Git Worktree 中启动锁定镜像；非 root、断网、只读根、最小权限、资源限制与干净 Worktree 全部通过 |
 | PA-008 失败与恢复 | 通过 | verify 前 pause/resume，未复制 Task 或 Worktree |
 | PA-009 G3 质量验证 | 通过 | fixture pytest、Review、安全报告、依赖审计与 G3 |
 | PA-010 G4 发布候选物 | 通过 | manifest、CycloneDX SBOM、SHA256SUMS、回滚、审计、Memory 与 G4 |
@@ -41,6 +41,8 @@ secret scan: passed
 
 可复验入口：`uv run pytest tests/e2e/test_erp_workflow.py -q`。测试在临时目录创建和销毁 fixture；不会把 Runtime 数据库、日志、缓存或 Worktree 提交到 OS 主仓库。
 
-## 环境遗留项
+## PA-007 环境复验
 
-当前 Windows 主机未安装 Docker Desktop/WSL，因此不能声称真实容器启动已通过。Runtime 已按策略阻塞代码写入与高风险执行，不会自动回退到宿主机。安装 Docker Desktop/WSL2 并预拉取锁定 digest 后，应重新执行 PA-007 实容器复验。
+2026-08-21 在 `codex/m6-v1-expansion` 完成真实 OCI 复验。主机使用 WSL 2.7.12 与 rootless Podman machine；`codex-os doctor --json` 返回 exit 0、`ok=true`。锁定镜像 digest 为 `sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2`。
+
+执行 `EXEC-REAL-OCI-001` 的 command hash 为 `36be837556551c0c04e6826524d943027624b02c5e59aecee27a3a6470db2927`。容器内观测 UID/GID `65532:65532`，根文件系统写入以 errno 30 被拒绝，外网连接失败，Worktree 在执行后保持干净。可复验入口：设置 `CODEX_OS_REAL_OCI=1` 和 `CODEX_OS_PODMAN` 后运行 `uv run pytest tests/integration/test_real_podman_sandbox.py -q -s`；测试与 marker 由提交 `cae41b6` 固化。

@@ -30,6 +30,7 @@
 - 增加 Podman OCI 沙箱适配器和项目级基础策略选择；`doctor` 接受 Docker 或 Podman 中至少一个可用，默认仍为 Docker。
 - 补齐 V1 的产品、交互、UI、API、Agent、Execution 和变更工作流 Skills，并增加可校验的 frontend/backend/large 增量 Profiles。
 - 增加 V1 发布候选验收报告，归档构建、测试、Git 证据及 OCI、Codex Host 和 G4 阻塞项。
+- 增加显式启用的真实 Podman 集成测试，在隔离 Git Worktree 中验证锁定镜像、非 root、断网、只读根、最小权限、资源限制和执行后干净状态。
 
 ### Governance
 
@@ -40,7 +41,8 @@
 ### Environment
 
 - 当前 Windows 环境已验证 Git、uv、Python 3.12 与 SQLite FTS5。
-- Docker Desktop/WSL 尚未由非管理员进程安装；`doctor` 使用退出码 50 明确阻塞沙箱执行。
+- 已安装 WSL 2.7.12 和 Podman 5.8.3，启动 rootless `podman-machine-default` 并预拉取项目锁定 digest；`doctor` 返回 `ok=true`。
+- 真实 Podman 沙箱复验通过，ENV-SANDBOX-001 与 ERP PA-007 环境遗留项已解除；Docker Desktop 未安装且不再是阻塞条件。
 
 ### Documentation baseline (2026-08-20)
 

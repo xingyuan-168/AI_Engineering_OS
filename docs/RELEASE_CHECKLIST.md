@@ -16,7 +16,7 @@
 
 ## 2. Windows 安装与升级
 
-- [ ] Windows 支持版本和 Python 版本已验证。
+- [x] Windows 支持版本和 Python 版本已验证。
 - [ ] `codex-os init/status/doctor` 在干净环境可运行。
 - [ ] 安装、升级、卸载不会删除用户项目文档和审计数据。
 - [ ] 配置迁移和 SQLite 迁移在升级前自动备份。
@@ -33,8 +33,8 @@
 
 ## 4. 沙箱与安全
 
-- [ ] Docker Desktop 或 Podman 前置检查通过。
-- [ ] 默认网络关闭、挂载路径最小化、Docker socket 未挂载。
+- [x] Docker Desktop 或 Podman 前置检查通过。
+- [x] 默认网络关闭、挂载路径最小化、Docker socket 未挂载。
 - [ ] L0-L4 命令风险策略已测试。
 - [ ] 容器不可用时高风险任务进入 `blocked`，没有宿主机静默降级。
 - [ ] Secret、路径、依赖和镜像安全扫描通过。
