@@ -26,6 +26,7 @@
 - 增加从空仓库运行 G0–G4 的 ERP 试点驱动器，每阶段独立本地提交并生成测试、安全、Review、SBOM、校验和、回滚、审计与 Memory 证据。
 - 记录 ERP 试点 PA-001～PA-010 验收结果、实现 Commit、质量门禁和 Docker 实容器环境遗留项。
 - 增加 `feature-development`、`bug-fix` 和 `release` 工作流入口，复用相同审批、Git、Worktree 与恢复门禁。
+- 增加项目隔离的 Memory 候选、来源 hash 激活、Secret 拦截、检索和来源变更失效生命周期。
 
 ### Governance
 

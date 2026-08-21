@@ -25,6 +25,7 @@ from codex_ai_os.domain.workflow import (
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
 from codex_ai_os.infrastructure.documents import DocumentManager
+from codex_ai_os.infrastructure.memory import MemoryStore, MemoryStoreError
 
 mcp = MCPServer(
     "AI Engineering OS",
@@ -264,23 +265,30 @@ def memory_search(project_root: str, query: str, limit: int = 20) -> dict[str, A
         config = load_project_config(Path(project_root).resolve())
         database = Database(config.root / ".codex-os" / "state" / "state.db")
         database.migrate()
-        bounded_limit = max(1, min(limit, 100))
-        pattern = f"%{query.strip()}%"
-        with database.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT id, run_id, task_id, record_type, title, content_ref,
-                       source_refs_json, source_hashes_json, confidence, tags_json,
-                       scope, status, created_at, updated_at, expires_at
-                FROM memory_records
-                WHERE project_id = ? AND status = 'active'
-                  AND (title LIKE ? OR tags_json LIKE ? OR content_ref LIKE ?)
-                ORDER BY updated_at DESC, id DESC
-                LIMIT ?
-                """,
-                (config.project_id, pattern, pattern, pattern, bounded_limit),
-            ).fetchall()
-        return _success(query=query, results=[dict(row) for row in rows])
+        records = MemoryStore(database, config.root, config.project_id).search(query, limit=limit)
+        return _success(
+            query=query,
+            results=[
+                {
+                    "id": record.id,
+                    "run_id": record.run_id,
+                    "task_id": record.task_id,
+                    "record_type": record.record_type,
+                    "title": record.title,
+                    "content_ref": record.content_ref,
+                    "source_refs": list(record.source_refs),
+                    "source_hashes": record.source_hashes,
+                    "confidence": record.confidence,
+                    "tags": list(record.tags),
+                    "scope": record.scope,
+                    "status": record.status,
+                    "created_at": record.created_at,
+                    "updated_at": record.updated_at,
+                    "expires_at": record.expires_at,
+                }
+                for record in records
+            ],
+        )
 
     return _invoke(operation)
 
@@ -312,6 +320,8 @@ def _invoke(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         return operation()
     except WorkflowError as exc:
         return {"ok": False, "error": {"code": exc.code, "message": str(exc)}}
+    except MemoryStoreError as exc:
+        return {"ok": False, "error": {"code": "MEMORY_INVALID", "message": str(exc)}}
     except (ConfigError, MigrationError, ValidationError, ValueError, OSError) as exc:
         return {"ok": False, "error": {"code": "CONFIG_INVALID", "message": str(exc)}}
 
