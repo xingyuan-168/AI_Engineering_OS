@@ -28,8 +28,8 @@ from codex_ai_os.domain.config import (
 )
 
 DEFAULT_EXECUTION_IMAGE = (
-    "python:3.12.13-slim-bookworm@"
-    "sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2"
+    "python:3.12.14-bookworm@"
+    "sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a"
 )
 
 
@@ -42,6 +42,8 @@ class DockerSandboxError(RuntimeError):
 class MountKind(StrEnum):
     ARTIFACTS = "artifacts"
     CACHE = "cache"
+    GIT_METADATA = "git-metadata"
+    GIT_POINTER = "git-pointer"
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,10 +141,20 @@ class DockerSandbox:
             "nofile=1024:1024",
             "--tmpfs",
             "/tmp:rw,noexec,nosuid,nodev,size=1g",
+            "--tmpfs",
+            "/deps:rw,nosuid,nodev,size=1g",
+            "--tmpfs",
+            "/dev/shm:rw,noexec,nosuid,nodev,size=64m",
             "--env",
             "HOME=/tmp",
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
+            "--env",
+            "GIT_CONFIG_COUNT=1",
+            "--env",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "--env",
+            "GIT_CONFIG_VALUE_0=/workspace",  # pragma: allowlist secret
             "--workdir",
             "/workspace",
             "--mount",
@@ -244,17 +256,27 @@ class DockerSandbox:
                 f"execution timeout must be within 1..{self.policy.max_duration_seconds}",
             )
         for mount in request.mounts:
-            if mount.kind.value not in self.policy.allowed_mounts:
+            policy_kind = (
+                "cache"
+                if mount.kind in {MountKind.GIT_METADATA, MountKind.GIT_POINTER}
+                else mount.kind.value
+            )
+            if policy_kind not in self.policy.allowed_mounts:
                 raise DockerSandboxError(
                     "SANDBOX_POLICY_VIOLATION",
                     f"mount kind is not allowed: {mount.kind.value}",
                 )
             expected_root = (
-                self.root / "artifacts"
+                self.root / ".codex-os" / "artifacts"
                 if mount.kind is MountKind.ARTIFACTS
                 else self.root / ".codex-os" / "cache"
             )
-            _validate_mount_source(mount.source, expected_root, self.root)
+            _validate_mount_source(
+                mount.source,
+                expected_root,
+                self.root,
+                allow_file=mount.kind is MountKind.GIT_POINTER,
+            )
 
 
 def _validate_image(image: str) -> None:
@@ -286,7 +308,9 @@ def _validate_command(command: tuple[str, ...], policy: ExecutionPolicy) -> None
             )
 
 
-def _validate_mount_source(source: Path, expected_root: Path, project_root: Path) -> None:
+def _validate_mount_source(
+    source: Path, expected_root: Path, project_root: Path, *, allow_file: bool = False
+) -> None:
     raw = source if source.is_absolute() else project_root / source
     if "," in str(raw):
         raise DockerSandboxError("SANDBOX_POLICY_VIOLATION", "mount source cannot contain a comma")
@@ -297,7 +321,8 @@ def _validate_mount_source(source: Path, expected_root: Path, project_root: Path
         raise DockerSandboxError(
             "SANDBOX_POLICY_VIOLATION", f"mount source is missing: {raw}"
         ) from exc
-    if not resolved.is_dir() or (resolved != allowed and not resolved.is_relative_to(allowed)):
+    expected_type = resolved.is_file() if allow_file else resolved.is_dir()
+    if not expected_type or (resolved != allowed and not resolved.is_relative_to(allowed)):
         raise DockerSandboxError(
             "SANDBOX_POLICY_VIOLATION",
             f"mount source escapes {expected_root}: {resolved}",
@@ -315,7 +340,13 @@ def _validate_mount_source(source: Path, expected_root: Path, project_root: Path
 
 
 def _mount_target(kind: MountKind) -> str:
-    return "/artifacts" if kind is MountKind.ARTIFACTS else "/cache"
+    if kind is MountKind.ARTIFACTS:
+        return "/artifacts"
+    if kind is MountKind.GIT_METADATA:
+        return "/git-metadata"
+    if kind is MountKind.GIT_POINTER:
+        return "/workspace/.git"
+    return "/cache"
 
 
 def _mount_argument(source: Path, target: str, *, read_only: bool) -> str:

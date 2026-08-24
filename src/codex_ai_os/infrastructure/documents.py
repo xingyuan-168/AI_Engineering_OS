@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from urllib.parse import unquote
 
 from codex_ai_os.templates.project_docs import documents_for
 
 LOCAL_LINK = re.compile(r"\[[^\]]+\]\((?:<([^>]+)>|([^ )]+))")
-FORBIDDEN_COPY_NAMES = {"backup", "copy", "final", "new", "v1", "v2"}
+FORBIDDEN_COPY_NAMES = {
+    "backup",
+    "copy",
+    "debug",
+    "final",
+    "new",
+    "old",
+    "src_backup",
+    "temp",
+    "tmp",
+}
 EXCLUDED_GOVERNANCE_TREES = {
     ".codex-os",
     ".git",
@@ -23,6 +36,16 @@ EXCLUDED_GOVERNANCE_TREES = {
     ".venv",
     ".worktrees",
     "node_modules",
+}
+DOCUMENT_METADATA = re.compile(r"<!--\s*codex-os-document:\s*(\{.*?\})\s*-->")
+UNAPPROVED_PLACEHOLDER = re.compile(r"(?i)(?:\bTODO\b|\bTBD\b|待确认|待补充)")
+STRICT_STATUSES = {"accepted", "approved", "released"}
+REQUIRED_SECTIONS: dict[str, tuple[str, ...]] = {
+    "PRODUCT_REQUIREMENTS.md": ("范围", "成功", "验收"),
+    "ARCHITECTURE.md": ("定位", "组件", "信任", "恢复"),
+    "API_SPEC.md": ("接口", "错误", "兼容"),
+    "DATABASE.md": ("迁移", "事务", "恢复"),
+    "SECURITY.md": ("信任", "威胁", "风险"),
 }
 
 
@@ -38,6 +61,11 @@ class DocumentCheckReport:
     broken_links: tuple[str, ...]
     invalid_documents: tuple[str, ...]
     forbidden_directories: tuple[str, ...]
+    metadata_errors: tuple[str, ...] = ()
+    placeholder_findings: tuple[str, ...] = ()
+    version_mismatches: tuple[str, ...] = ()
+    stale_documents: tuple[str, ...] = ()
+    impact_findings: tuple[str, ...] = ()
 
 
 class DocumentManager:
@@ -115,6 +143,11 @@ class DocumentManager:
         missing = tuple(sorted(path for path in expected if not self.resolve(path).is_file()))
         invalid: list[str] = []
         broken: list[str] = []
+        metadata_errors: list[str] = []
+        placeholders: list[str] = []
+        version_mismatches: list[str] = []
+        stale: list[str] = []
+        impact: list[str] = []
         checked = 0
 
         docs_root = self.resolve("docs")
@@ -124,23 +157,107 @@ class DocumentManager:
             if not text.lstrip().startswith("# "):
                 invalid.append(path.relative_to(self.project_root).as_posix())
             broken.extend(self._broken_links(path, text))
+            relative = path.relative_to(self.project_root).as_posix()
+            metadata = self._metadata(relative, text, metadata_errors)
+            if metadata is not None:
+                status = str(metadata.get("status", "")).casefold()
+                if status in STRICT_STATUSES and UNAPPROVED_PLACEHOLDER.search(text):
+                    placeholders.append(relative)
+                document_version = str(metadata.get("document_version", ""))
+                if status in STRICT_STATUSES and document_version != "0.2.0":
+                    version_mismatches.append(relative)
+                expires_at = metadata.get("expires_at")
+                if isinstance(expires_at, str) and _is_expired(expires_at):
+                    stale.append(relative)
+                if status in STRICT_STATUSES:
+                    for required in REQUIRED_SECTIONS.get(path.name, ()):
+                        if not any(
+                            required.casefold() in heading.casefold()
+                            for heading in re.findall(r"^#{2,6}\s+(.+)$", text, re.MULTILINE)
+                        ):
+                            impact.append(f"{relative}: missing section containing {required}")
 
         forbidden: list[str] = []
         for path in self.project_root.rglob("*"):
-            if not path.is_dir() or path.name.casefold() not in FORBIDDEN_COPY_NAMES:
+            if not path.is_dir() or not (
+                path.name.casefold() in FORBIDDEN_COPY_NAMES
+                or re.fullmatch(r"v\d+", path.name.casefold())
+            ):
                 continue
             relative = path.relative_to(self.project_root)
             if any(part.casefold() in EXCLUDED_GOVERNANCE_TREES for part in relative.parts):
                 continue
             forbidden.append(relative.as_posix())
         return DocumentCheckReport(
-            ok=not missing and not broken and not invalid and not forbidden,
+            ok=not any(
+                (
+                    missing,
+                    broken,
+                    invalid,
+                    forbidden,
+                    metadata_errors,
+                    placeholders,
+                    version_mismatches,
+                    stale,
+                    impact,
+                )
+            ),
             checked_files=checked,
             missing=missing,
             broken_links=tuple(sorted(set(broken))),
             invalid_documents=tuple(sorted(invalid)),
             forbidden_directories=tuple(sorted(forbidden)),
+            metadata_errors=tuple(sorted(metadata_errors)),
+            placeholder_findings=tuple(sorted(placeholders)),
+            version_mismatches=tuple(sorted(version_mismatches)),
+            stale_documents=tuple(sorted(stale)),
+            impact_findings=tuple(sorted(impact)),
         )
+
+    @staticmethod
+    def _metadata(
+        relative: str, text: str, errors: list[str]
+    ) -> dict[str, object] | None:
+        match = DOCUMENT_METADATA.search(text)
+        if match is None:
+            return None
+        try:
+            raw: object = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            errors.append(f"{relative}: invalid metadata JSON")
+            return None
+        if not isinstance(raw, dict):
+            errors.append(f"{relative}: metadata must be an object")
+            return None
+        object_mapping = cast(dict[object, object], raw)
+        metadata: dict[str, object] = {
+            str(key): value for key, value in object_mapping.items()
+        }
+        required = {
+            "schema_version",
+            "document_version",
+            "status",
+            "owner",
+            "requirement_refs",
+        }
+        missing = sorted(required - set(metadata))
+        if missing:
+            errors.append(f"{relative}: missing metadata fields {missing}")
+        if metadata.get("schema_version") != "1.1":
+            errors.append(f"{relative}: schema_version must be 1.1")
+        refs = metadata.get("requirement_refs")
+        if isinstance(refs, list):
+            ref_objects = cast(list[object], refs)
+            valid_refs = bool(ref_objects) and all(
+                isinstance(item, str) for item in ref_objects
+            )
+        else:
+            valid_refs = False
+        if not valid_refs:
+            errors.append(f"{relative}: requirement_refs must be a non-empty string array")
+        if not isinstance(metadata.get("owner"), str) or not str(metadata.get("owner")).strip():
+            errors.append(f"{relative}: owner is required")
+        return metadata
 
     def _broken_links(self, source: Path, text: str) -> list[str]:
         broken: list[str] = []
@@ -164,3 +281,13 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _is_expired(value: str) -> bool:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed < datetime.now(UTC)

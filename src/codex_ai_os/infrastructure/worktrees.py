@@ -31,6 +31,11 @@ class WorktreeRecord:
     dirty: bool
     created_at: str
     cleaned_at: str | None
+    kind: str
+    state_version: int
+    head_commit: str | None
+    open_review_count: int
+    cleanup_status: str
 
     def to_spec(self) -> WorktreeSpec:
         return WorktreeSpec(
@@ -83,6 +88,11 @@ class WorktreeStore:
             dirty=False,
             created_at=now,
             cleaned_at=None,
+            kind="task",
+            state_version=0,
+            head_commit=None,
+            open_review_count=0,
+            cleanup_status="not_requested",
         )
         with self.database.connection() as connection:
             try:
@@ -171,6 +181,123 @@ class WorktreeStore:
             allowed_statuses=("active", "cleaned"),
             cleaned=True,
         )
+
+    def request_cleanup(
+        self,
+        worktree_id: str,
+        *,
+        requested_by: str,
+        reason: str,
+        preconditions: dict[str, bool],
+    ) -> str:
+        cleanup_id = new_id("WORKTREECLEANUP")
+        now = _utc_now()
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT cleanup_status FROM worktrees WHERE id = ?", (worktree_id,)
+                ).fetchone()
+                if row is None:
+                    raise WorktreeStoreError(f"worktree record not found: {worktree_id}")
+                if str(row["cleanup_status"]) == "completed":
+                    existing = connection.execute(
+                        "SELECT id FROM worktree_cleanups WHERE worktree_id = ? "
+                        "AND status = 'completed' ORDER BY completed_at DESC LIMIT 1",
+                        (worktree_id,),
+                    ).fetchone()
+                    connection.rollback()
+                    if existing is None:
+                        raise WorktreeStoreError("completed cleanup record is missing")
+                    return str(existing["id"])
+                connection.execute(
+                    """
+                    INSERT INTO worktree_cleanups(
+                        id, worktree_id, requested_by, approved_by, reason,
+                        precondition_json, status, git_result_json, created_at, completed_at
+                    ) VALUES (?, ?, ?, NULL, ?, ?, 'requested', '{}', ?, NULL)
+                    """,
+                    (
+                        cleanup_id,
+                        worktree_id,
+                        requested_by,
+                        reason,
+                        json.dumps(preconditions, sort_keys=True, separators=(",", ":")),
+                        now,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE worktrees SET cleanup_status = 'requested', "
+                    "state_version = state_version + 1 WHERE id = ?",
+                    (worktree_id,),
+                )
+                connection.commit()
+            except (sqlite3.Error, WorktreeStoreError):
+                connection.rollback()
+                raise
+        return cleanup_id
+
+    def approve_cleanup(self, cleanup_id: str, *, approved_by: str) -> None:
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                changed = connection.execute(
+                    """
+                    UPDATE worktree_cleanups SET status = 'approved', approved_by = ?
+                    WHERE id = ? AND status = 'requested'
+                    """,
+                    (approved_by, cleanup_id),
+                ).rowcount
+                if changed != 1:
+                    raise WorktreeStoreError("cleanup request is not awaiting approval")
+                connection.execute(
+                    "UPDATE worktrees SET cleanup_status = 'approved', "
+                    "state_version = state_version + 1 WHERE id = "
+                    "(SELECT worktree_id FROM worktree_cleanups WHERE id = ?)",
+                    (cleanup_id,),
+                )
+                connection.commit()
+            except (sqlite3.Error, WorktreeStoreError):
+                connection.rollback()
+                raise
+
+    def complete_cleanup(
+        self, cleanup_id: str, *, merged_into: str, result: dict[str, str]
+    ) -> None:
+        now = _utc_now()
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT worktree_id FROM worktree_cleanups "
+                    "WHERE id = ? AND status = 'approved'",
+                    (cleanup_id,),
+                ).fetchone()
+                if row is None:
+                    raise WorktreeStoreError("cleanup request is not approved")
+                connection.execute(
+                    """
+                    UPDATE worktree_cleanups SET status = 'completed', git_result_json = ?,
+                        completed_at = ? WHERE id = ?
+                    """,
+                    (
+                        json.dumps(result, sort_keys=True, separators=(",", ":")),
+                        now,
+                        cleanup_id,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE worktrees SET status = 'cleaned', dirty = 0,
+                        cleanup_status = 'completed', cleaned_at = ?,
+                        state_version = state_version + 1 WHERE id = ?
+                    """,
+                    (now, str(row["worktree_id"])),
+                )
+                connection.commit()
+            except (sqlite3.Error, WorktreeStoreError):
+                connection.rollback()
+                raise
 
     def _transition(
         self,
@@ -288,6 +415,11 @@ def _record_from_row(row: sqlite3.Row) -> WorktreeRecord:
         dirty=bool(row["dirty"]),
         created_at=str(row["created_at"]),
         cleaned_at=str(row["cleaned_at"]) if row["cleaned_at"] is not None else None,
+        kind=str(row["kind"]),
+        state_version=int(row["state_version"]),
+        head_commit=str(row["head_commit"]) if row["head_commit"] is not None else None,
+        open_review_count=int(row["open_review_count"]),
+        cleanup_status=str(row["cleanup_status"]),
     )
 
 

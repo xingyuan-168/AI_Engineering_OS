@@ -34,6 +34,7 @@ def _engine(tmp_path: Path) -> WorkflowEngine:
         project_id="PROJECT-WORKFLOW",
         name="Workflow pilot",
         project_type=ProjectType.BACKEND,
+        schema_version="1.0",
     )
     return WorkflowEngine(
         tmp_path,
@@ -337,6 +338,7 @@ def test_worktree_allocation_failure_blocks_run_and_task(tmp_path: Path) -> None
         project_id="PROJECT-WORKFLOW",
         name="Workflow pilot",
         project_type=ProjectType.BACKEND,
+        schema_version="1.0",
     )
     engine = WorkflowEngine(
         tmp_path,
@@ -370,6 +372,7 @@ def test_invalid_git_evidence_does_not_advance_state(tmp_path: Path) -> None:
         project_id="PROJECT-WORKFLOW",
         name="Workflow pilot",
         project_type=ProjectType.BACKEND,
+        schema_version="1.0",
     )
     engine = WorkflowEngine(
         tmp_path,
@@ -400,6 +403,7 @@ def test_real_pushed_git_evidence_creates_verified_handoff(tmp_path: Path) -> No
         project_id="PROJECT-REAL-GIT",
         name="Real Git workflow",
         project_type=ProjectType.BACKEND,
+        schema_version="1.0",
     )
     _git(project, "add", ".")
     _git(project, "commit", "-m", "test: initialize project")

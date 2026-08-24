@@ -4,6 +4,14 @@
 
 ### Added
 
+- 增加 Plugin API 1.1 公共接口：`repository_check`、结构化 `task_complete`、`handoff_review`、`worktree_cleanup`、受管 `verification_run`、Release Candidate 与 Memory 审核；配置 Schema 1.1 兼容读取 1.0。
+- 增加 `0004`～`0006` 追加式迁移，覆盖仓库审计、强证据 Gate、版本/发布记录、多 Agent DAG、Handoff Review、集成合并、Worktree 清理、Memory 生命周期与 FTS5；迁移前数据库备份带 checksum、完整性及恢复校验。
+- 增加正式 GitHub 仓库预检与独立 Repository Governance Service，检查 Git 根、干净状态、remote/upstream/HEAD/目标分支、复制式版本目录、临时文件、跟踪污染、Secret、`.gitignore` 和路径逃逸。
+- 增加 G0～G4 Commit 绑定的 Artifact、Check、Review 与 Gate Evidence Bundle；文档 Gate 校验元数据、状态、版本、负责人、需求引用、必需章节、占位符和影响同步。
+- 增加 Profile 路由、最多 4 Agent 的任务 DAG、写路径重叠串行化、join barrier、独立 Reviewer 决策、拒绝后原 Worktree 修复、集成分支独占锁和 `--no-ff` 合并。
+- 增加 Release Worktree/受管制品区、SBOM、校验和、回滚说明、版本矩阵及 G4 GitHub PR/merge/tag/Release 强验证；G4 授权前不会创建 tag 或发布。
+- 增加 Memory `pending/active/needs_review/superseded/revoked/expired/deleted` 生命周期、来源变化失效、Secret/范围/置信度复核、supersedes 关系和项目隔离检索。
+- 增加未 mock 公共 1.1 Workflow E2E 与治理失败路径测试，覆盖三 Agent 并行、依赖 join、真实 Git Worktree 合并、受控执行、发布证据和 G4 验证。
 - 建立 Python 3.12/uv 可复现包与 Ruff、Pyright、pytest、pip-audit 质量门禁。
 - 增加严格 Pydantic 配置和只能收紧的执行策略覆盖。
 - 增加 SQLite WAL/外键迁移、checksum、迁移前备份和追加式幂等事件。
@@ -34,9 +42,15 @@
 
 ### Governance
 
+- 固定需求基线 `REQ-1.6.2`、软件/CLI/Core `0.2.0`、Plugin API `1.1`、配置 Schema `1.1`、SQLite Schema `0006` 和预期 tag `v0.2.0`，不再混用需求与软件版本。
+- 迁移后的活动 Workflow 在下一次状态变化前进入 `MIGRATION_REVALIDATION_REQUIRED`；只有仓库预检及已批准 Gate 的 1.1 证据包重审通过后才能恢复。
 - 绑定 GitHub 远端，实施每个逻辑变更提交并立即推送的交付协议。
 - 新增 ADR-0002，统一双轴状态、G0-G4、Host Hook、Skill 路径、沙箱和迁移语义。
 - 新增根目录 `AGENTS.md`，区分用户请求、项目事实和原始输入文档。
+
+### Security
+
+- 正式 Verification 改用包含 Git 的 Python 3.12.14 Bookworm 固定镜像；依赖从 `uv.lock` 对应的只读 wheelhouse 按 hash 安装到临时 `/deps`，离线依赖审计使用绑定锁文件、平台、时效和完整依赖集合的快照。
 
 ### Environment
 

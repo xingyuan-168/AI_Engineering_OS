@@ -10,6 +10,7 @@ from typing import Any, Self
 from pydantic import Field, model_validator
 
 from codex_ai_os.domain.config import RiskLevel, StrictModel
+from codex_ai_os.domain.governance import ArtifactEvidenceInput, CheckEvidenceInput
 
 
 class WorkflowPhase(StrEnum):
@@ -115,6 +116,13 @@ class WorkflowRun(StrictModel):
     config_hash: str
     created_at: str
     updated_at: str
+    profiles: tuple[str, ...] = ()
+    target_branch: str = "main"
+    integration_branch: str | None = None
+    base_commit: str | None = None
+    integration_head: str | None = None
+    max_parallel_agents: int = Field(default=4, ge=1, le=4)
+    migration_revalidation_required: bool = False
 
 
 class TaskRecord(StrictModel):
@@ -130,6 +138,13 @@ class TaskRecord(StrictModel):
     state_version: int = Field(ge=0)
     created_at: str
     updated_at: str
+    task_group_id: str | None = None
+    task_key: str | None = None
+    allowed_paths: tuple[str, ...] = ()
+    head_commit: str | None = None
+    producer: str | None = None
+    skill: str | None = None
+    prompt: str | None = None
 
 
 class TaskCompletion(StrictModel):
@@ -141,6 +156,8 @@ class TaskCompletion(StrictModel):
     push_status: PushStatus = PushStatus.NOT_REQUIRED
     artifact_paths_and_hashes: dict[str, str] = Field(default_factory=dict)
     verification_results: tuple[str, ...] = ()
+    artifacts: tuple[ArtifactEvidenceInput, ...] = ()
+    checks: tuple[CheckEvidenceInput, ...] = ()
 
     @model_validator(mode="after")
     def validate_git_evidence(self) -> Self:
@@ -167,6 +184,15 @@ class TaskCompletion(StrictModel):
                 raise ValueError(f"artifact path must be project-relative: {path}")
             if not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
                 raise ValueError(f"artifact hash must be SHA-256: {path}")
+        for artifact in self.artifacts:
+            if artifact.source_commit.casefold() != self.commit_sha.casefold():
+                raise ValueError("artifact source_commit must match completion commit_sha")
+            legacy_hash = self.artifact_paths_and_hashes.get(artifact.path)
+            if legacy_hash is not None and legacy_hash.casefold() != artifact.sha256.casefold():
+                raise ValueError("structured and compatibility artifact hashes disagree")
+        for check in self.checks:
+            if check.source_commit.casefold() != self.commit_sha.casefold():
+                raise ValueError("check source_commit must match completion commit_sha")
         return self
 
 
@@ -225,7 +251,14 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         "backend-engineer",
         "backend-implementation",
         "Implement the approved backend slice with migrations and tests in the assigned worktree.",
-        ("src/", "tests/", "migrations/", "pyproject.toml", "docs/CHANGELOG.md"),
+        (
+            "src/",
+            "tests/",
+            "migrations/",
+            "pyproject.toml",
+            "uv.lock",
+            "docs/CHANGELOG.md",
+        ),
         RiskLevel.HIGH,
     ),
     WorkflowPhase.VERIFY: PhaseDefinition(
@@ -239,7 +272,7 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         "release-manager",
         "release-manager",
         "Create the release candidate, changelog, SBOM, checksums, and rollback evidence.",
-        ("dist/", "docs/CHANGELOG.md", "reports/"),
+        ("release/", "docs/CHANGELOG.md", "reports/"),
         RiskLevel.HIGH,
     ),
     WorkflowPhase.MEMORY: PhaseDefinition(

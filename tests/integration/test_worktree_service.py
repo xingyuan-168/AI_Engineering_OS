@@ -62,6 +62,22 @@ class _NoopWorktrees:
         return WorktreeState(spec=spec, head_commit=base_ref, dirty=False)
 
 
+class _FailingInspectManager(GitWorktreeManager):
+    def inspect(self, spec: WorktreeSpec) -> WorktreeState:
+        raise GitWorktreeError(f"cannot inspect {spec.path}")
+
+
+class _DirtyInspectManager(GitWorktreeManager):
+    def inspect(self, spec: WorktreeSpec) -> WorktreeState:
+        state = super().inspect(spec)
+        return WorktreeState(spec=state.spec, head_commit=state.head_commit, dirty=True)
+
+
+class _FailingRemoveManager(GitWorktreeManager):
+    def remove(self, spec: WorktreeSpec, *, approved: bool, merged_into: str) -> None:
+        raise GitWorktreeError(f"cannot remove {spec.path} from {merged_into}: {approved}")
+
+
 def test_allocate_is_idempotent_and_persists_task_and_events(tmp_path: Path) -> None:
     repo, engine = _project_with_active_workflow(tmp_path)
     started = engine.status(_active_run_id(engine))
@@ -156,6 +172,92 @@ def test_reservation_reports_ownership_for_concurrent_retry(tmp_path: Path) -> N
     assert repeated.record == first.record
 
 
+def test_worktree_service_fails_closed_for_identity_provisioning_and_cleanup(
+    tmp_path: Path,
+) -> None:
+    identity_root = tmp_path / "identity"
+    identity_root.mkdir()
+    repo, engine = _project_with_active_workflow(identity_root)
+    first = engine.status(_active_run_id(engine))
+    assert first.active_task is not None
+    service = WorktreeService(repo)
+
+    with pytest.raises(WorktreeServiceError) as missing:
+        service.allocate(run_id="RUN-MISSING", task_id="TASK-MISSING")
+    assert missing.value.code == "RECOVERY_UNAVAILABLE"
+
+    second = engine.start("Create a second run for identity mismatch", workflow_name="bug-fix")
+    assert second.active_task is not None
+    with pytest.raises(WorktreeServiceError, match="identity"):
+        service.allocate(run_id=first.run.id, task_id=second.active_task.id)
+
+    spec = service.manager.plan(
+        workflow_id=first.run.id,
+        agent=first.active_task.agent,
+        task_id=first.active_task.id,
+    )
+    service.store.reserve(
+        project_id=first.run.project_id,
+        run_id=first.run.id,
+        task_id=first.active_task.id,
+        agent=first.active_task.agent,
+        spec=spec,
+    )
+    with pytest.raises(WorktreeServiceError, match="not registered"):
+        service.allocate(run_id=first.run.id, task_id=first.active_task.id)
+
+    cleanup_root = tmp_path / "cleanup"
+    cleanup_root.mkdir()
+    cleanup_repo, cleanup_engine = _project_with_active_workflow(cleanup_root)
+    active = cleanup_engine.status(_active_run_id(cleanup_engine))
+    assert active.active_task is not None
+    cleanup_service = WorktreeService(cleanup_repo)
+    state = cleanup_service.allocate(
+        run_id=active.run.id, task_id=active.active_task.id
+    )
+    with pytest.raises(WorktreeServiceError) as approval:
+        cleanup_service.cleanup(
+            task_id=active.active_task.id,
+            approved=False,
+            merged_into="main",
+        )
+    assert approval.value.code == "APPROVAL_REQUIRED"
+
+    inspect_failure = WorktreeService(
+        cleanup_repo,
+        manager=_FailingInspectManager(cleanup_repo, minimum_free_bytes=0),
+    )
+    with pytest.raises(WorktreeServiceError, match="cannot inspect"):
+        inspect_failure.cleanup(
+            task_id=active.active_task.id,
+            approved=True,
+            merged_into="main",
+        )
+
+    dirty = WorktreeService(
+        cleanup_repo,
+        manager=_DirtyInspectManager(cleanup_repo, minimum_free_bytes=0),
+    )
+    with pytest.raises(WorktreeServiceError, match="dirty worktree"):
+        dirty.cleanup(
+            task_id=active.active_task.id,
+            approved=True,
+            merged_into="main",
+        )
+
+    remove_failure = WorktreeService(
+        cleanup_repo,
+        manager=_FailingRemoveManager(cleanup_repo, minimum_free_bytes=0),
+    )
+    with pytest.raises(WorktreeServiceError, match="cannot remove"):
+        remove_failure.cleanup(
+            task_id=active.active_task.id,
+            approved=True,
+            merged_into="main",
+        )
+    assert state.spec.path.is_dir()
+
+
 def _project_with_active_workflow(tmp_path: Path) -> tuple[Path, WorkflowEngine]:
     remote = tmp_path / "remote.git"
     repo = tmp_path / "repo"
@@ -168,6 +270,7 @@ def _project_with_active_workflow(tmp_path: Path) -> tuple[Path, WorkflowEngine]
         project_id="PROJECT-WORKTREE",
         name="Worktree fixture",
         project_type=ProjectType.BACKEND,
+        schema_version="1.0",
     )
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "test: initialize project")

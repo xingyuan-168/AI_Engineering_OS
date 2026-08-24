@@ -20,7 +20,9 @@ class ExecutionStoreError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class ExecutionRecord:
     id: str
+    run_id: str | None
     task_id: str
+    worktree_id: str | None
     status: str
     risk_level: str
     command_hash: str
@@ -67,7 +69,9 @@ class ExecutionStore:
         )
         record = ExecutionRecord(
             id=request.execution_id,
+            run_id=request.worktree.workflow_id,
             task_id=request.task_id,
+            worktree_id=None,
             status="running",
             risk_level=request.risk_level.value,
             command_hash=command_hash(request.command),
@@ -99,15 +103,21 @@ class ExecutionStore:
                     raise ExecutionStoreError(
                         f"execution_id already refers to different evidence: {request.execution_id}"
                     )
+                worktree_row = connection.execute(
+                    "SELECT id FROM worktrees WHERE task_id = ? AND status = 'active'",
+                    (request.task_id,),
+                ).fetchone()
+                if worktree_row is None:
+                    raise ExecutionStoreError("execution task has no active Worktree")
                 connection.execute(
                     """
                     INSERT INTO executions(
                         id, task_id, risk_level, command_hash, image_digest,
                         container_id, exit_code, stdout_ref, stderr_ref,
                         started_at, ended_at, status, error_code, network_mode,
-                        mounts_json
+                        mounts_json, run_id, worktree_id, dirty_before, dirty_after
                     ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, NULL,
-                              'running', NULL, 'disabled', ?)
+                              'running', NULL, 'disabled', ?, ?, ?, 0, 0)
                     """,
                     (
                         record.id,
@@ -118,6 +128,8 @@ class ExecutionStore:
                         record.container_id,
                         record.started_at,
                         _json(mounts),
+                        str(identity["run_id"]),
+                        str(worktree_row["id"]),
                     ),
                 )
                 _insert_event(
@@ -215,7 +227,7 @@ class ExecutionStore:
                     """
                     UPDATE executions
                     SET status = ?, exit_code = ?, stdout_ref = ?, stderr_ref = ?,
-                        error_code = ?, ended_at = ?
+                        error_code = ?, ended_at = ?, dirty_after = ?
                     WHERE id = ? AND status = 'running'
                     """,
                     (
@@ -225,6 +237,7 @@ class ExecutionStore:
                         stderr_ref,
                         error_code,
                         ended_at,
+                        int(worktree_dirty),
                         execution_id,
                     ),
                 )
@@ -336,7 +349,9 @@ def _record_from_row(row: sqlite3.Row) -> ExecutionRecord:
     mounts = tuple(mounts_list)
     return ExecutionRecord(
         id=str(row["id"]),
+        run_id=str(row["run_id"]) if row["run_id"] is not None else None,
         task_id=str(row["task_id"]),
+        worktree_id=str(row["worktree_id"]) if row["worktree_id"] is not None else None,
         status=str(row["status"]),
         risk_level=str(row["risk_level"]),
         command_hash=str(row["command_hash"]),
@@ -355,6 +370,7 @@ def _record_from_row(row: sqlite3.Row) -> ExecutionRecord:
 
 def _same_request(left: ExecutionRecord, right: ExecutionRecord) -> bool:
     return (
+        left.run_id,
         left.task_id,
         left.risk_level,
         left.command_hash,
@@ -362,6 +378,7 @@ def _same_request(left: ExecutionRecord, right: ExecutionRecord) -> bool:
         left.network_mode,
         left.mounts,
     ) == (
+        right.run_id,
         right.task_id,
         right.risk_level,
         right.command_hash,

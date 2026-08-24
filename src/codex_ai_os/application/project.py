@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -24,6 +25,8 @@ class ProjectInitResult:
     context_path: Path
     document_report: DocumentCheckReport
     database_path: Path
+    repository_ready: bool
+    repository_blockers: tuple[str, ...]
 
 
 class ProjectInitializer:
@@ -36,6 +39,7 @@ class ProjectInitializer:
         project_type: ProjectType,
         risk_level: RiskLevel = RiskLevel.MEDIUM,
         git_push_policy: GitPushPolicy = GitPushPolicy.REMOTE_REQUIRED,
+        schema_version: Literal["1.0", "1.1"] = "1.1",
     ) -> ProjectInitResult:
         root = project_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -47,6 +51,7 @@ class ProjectInitializer:
             config = load_project_config(root)
         else:
             config = ProjectConfig(
+                schema_version=schema_version,
                 project_id=project_id,
                 name=name,
                 root=root,
@@ -71,7 +76,7 @@ class ProjectInitializer:
 
         database_path = root / ".codex-os" / "state" / "state.db"
         database = Database(database_path)
-        database.migrate()
+        database.migrate(app_version="0.2.0")
         config_hash = hashlib.sha256(
             json.dumps(_serializable_config(config), sort_keys=True).encode("utf-8")
         ).hexdigest()
@@ -84,13 +89,25 @@ class ProjectInitializer:
         )
 
         report = documents.check(config.project_type.value)
+        repository_ready, repository_blockers = self._repository_readiness(root, config)
         return ProjectInitResult(
             config=config,
             created_paths=tuple(created),
             context_path=context_path,
             document_report=report,
             database_path=database_path,
+            repository_ready=repository_ready,
+            repository_blockers=repository_blockers,
         )
+
+    @staticmethod
+    def _repository_readiness(root: Path, config: ProjectConfig) -> tuple[bool, tuple[str, ...]]:
+        if config.git_push_policy is GitPushPolicy.FIXTURE_LOCAL_ONLY:
+            return True, ()
+        git_marker = root / ".git"
+        if not git_marker.exists():
+            return False, ("NOT_GIT_REPOSITORY",)
+        return False, ("REPOSITORY_CHECK_REQUIRED",)
 
 
 def _serializable_config(config: ProjectConfig) -> dict[str, object]:
@@ -102,8 +119,9 @@ def _runtime_entry_files() -> dict[str, str]:
     return {
         ".gitignore": (
             ".codex-os/state/\n.codex-os/logs/\n.codex-os/cache/\n"
-            ".codex-os/context/\n.codex-os/tmp/\n.worktrees/\n"
-            ".venv/\n__pycache__/\n*.py[cod]\n.pytest_cache/\n.env\n"
+            ".codex-os/context/\n.codex-os/tmp/\n.codex-os/artifacts/\n.worktrees/\n"
+            ".venv/\n__pycache__/\n*.py[cod]\n.pytest_cache/\n.ruff_cache/\n"
+            ".env\nnode_modules/\ndist/\nbuild/\n*.log\n"
         ),
         ".codex/hooks.json": json.dumps(
             {
@@ -115,12 +133,12 @@ def _runtime_entry_files() -> dict[str, str]:
         )
         + "\n",
         ".codex-os/execution-policy.yaml": (
-            "schema_version: '1.0'\n"
+            "schema_version: '1.1'\n"
             "sandbox: docker\n"
             "network: disabled\n"
             "allowed_network_hosts: []\n"
             "allowed_mounts: [worktree, artifacts, cache]\n"
-            "allowed_commands: [git, python, pytest, ruff, pyright]\n"
+            "allowed_commands: [git, python, pytest, ruff, pyright, pip-audit, detect-secrets]\n"
             "approval_for: [network, migration, delete, credential, release]\n"
             "max_duration_seconds: 1800\n"
             "allow_host_execution: false\n"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -28,14 +29,20 @@ def test_mcp_lists_the_public_runtime_tools() -> None:
         "workflow_step",
         "workflow_resume",
         "approval_submit",
+        "repository_check",
         "task_complete",
+        "handoff_review",
+        "worktree_cleanup",
         "docs_check",
         "verification_run",
         "release_candidate_create",
+        "memory_candidate_submit",
+        "memory_review",
         "memory_search",
     }
 
 
+@pytest.mark.skipif(os.name != "nt", reason="the repository plugin launcher is Windows-only")
 def test_plugin_launcher_serves_the_same_tools_over_stdio() -> None:
     async def exercise() -> set[str]:
         launcher = (
@@ -70,6 +77,7 @@ def test_mcp_initializes_and_starts_a_workflow(tmp_path: Path) -> None:
                     "project_type": "backend",
                 },
             )
+            _use_legacy_fixture_config(tmp_path)
             _initialize_git_repository(tmp_path)
             started = await client.call_tool(
                 "workflow_start",
@@ -99,6 +107,8 @@ def test_mcp_initializes_and_starts_a_workflow(tmp_path: Path) -> None:
             {"name": "sqlite_integrity", "ok": True},
             {"name": "document_governance", "ok": True},
         ],
+        "deprecated": True,
+        "warning": "Supply run_id and task_id for governed verification.",
     }
 
 
@@ -149,6 +159,7 @@ def test_mcp_host_handshake_completes_the_full_fixture_workflow(
                     "project_type": "backend",
                 },
             )
+            _use_legacy_fixture_config(tmp_path)
             current = _structured(
                 await client.call_tool(
                     "workflow_start",
@@ -214,6 +225,7 @@ def test_mcp_host_handshake_completes_the_full_fixture_workflow(
                         },
                     )
                 )
+                assert current.get("ok") is True, current
 
             status = _structured(
                 await client.call_tool(
@@ -234,7 +246,7 @@ def test_mcp_host_handshake_completes_the_full_fixture_workflow(
     assert status["run"]["run_status"] == "completed"
     assert status["next_action"]["kind"] == "complete"
     assert memory["results"] == []
-    assert list((tmp_path / "dist" / "release-candidates").glob("RUN-*.json"))
+    assert (tmp_path / "release" / "manifest.json").is_file()
 
 
 def _structured(result: Any) -> dict[str, Any]:
@@ -247,6 +259,16 @@ def _initialize_git_repository(root: Path) -> None:
     _git(root, "config", "user.email", "test@example.invalid")
     _git(root, "add", ".")
     _git(root, "commit", "-m", "test: initialize MCP project")
+
+
+def _use_legacy_fixture_config(root: Path) -> None:
+    config = root / ".codex-os" / "project.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "schema_version: '1.1'", "schema_version: '1.0'"
+        ),
+        encoding="utf-8",
+    )
 
 
 def _git(root: Path, *arguments: str) -> str:

@@ -12,7 +12,7 @@ from codex_ai_os.domain.config import ProjectType, StrictModel
 
 
 class ProjectProfile(StrictModel):
-    schema_version: str = Field(pattern=r"^1\.0$")
+    schema_version: str = Field(pattern=r"^1\.[01]$")
     name: str = Field(pattern=r"^[a-z][a-z0-9-]{2,63}$")
     description: str = Field(min_length=1, max_length=240)
     project_types: tuple[ProjectType, ...]

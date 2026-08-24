@@ -125,7 +125,16 @@ class WorktreeService:
                 self.store.block(record.id, reason=str(exc))
             raise WorktreeServiceError("WORKTREE_BLOCKED", str(exc)) from exc
 
-    def cleanup(self, *, task_id: str, approved: bool, merged_into: str) -> None:
+    def cleanup(
+        self,
+        *,
+        task_id: str,
+        approved: bool,
+        merged_into: str,
+        requested_by: str = "codex-host",
+        approved_by: str = "requesting-user",
+        reason: str = "merged task Worktree cleanup",
+    ) -> None:
         record = self.store.get_for_task(task_id)
         if record is None:
             raise WorktreeServiceError(
@@ -138,10 +147,38 @@ class WorktreeService:
                 "WORKTREE_BLOCKED", f"worktree is not active: {record.status}"
             )
         try:
-            self.manager.remove(
-                record.to_spec(), approved=approved, merged_into=merged_into
+            state = self.manager.inspect(record.to_spec())
+        except GitWorktreeError as exc:
+            raise WorktreeServiceError("WORKTREE_BLOCKED", str(exc)) from exc
+        preconditions = {
+            "merged": approved,
+            "clean": not state.dirty,
+            "no_open_review": record.open_review_count == 0,
+            "no_unknown_files": not state.dirty,
+        }
+        try:
+            cleanup_id = self.store.request_cleanup(
+                record.id,
+                requested_by=requested_by,
+                reason=reason,
+                preconditions=preconditions,
             )
-            self.store.mark_cleaned(record.id, merged_into=merged_into)
+        except WorktreeStoreError as exc:
+            raise WorktreeServiceError("WORKTREE_BLOCKED", str(exc)) from exc
+        if not approved:
+            raise WorktreeServiceError(
+                "APPROVAL_REQUIRED", "worktree cleanup requires explicit approval"
+            )
+        try:
+            self.store.approve_cleanup(cleanup_id, approved_by=approved_by)
+            self.manager.remove(
+                record.to_spec(), approved=True, merged_into=merged_into
+            )
+            self.store.complete_cleanup(
+                cleanup_id,
+                merged_into=merged_into,
+                result={"merged_into": merged_into, "worktree": record.path.as_posix()},
+            )
         except (GitWorktreeError, WorktreeStoreError) as exc:
             raise WorktreeServiceError("WORKTREE_BLOCKED", str(exc)) from exc
 
