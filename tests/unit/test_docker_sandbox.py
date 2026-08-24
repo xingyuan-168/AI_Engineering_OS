@@ -52,6 +52,8 @@ def test_command_enforces_offline_non_root_read_only_resource_limits(tmp_path: P
     assert _option(command, "--cpus") == "2"
     assert _option(command, "--storage-opt") == "size=10G"
     assert _option(command, "--pull=never") is None
+    assert "/tmp:rw,noexec,nosuid,nodev,size=1g" in command
+    assert "/deps:rw,nosuid,nodev,size=1g" in command
     assert DEFAULT_EXECUTION_IMAGE in command
     assert all("docker.sock" not in argument for argument in command)
     assert all(str(tmp_path.resolve()) != argument for argument in command)

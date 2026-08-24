@@ -1,12 +1,16 @@
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.repository import RepositoryGovernanceService
+from codex_ai_os.application.verification import VerificationService
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
 from codex_ai_os.infrastructure.config import load_project_config
@@ -301,6 +305,26 @@ def test_migrated_workflow_refuses_legacy_approval_without_strong_bundle(
         engine.resume(started.run.id)
     assert blocked.value.code == "MIGRATION_REVALIDATION_REQUIRED"
     assert "G0" in str(blocked.value)
+
+
+def test_verification_requires_lock_bound_offline_wheelhouse(tmp_path: Path) -> None:
+    root = _fixture_project(tmp_path / "verification-cache")
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    service = VerificationService(root, bootstrap_dependencies=True)
+
+    with pytest.raises(ExecutionServiceError) as missing:
+        service._wheelhouse(root)
+    assert missing.value.code == "SANDBOX_DEPENDENCIES_UNAVAILABLE"
+
+    lock_hash = hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest()
+    wheelhouse = root / ".codex-os" / "cache" / "verification" / lock_hash
+    wheelhouse.mkdir(parents=True)
+    (wheelhouse / "requirements.txt").write_text(
+        "fixture==1.0 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8"
+    )
+    (wheelhouse / "fixture-1.0-py3-none-any.whl").write_bytes(b"fixture")
+    (wheelhouse / "audit-cache").mkdir()
+    assert service._wheelhouse(root) == wheelhouse
 
 
 class _GitRunner:
