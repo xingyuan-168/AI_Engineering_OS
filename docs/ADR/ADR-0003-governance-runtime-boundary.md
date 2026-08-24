@@ -1,8 +1,8 @@
 # ADR-0003：治理运行时边界、仓库拓扑与版本基线
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"proposed","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","AGENT-001","VERSION-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"accepted","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","AGENT-001","VERSION-001"]} -->
 
-- 状态：Proposed（随 G2 批准生效）
+- 状态：Accepted
 - 日期：2026-08-24
 - 范围：AI Engineering OS 0.2.0 的宿主边界、事实源、目录、正式仓库、多 Agent 集成与版本治理
 - 澄清：ADR-0002 第 5、8 条
@@ -23,7 +23,7 @@
 5. 多 Agent 使用“任务 Worktree -> 独立 Review/Handoff accepted -> Workflow 集成 Worktree -> G4 GitHub PR -> 目标分支”的拓扑。默认目标分支为 `main`，集成分支为 `workflow/<run-id>/integration`，任务分支为 `agent/<agent>/<task-id>`。
 6. 任务最大并行数为 4。只有声明写路径互不重叠、依赖已满足且影响分析确定的任务可并行；无法证明时默认串行。任务完成不能直接推进 Workflow，join barrier 只接受全部 reviewed/merged 的任务组。
 7. 集成合并持有独占锁并使用 `--no-ff`；Runtime 不自动 force push、rebase 或覆盖冲突。Worktree 删除需要已合并、干净、无开放 Review 和人工批准。
-8. 执行后端由项目策略选择 Docker 或 Podman，但必须使用锁定 digest、非 root、默认断网、只读根、最小权限、资源限制和受管挂载。沙箱不可用时实现、测试、删除、迁移和发布阻塞。
+8. 执行后端由项目策略选择 Docker 或 Podman，但必须使用锁定 digest、非 root、默认断网、只读根、最小权限、资源限制和受管挂载。0.2.0 目标镜像为 `python:3.12.14-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134`；沙箱不可用或镜像扫描未通过时实现、测试、删除、迁移和发布阻塞。
 9. 需求基线固定为 `REQ-1.6.2`；软件/CLI/Plugin 核心版本为 `0.2.0`；Plugin API 与配置 Schema 为 `1.1`；SQLite 使用追加迁移 `0004-0006`；Git tag 为 `v0.2.0`。
 10. G4 前不得合并 `main`、创建 tag、发布 GitHub Release 或部署。G4 批准必须绑定 GitHub PR、merge Commit、版本、制品 hash 和独立发布授权；发布权限不包含部署权限。
 
@@ -51,7 +51,7 @@
 
 ## 验证与生效条件
 
-1. G2 批准时将本 ADR 状态更新为 Accepted，并同步 `PROJECT_MASTER.md`、`ARCHITECTURE.md`、`WORKFLOW_SPEC.md`、`WORKTREE_SPEC.md`、`SECURITY.md` 与 `CHANGELOG.md`。
+1. G2 approval 必须绑定包含本 ADR 的证据 Commit；`PROJECT_MASTER.md`、`WORKFLOW_SPEC.md`、`WORKTREE_SPEC.md` 与 `CHANGELOG.md` 在实现任务中按影响分析同步。
 2. 公共 MCP E2E 必须证明三个以上 Agent 并行、冲突串行、Handoff accepted 后合并、join barrier、恢复和幂等。
 3. 正式仓库负向测试必须覆盖无 Git、无/非 GitHub remote、不可达、HEAD 未推送、脏工作树和冲突。
 4. G3 必须提供真实 Podman/Docker、Ruff、Pyright、pytest、Secret、依赖、代码 Review 与安全 Review 的结构化证据。
