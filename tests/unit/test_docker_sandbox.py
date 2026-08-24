@@ -54,6 +54,8 @@ def test_command_enforces_offline_non_root_read_only_resource_limits(tmp_path: P
     assert _option(command, "--pull=never") is None
     assert "/tmp:rw,noexec,nosuid,nodev,size=1g" in command
     assert "/deps:rw,nosuid,nodev,size=1g" in command
+    assert "GIT_CONFIG_KEY_0=safe.directory" in command
+    assert "GIT_CONFIG_VALUE_0=/workspace" in command  # pragma: allowlist secret
     assert DEFAULT_EXECUTION_IMAGE in command
     assert all("docker.sock" not in argument for argument in command)
     assert all(str(tmp_path.resolve()) != argument for argument in command)
@@ -110,6 +112,30 @@ def test_mount_source_must_stay_in_approved_project_directory(tmp_path: Path) ->
             worktree_manager=_AssignedWorktree(),
             docker_executable="docker",
         ).build_command(request)
+
+
+def test_git_metadata_cache_overlays_windows_worktree_pointer(tmp_path: Path) -> None:
+    metadata = tmp_path / ".codex-os" / "cache" / "verification" / "git" / ".git"
+    metadata.mkdir(parents=True)
+    pointer = metadata.parent / "worktree.git"
+    pointer.write_text("gitdir: /git-metadata\n", encoding="utf-8")
+    request = _request(
+        tmp_path,
+        mounts=(
+            SandboxMount(MountKind.GIT_METADATA, metadata, read_only=True),
+            SandboxMount(MountKind.GIT_POINTER, pointer, read_only=True),
+        ),
+    )
+
+    command = DockerSandbox(
+        tmp_path,
+        worktree_manager=_AssignedWorktree(),
+        docker_executable="docker",
+    ).build_command(request)
+
+    mounts = [command[index + 1] for index, value in enumerate(command) if value == "--mount"]
+    assert any("target=/git-metadata,readonly" in mount for mount in mounts)
+    assert any("target=/workspace/.git,readonly" in mount for mount in mounts)
 
 
 def test_run_blocks_when_docker_cli_is_missing(tmp_path: Path) -> None:

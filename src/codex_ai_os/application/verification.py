@@ -39,13 +39,10 @@ DEFAULT_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "python",
             "-m",
-            "pip_audit",
-            "-r",
+            "codex_ai_os.application.offline_audit",
+            "/cache/audit-snapshot.json",
             "/cache/requirements.txt",
-            "--no-deps",
-            "--disable-pip",
-            "--cache-dir",
-            "/cache/audit-cache",
+            "/workspace/uv.lock",
         ),
     ),
     (
@@ -136,6 +133,11 @@ class VerificationService:
         wheelhouse = (
             self._wheelhouse(assignment.path) if self.bootstrap_dependencies else None
         )
+        git_mounts = (
+            self._git_metadata(assignment.path, task_id, source_commit)
+            if self.bootstrap_dependencies
+            else None
+        )
         for name, command in checks:
             execution_id = new_id("EXEC")
             request = SandboxRequest(
@@ -149,8 +151,12 @@ class VerificationService:
                 ),
                 risk_level=RiskLevel.HIGH,
                 mounts=(
-                    (SandboxMount(MountKind.CACHE, wheelhouse, read_only=True),)
-                    if wheelhouse is not None
+                    (
+                        SandboxMount(MountKind.CACHE, wheelhouse, read_only=True),
+                        SandboxMount(MountKind.GIT_METADATA, git_mounts[0], read_only=True),
+                        SandboxMount(MountKind.GIT_POINTER, git_mounts[1], read_only=True),
+                    )
+                    if wheelhouse is not None and git_mounts is not None
                     else ()
                 ),
             )
@@ -213,17 +219,83 @@ class VerificationService:
         wheelhouse = self.root / ".codex-os" / "cache" / "verification" / lock_hash
         requirements = wheelhouse / "requirements.txt"
         wheels = tuple(wheelhouse.glob("*.whl")) if wheelhouse.is_dir() else ()
-        audit_cache = wheelhouse / "audit-cache"
+        audit_snapshot = wheelhouse / "audit-snapshot.json"
         if (
             not requirements.is_file()
             or not wheels
-            or not audit_cache.is_dir()
+            or not audit_snapshot.is_file()
         ):
             raise ExecutionServiceError(
                 "SANDBOX_DEPENDENCIES_UNAVAILABLE",
                 "offline verification cache is incomplete for the current uv.lock",
             )
         return wheelhouse
+
+    def _git_metadata(
+        self, source_root: Path, task_id: str, source_commit: str
+    ) -> tuple[Path, Path]:
+        clone = (
+            self.root
+            / ".codex-os"
+            / "cache"
+            / "verification"
+            / "git"
+            / task_id
+            / source_commit
+        )
+        git_directory = clone / ".git"
+        if not git_directory.is_dir():
+            if clone.exists():
+                raise ExecutionServiceError(
+                    "GIT_METADATA_INVALID",
+                    f"incomplete verification Git metadata cache: {clone}",
+                )
+            clone.parent.mkdir(parents=True, exist_ok=True)
+            self._run_git(
+                "clone",
+                "--no-checkout",
+                "--local",
+                "--",
+                str(source_root),
+                str(clone),
+            )
+            self._run_git("-C", str(clone), "read-tree", source_commit)
+            self._run_git(
+                "-C", str(clone), "update-ref", "--no-deref", "HEAD", source_commit
+            )
+        head = self._run_git("--git-dir", str(git_directory), "rev-parse", "HEAD")
+        if head != source_commit:
+            raise ExecutionServiceError(
+                "GIT_METADATA_INVALID", "verification Git metadata does not match source commit"
+            )
+        self._run_git("--git-dir", str(git_directory), "fsck", "--no-dangling")
+        pointer = clone / "worktree.git"
+        expected_pointer = "gitdir: /git-metadata\n"
+        if pointer.is_file():
+            if pointer.read_text(encoding="utf-8") != expected_pointer:
+                raise ExecutionServiceError(
+                    "GIT_METADATA_INVALID", "verification Git pointer was modified"
+                )
+        else:
+            relative = pointer.relative_to(self.root).as_posix()
+            DocumentManager(self.root).write_atomic(relative, expected_pointer, overwrite=False)
+        return git_directory, pointer
+
+    @staticmethod
+    def _run_git(*arguments: str) -> str:
+        completed = subprocess.run(
+            ["git", *arguments],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise ExecutionServiceError(
+                "GIT_METADATA_INVALID", detail or "verification Git metadata command failed"
+            )
+        return completed.stdout.decode("utf-8", errors="strict").strip()
 
     @staticmethod
     def _git_head(worktree: Path) -> str:

@@ -48,6 +48,10 @@
 - 新增 ADR-0002，统一双轴状态、G0-G4、Host Hook、Skill 路径、沙箱和迁移语义。
 - 新增根目录 `AGENTS.md`，区分用户请求、项目事实和原始输入文档。
 
+### Security
+
+- 正式 Verification 改用包含 Git 的 Python 3.12.14 Bookworm 固定镜像；依赖从 `uv.lock` 对应的只读 wheelhouse 按 hash 安装到临时 `/deps`，离线依赖审计使用绑定锁文件、平台、时效和完整依赖集合的快照。
+
 ### Environment
 
 - 当前 Windows 环境已验证 Git、uv、Python 3.12 与 SQLite FTS5。

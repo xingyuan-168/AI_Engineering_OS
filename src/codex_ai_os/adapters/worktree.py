@@ -92,6 +92,8 @@ class GitWorktreeManager:
         ):
             _validate_segment(label, value)
 
+        raw_target = self.worktrees_root / workflow_id / agent / task_id
+        self._assert_no_linked_ancestor(raw_target)
         if self._text(self.root, "status", "--porcelain", "--untracked-files=all"):
             raise GitWorktreeError("main worktree must be clean before worktree creation")
         if self._text(self.root, "diff", "--name-only", "--diff-filter=U"):
@@ -104,8 +106,6 @@ class GitWorktreeManager:
             raise GitWorktreeError(f"task branch already exists: {branch}")
         self._assert_remote_branch_absent(branch)
 
-        raw_target = self.worktrees_root / workflow_id / agent / task_id
-        self._assert_no_linked_ancestor(raw_target)
         target = raw_target.resolve(strict=False)
         worktrees_root = self.worktrees_root.resolve(strict=False)
         if not target.is_relative_to(worktrees_root) or target == worktrees_root:

@@ -323,8 +323,24 @@ def test_verification_requires_lock_bound_offline_wheelhouse(tmp_path: Path) -> 
         "fixture==1.0 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8"
     )
     (wheelhouse / "fixture-1.0-py3-none-any.whl").write_bytes(b"fixture")
-    (wheelhouse / "audit-cache").mkdir()
+    (wheelhouse / "audit-snapshot.json").write_text("{}", encoding="utf-8")
     assert service._wheelhouse(root) == wheelhouse
+
+
+def test_verification_builds_commit_bound_container_git_metadata(tmp_path: Path) -> None:
+    root = _fixture_project(tmp_path / "verification-git")
+    service = VerificationService(root, bootstrap_dependencies=True)
+    source_commit = service._git_head(root)
+
+    metadata, pointer = service._git_metadata(root, "TASK-GIT-METADATA", source_commit)
+
+    assert metadata.is_dir()
+    assert pointer.read_text(encoding="utf-8") == "gitdir: /git-metadata\n"
+    assert service._run_git("--git-dir", str(metadata), "rev-parse", "HEAD") == source_commit
+    assert service._git_metadata(root, "TASK-GIT-METADATA", source_commit) == (
+        metadata,
+        pointer,
+    )
 
 
 class _GitRunner:
