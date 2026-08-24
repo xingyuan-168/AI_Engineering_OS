@@ -239,6 +239,8 @@ class EvidenceStore:
 
     def audit_migrated_run(self, run_id: str) -> tuple[str, ...]:
         """Require every previously approved Gate to reference a complete 1.1 bundle."""
+        self._promote_legacy_artifacts(run_id)
+        self._rebuild_migrated_gate_bundles(run_id)
         with self.database.connection() as connection:
             approvals = connection.execute(
                 """
@@ -273,6 +275,111 @@ class EvidenceStore:
                 f"{sorted(set(missing))}",
             )
         return tuple(bundle_ids)
+
+    def _promote_legacy_artifacts(self, run_id: str) -> None:
+        """Re-verify legacy artifact rows before admitting them as 1.1 evidence."""
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT a.task_id, a.path, a.kind, a.content_hash, a.source_commit,
+                       t.worktree
+                FROM artifacts a
+                JOIN tasks t ON t.id = a.task_id
+                WHERE a.run_id = ? AND a.status = 'verified'
+                  AND a.source_commit IS NOT NULL AND t.worktree IS NOT NULL
+                ORDER BY a.created_at, a.path
+                """,
+                (run_id,),
+            ).fetchall()
+        verified: list[tuple[sqlite3.Row, ArtifactEvidenceInput]] = []
+        for row in rows:
+            artifact = ArtifactEvidenceInput(
+                path=str(row["path"]),
+                artifact_type=str(row["kind"]),
+                sha256=str(row["content_hash"]),
+                source_commit=str(row["source_commit"]),
+                task_id=str(row["task_id"]),
+            )
+            self._verify_artifact(Path(str(row["worktree"])).resolve(), artifact)
+            verified.append((row, artifact))
+        if not verified:
+            return
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                for row, artifact in verified:
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO artifact_evidence(
+                            id, bundle_id, run_id, task_id, path, artifact_type,
+                            content_hash, source_commit, status, created_at
+                        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'verified', ?)
+                        """,
+                        (
+                            new_id("ARTEVIDENCE"),
+                            run_id,
+                            str(row["task_id"]),
+                            artifact.path,
+                            artifact.artifact_type,
+                            artifact.sha256.casefold(),
+                            artifact.source_commit.casefold(),
+                            _utc_now(),
+                        ),
+                    )
+                connection.commit()
+            except sqlite3.Error:
+                connection.rollback()
+                raise
+
+    def _rebuild_migrated_gate_bundles(self, run_id: str) -> None:
+        with self.database.connection() as connection:
+            approvals = connection.execute(
+                """
+                SELECT id, gate, state_version, created_at
+                FROM approvals
+                WHERE run_id = ? AND decision = 'approved'
+                  AND (evidence_bundle_id IS NULL OR evidence_bundle_hash IS NULL)
+                ORDER BY created_at, gate
+                """,
+                (run_id,),
+            ).fetchall()
+        for approval in approvals:
+            with self.database.connection() as connection:
+                source = connection.execute(
+                    """
+                    SELECT source_commit FROM artifacts
+                    WHERE run_id = ? AND status = 'verified'
+                      AND source_commit IS NOT NULL AND created_at <= ?
+                    ORDER BY created_at DESC, source_commit DESC LIMIT 1
+                    """,
+                    (run_id, str(approval["created_at"])),
+                ).fetchone()
+            if source is None:
+                continue
+            bundle = self.build_gate_bundle(
+                run_id=run_id,
+                gate=Gate(str(approval["gate"])),
+                state_version=int(approval["state_version"]),
+                source_commit=str(source["source_commit"]),
+            )
+            if bundle.status != "complete" or bundle.missing:
+                continue
+            with self.database.connection() as connection:
+                try:
+                    connection.execute("BEGIN IMMEDIATE")
+                    connection.execute(
+                        """
+                        UPDATE approvals
+                        SET evidence_bundle_id = ?, evidence_bundle_hash = ?
+                        WHERE id = ? AND evidence_bundle_id IS NULL
+                          AND evidence_bundle_hash IS NULL
+                        """,
+                        (bundle.id, bundle.bundle_hash, str(approval["id"])),
+                    )
+                    connection.commit()
+                except sqlite3.Error:
+                    connection.rollback()
+                    raise
 
     def build_gate_bundle(
         self,
@@ -461,10 +568,15 @@ class EvidenceStore:
             row = connection.execute(
                 """
                 SELECT worktree FROM tasks
-                WHERE run_id = ? AND head_commit = ? AND worktree IS NOT NULL
+                WHERE run_id = ? AND worktree IS NOT NULL AND (
+                    head_commit = ? OR (
+                        json_valid(output_ref)
+                        AND json_extract(output_ref, '$.commit_sha') = ?
+                    )
+                )
                 ORDER BY updated_at DESC LIMIT 1
                 """,
-                (run_id, source_commit.casefold()),
+                (run_id, source_commit.casefold(), source_commit.casefold()),
             ).fetchone()
         if row is None:
             return ("source Worktree is unavailable",)

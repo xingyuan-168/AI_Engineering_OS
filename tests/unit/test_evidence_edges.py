@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -17,6 +18,104 @@ from codex_ai_os.domain.governance import (
 )
 from codex_ai_os.domain.workflow import Gate
 from codex_ai_os.infrastructure.evidence import EvidenceError, GateBundle
+
+
+def test_migrated_gate_artifacts_are_reverified_and_bound(tmp_path: Path) -> None:
+    root = _project(tmp_path / "migration")
+    engine = WorkflowEngine(root)
+    current = engine.start("Revalidate a migrated approval")
+    assert current.active_task is not None
+    metadata = json.dumps(
+        {
+            "schema_version": "1.1",
+            "document_version": "0.2.0",
+            "status": "approved",
+            "owner": "fixture-owner",
+            "requirement_refs": ["REQ-1.6.2"],
+        },
+        separators=(",", ":"),
+    )
+    for path, title in (
+        ("docs/PROJECT_MASTER.md", "Project Master"),
+        ("docs/SCOPE.md", "Scope"),
+    ):
+        (root / path).write_text(
+            f"<!-- codex-os-document: {metadata} -->\n# {title}\n\nVerified.\n",
+            encoding="utf-8",
+        )
+    _git(root, "add", "docs/PROJECT_MASTER.md", "docs/SCOPE.md")
+    _git(root, "commit", "-m", "docs: approve migrated gate evidence")
+    head = _git_output(root, "rev-parse", "HEAD")
+    artifacts: list[tuple[str, str]] = []
+    for path in ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"):
+        content = subprocess.check_output(["git", "-C", str(root), "show", f"{head}:{path}"])
+        artifacts.append((path, hashlib.sha256(content).hexdigest()))
+    with engine.store.database.connection() as connection:
+        connection.execute(
+            """
+            UPDATE tasks SET status = 'completed', head_commit = NULL,
+                output_ref = ?, worktree = ?, updated_at = ? WHERE id = ?
+            """,
+            (
+                json.dumps({"commit_sha": head}),
+                str(root),
+                "2026-01-01T00:00:01+00:00",
+                current.active_task.id,
+            ),
+        )
+        for path, digest in artifacts:
+            connection.execute(
+                """
+                INSERT INTO artifacts(
+                    id, run_id, task_id, path, kind, content_hash,
+                    source_commit, status, created_at
+                ) VALUES (?, ?, ?, ?, 'document', ?, ?, 'verified', ?)
+                """,
+                (
+                    f"ARTIFACT-{path.rsplit('/', 1)[-1]}",
+                    current.run.id,
+                    current.active_task.id,
+                    path,
+                    digest,
+                    head,
+                    "2026-01-01T00:00:01+00:00",
+                ),
+            )
+        connection.execute(
+            """
+            INSERT INTO approvals(
+                id, run_id, gate, decision, reviewer, reason,
+                evidence_refs_json, state_version, created_at,
+                evidence_bundle_id, evidence_bundle_hash, release_authority_json
+            ) VALUES (?, ?, 'G0', 'approved', 'legacy-owner', 'legacy approval',
+                      '[]', 1, ?, NULL, NULL, NULL)
+            """,
+            (
+                "APPROVAL-LEGACY-G0",
+                current.run.id,
+                "2026-01-01T00:00:02+00:00",
+            ),
+        )
+        connection.commit()
+
+    bundle_ids = engine.evidence_store.audit_migrated_run(current.run.id)
+
+    assert len(bundle_ids) == 1
+    with engine.store.database.connection() as connection:
+        approval = connection.execute(
+            """
+            SELECT evidence_bundle_id, evidence_bundle_hash
+            FROM approvals WHERE id = 'APPROVAL-LEGACY-G0'
+            """
+        ).fetchone()
+        promoted = connection.execute(
+            "SELECT COUNT(*) FROM artifact_evidence WHERE run_id = ?",
+            (current.run.id,),
+        ).fetchone()
+    assert approval is not None
+    assert approval["evidence_bundle_id"] == bundle_ids[0]
+    assert len(str(approval["evidence_bundle_hash"])) == 64
+    assert promoted is not None and promoted[0] == 2
 
 
 def test_evidence_store_rejects_missing_stale_and_unsafe_artifacts(tmp_path: Path) -> None:
