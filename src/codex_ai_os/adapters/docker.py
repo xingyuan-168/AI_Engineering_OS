@@ -143,6 +143,8 @@ class DockerSandbox:
             "/tmp:rw,noexec,nosuid,nodev,size=1g",
             "--tmpfs",
             "/deps:rw,nosuid,nodev,size=1g",
+            "--tmpfs",
+            "/dev/shm:rw,noexec,nosuid,nodev,size=64m",
             "--env",
             "HOME=/tmp",
             "--env",

@@ -54,6 +54,7 @@ def test_command_enforces_offline_non_root_read_only_resource_limits(tmp_path: P
     assert _option(command, "--pull=never") is None
     assert "/tmp:rw,noexec,nosuid,nodev,size=1g" in command
     assert "/deps:rw,nosuid,nodev,size=1g" in command
+    assert "/dev/shm:rw,noexec,nosuid,nodev,size=64m" in command
     assert "GIT_CONFIG_KEY_0=safe.directory" in command
     assert "GIT_CONFIG_VALUE_0=/workspace" in command  # pragma: allowlist secret
     assert DEFAULT_EXECUTION_IMAGE in command

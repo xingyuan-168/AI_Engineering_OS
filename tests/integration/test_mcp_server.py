@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -41,6 +42,7 @@ def test_mcp_lists_the_public_runtime_tools() -> None:
     }
 
 
+@pytest.mark.skipif(os.name != "nt", reason="the repository plugin launcher is Windows-only")
 def test_plugin_launcher_serves_the_same_tools_over_stdio() -> None:
     async def exercise() -> set[str]:
         launcher = (

@@ -33,7 +33,10 @@ DEFAULT_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("pytest", ("python", "-m", "pytest", "-q")),
     ("ruff", ("python", "-m", "ruff", "check", ".")),
     ("pyright", ("python", "-m", "pyright")),
-    ("secret-scan", ("python", "-m", "detect_secrets", "scan")),
+    (
+        "secret-scan",
+        ("python", "-m", "codex_ai_os.application.secret_scan", "/workspace"),
+    ),
     (
         "dependency-audit",
         (
