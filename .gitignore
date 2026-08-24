@@ -6,10 +6,12 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+*.log
 .venv/
 build/
 dist/
 *.egg-info/
+node_modules/
 
 # AI Engineering OS runtime state
 .codex-os/state/
@@ -17,6 +19,7 @@ dist/
 .codex-os/cache/
 .codex-os/context/
 .codex-os/tmp/
+.codex-os/artifacts/
 .worktrees/
 
 # Local secrets and editor state
