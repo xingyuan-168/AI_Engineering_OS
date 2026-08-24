@@ -54,11 +54,14 @@ class Database:
     def migrate(
         self,
         *,
-        app_version: str = "0.1.0",
+        app_version: str = "0.2.0",
         applied_by: str = "codex-os",
     ) -> MigrationResult:
         existed_before = self.path.exists() and self.path.stat().st_size > 0
         migrations = self._discover_migrations()
+        backup_path: Path | None = None
+        failure: MigrationError | None = None
+        applied_now: list[str] = []
 
         with self.connection() as connection:
             self._bootstrap_migration_table(connection)
@@ -66,7 +69,6 @@ class Database:
             self._validate_applied_checksums(applied, migrations)
             pending = [migration for migration in migrations if migration.version not in applied]
             backup_path = self._backup(connection) if existed_before and pending else None
-            applied_now: list[str] = []
 
             for migration in pending:
                 try:
@@ -92,21 +94,29 @@ class Database:
                     applied_now.append(migration.version)
                 except sqlite3.Error as exc:
                     connection.rollback()
-                    raise MigrationError(
+                    failure = MigrationError(
                         f"migration {migration.version}_{migration.name} failed: {exc}"
-                    ) from exc
+                    )
+                    failure.__cause__ = exc
+                    break
 
-            current = migrations[-1].version if migrations else None
-            return MigrationResult(tuple(applied_now), current, backup_path)
+            if failure is None:
+                try:
+                    self._integrity_check_connection(connection)
+                except MigrationError as exc:
+                    failure = exc
+
+        if failure is not None:
+            if backup_path is not None:
+                self._restore_backup(backup_path)
+            raise failure
+
+        current = migrations[-1].version if migrations else None
+        return MigrationResult(tuple(applied_now), current, backup_path)
 
     def integrity_check(self) -> None:
         with self.connection() as connection:
-            result = connection.execute("PRAGMA integrity_check").fetchone()
-            if result is None or result[0] != "ok":
-                raise MigrationError(f"SQLite integrity check failed: {result}")
-            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
-            if violations:
-                raise MigrationError(f"SQLite foreign-key violations: {len(violations)}")
+            self._integrity_check_connection(connection)
 
     def current_version(self) -> str | None:
         with self.connection() as connection:
@@ -174,10 +184,11 @@ class Database:
                 raise MigrationError(f"checksum mismatch for applied migration {version}")
 
     def _backup(self, connection: sqlite3.Connection) -> Path:
-        backup_dir = self.path.parent.parent / "backups"
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        backup_dir = self.path.parent / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        backup_path = backup_dir / f"{self.path.stem}-{stamp}.db"
+        backup_path = backup_dir / f"{self.path.stem}-{stamp}-pre-migration.db"
         with sqlite3.connect(backup_path) as backup_connection:
             connection.backup(backup_connection)
         digest = hashlib.sha256(backup_path.read_bytes()).hexdigest()
@@ -185,7 +196,36 @@ class Database:
             f"{digest}  {backup_path.name}\n",
             encoding="utf-8",
         )
+        self._verify_backup(backup_path)
         return backup_path
+
+    def _verify_backup(self, backup_path: Path) -> None:
+        checksum_path = backup_path.with_suffix(".db.sha256")
+        try:
+            expected = checksum_path.read_text(encoding="utf-8").split()[0]
+        except (OSError, IndexError) as exc:
+            raise MigrationError(f"backup checksum cannot be read: {checksum_path}") from exc
+        actual = hashlib.sha256(backup_path.read_bytes()).hexdigest()
+        if actual != expected:
+            raise MigrationError(f"backup checksum mismatch: {backup_path}")
+        with sqlite3.connect(backup_path) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            self._integrity_check_connection(connection)
+
+    def _restore_backup(self, backup_path: Path) -> None:
+        self._verify_backup(backup_path)
+        with sqlite3.connect(backup_path) as source, sqlite3.connect(self.path) as target:
+            source.backup(target)
+        self.integrity_check()
+
+    @staticmethod
+    def _integrity_check_connection(connection: sqlite3.Connection) -> None:
+        result = connection.execute("PRAGMA integrity_check").fetchone()
+        if result is None or result[0] != "ok":
+            raise MigrationError(f"SQLite integrity check failed: {result}")
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise MigrationError(f"SQLite foreign-key violations: {len(violations)}")
 
 
 def _split_sql(script: str) -> list[str]:

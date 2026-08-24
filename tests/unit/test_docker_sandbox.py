@@ -94,7 +94,7 @@ def test_image_must_be_locked_to_full_digest(tmp_path: Path) -> None:
 
 
 def test_mount_source_must_stay_in_approved_project_directory(tmp_path: Path) -> None:
-    (tmp_path / "artifacts").mkdir()
+    (tmp_path / ".codex-os" / "artifacts").mkdir(parents=True)
     outside = tmp_path.parent / "outside-artifacts"
     outside.mkdir(exist_ok=True)
     request = _request(

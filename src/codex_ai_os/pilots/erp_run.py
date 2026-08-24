@@ -50,6 +50,7 @@ class ErpPilotRunner:
             name="ERP Procurement Pilot",
             project_type=ProjectType.BACKEND,
             git_push_policy=GitPushPolicy.FIXTURE_LOCAL_ONLY,
+            schema_version="1.0",
         )
         _git(root, "add", ".")
         _git(root, "commit", "-m", "chore: initialize ERP pilot baseline")
@@ -227,7 +228,7 @@ def _phase_files(
             "reports/REVIEW.md": "# Review\n\nResult: approved.\n",
         }
     if phase is WorkflowPhase.RELEASE:
-        prefix = "dist/release-candidate"
+        prefix = "release"
         manifest = json.dumps(
             {"run_id": run_id, "task_id": task_id, "version": "0.1.0"},
             indent=2,

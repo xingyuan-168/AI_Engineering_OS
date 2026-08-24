@@ -25,7 +25,7 @@ def test_empty_repository_reaches_audited_erp_release_candidate(tmp_path: Path) 
     assert len(report.task_commits) == 8
     assert len(set(report.task_commits)) == 8
     assert len(report.release_paths) == 5
-    assert all(path.startswith("dist/release-candidate/") for path in report.release_paths)
+    assert all(path.startswith("release/") for path in report.release_paths)
     assert _git(report.project_root, "status", "--porcelain") == ""
 
     database = report.project_root / ".codex-os" / "state" / "state.db"

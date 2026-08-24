@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -15,12 +15,25 @@ from codex_ai_os.adapters.git import (
     GitEvidenceService,
     GitEvidenceVerifier,
 )
+from codex_ai_os.application.coordination import CoordinationService, IntegrationResult
+from codex_ai_os.application.g4 import (
+    G4Publisher,
+    GitHubReleaseGovernanceService,
+    ReleaseGovernanceError,
+)
+from codex_ai_os.application.repository import (
+    RepositoryGovernanceError,
+    RepositoryGovernanceService,
+)
+from codex_ai_os.application.routing import ProfileRouter
 from codex_ai_os.application.worktree import (
     TaskWorktreeAllocator,
     WorktreeService,
     WorktreeServiceError,
 )
-from codex_ai_os.domain.config import GitPushPolicy
+from codex_ai_os.domain.config import GitPushPolicy, RiskLevel
+from codex_ai_os.domain.coordination import HandoffReviewInput, TaskBlueprint
+from codex_ai_os.domain.governance import G4ApprovalInput
 from codex_ai_os.domain.ids import new_id
 from codex_ai_os.domain.workflow import (
     AUTOMATIC_NEXT_PHASE,
@@ -39,7 +52,9 @@ from codex_ai_os.domain.workflow import (
     WorkflowRun,
 )
 from codex_ai_os.infrastructure.config import load_project_config
+from codex_ai_os.infrastructure.coordination import CoordinationError, CoordinationStore
 from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.evidence import EvidenceError, EvidenceStore
 from codex_ai_os.infrastructure.workflows import (
     WorkflowConflictError,
     WorkflowNotFoundError,
@@ -60,6 +75,8 @@ class WorkflowResult:
     run: WorkflowRun
     next_action: NextAction | None
     active_task: TaskRecord | None
+    next_actions: tuple[NextAction, ...] = ()
+    integration_result: IntegrationResult | None = None
 
 
 class WorkflowEngine:
@@ -69,16 +86,27 @@ class WorkflowEngine:
         *,
         git_evidence: GitEvidenceVerifier | None = None,
         worktrees: TaskWorktreeAllocator | None = None,
+        g4_publisher: G4Publisher | None = None,
     ) -> None:
         self.config = load_project_config(project_root.resolve())
         database = Database(self.config.root / ".codex-os" / "state" / "state.db")
         database.migrate()
         self.store = WorkflowStore(database)
+        self.evidence_store = EvidenceStore(database, self.config.root)
+        self.coordination_store = CoordinationStore(database)
         self.worktree_store = WorktreeStore(database)
         self.git_evidence = git_evidence
         self.worktrees = worktrees or WorktreeService(self.config.root)
+        self.g4_publisher = g4_publisher or GitHubReleaseGovernanceService(self.config.root)
 
-    def start(self, goal: str, *, workflow_name: str = "new-project") -> WorkflowResult:
+    def start(
+        self,
+        goal: str,
+        *,
+        workflow_name: str = "new-project",
+        profiles: tuple[str, ...] = (),
+        target_branch: str | None = None,
+    ) -> WorkflowResult:
         normalized_goal = goal.strip()
         if not normalized_goal:
             raise WorkflowError("CONFIG_INVALID", "goal cannot be empty", 2)
@@ -95,6 +123,18 @@ class WorkflowEngine:
         )
         if existing is not None:
             return self._result(existing)
+
+        selected_target = target_branch or self.config.target_branch
+        selected_profiles = profiles or _default_profiles(self.config.project_type.value)
+        if len(selected_profiles) > self.config.max_parallel_agents:
+            raise WorkflowError("CONFIG_INVALID", "profiles exceed max_parallel_agents", 2)
+        if self.config.schema_version == "1.1":
+            try:
+                RepositoryGovernanceService(
+                    self.config.root, config=self.config
+                ).require_ready(target_branch=selected_target)
+            except RepositoryGovernanceError as exc:
+                raise WorkflowError(exc.code, str(exc), 40) from exc
 
         now = _utc_now()
         run_id = new_id("RUN")
@@ -117,8 +157,17 @@ class WorkflowEngine:
             config_hash=self.store.project_config_hash(self.config.project_id),
             created_at=now,
             updated_at=now,
+            profiles=selected_profiles,
+            target_branch=selected_target,
+            max_parallel_agents=self.config.max_parallel_agents,
         )
         created = self.store.create_run(run, task)
+        if self.config.schema_version == "1.1":
+            ProfileRouter(self.store.database, self.config).route(
+                run_id=created.id,
+                requested_profiles=selected_profiles,
+                source_commit=None,
+            )
         self._allocate_or_block(created, task, base_ref="HEAD")
         return self._result(self.store.get_run(created.id))
 
@@ -130,11 +179,14 @@ class WorkflowEngine:
 
     def complete_task(self, run_id: str, completion: TaskCompletion) -> WorkflowResult:
         run = self._get_run(run_id)
+        self._require_migration_revalidation(run)
         task = self._get_task(completion.task_id)
         completion_json = completion.model_dump_json()
         if task.run_id != run.id:
             raise WorkflowError("CONFIG_INVALID", "task does not belong to workflow run", 2)
         if task.status is TaskStatus.COMPLETED:
+            if task.task_group_id is not None and task.head_commit == completion.commit_sha:
+                return self._result(run)
             if task.output_ref == completion_json:
                 return self._result(run)
             raise WorkflowError(
@@ -143,7 +195,11 @@ class WorkflowEngine:
                 30,
             )
 
-        action = _action_from_checkpoint(run.checkpoint)
+        actions = _actions_from_checkpoint(run.checkpoint)
+        action = next(
+            (candidate for candidate in actions if candidate.task_id == completion.task_id),
+            None,
+        )
         if (
             action is None
             or action.kind is not ActionKind.MODEL_TASK
@@ -167,6 +223,7 @@ class WorkflowEngine:
             path
             for path in completion.artifact_paths_and_hashes
             if not _artifact_path_allowed(path, action.allowed_paths)
+            and not path.startswith(f".codex-os/artifacts/{run.id}/")
         ]
         if disallowed:
             raise WorkflowError(
@@ -190,7 +247,16 @@ class WorkflowEngine:
                         base_commit=(assignment.base_commit if assignment is not None else None),
                         allowed_paths=action.allowed_paths,
                     )
-                evidence = verifier.verify(completion)
+                repository_artifacts = {
+                    path: digest
+                    for path, digest in completion.artifact_paths_and_hashes.items()
+                    if not path.startswith(f".codex-os/artifacts/{run.id}/")
+                }
+                evidence = verifier.verify(
+                    completion.model_copy(
+                        update={"artifact_paths_and_hashes": repository_artifacts}
+                    )
+                )
             except GitEvidenceError as exc:
                 raise WorkflowError("GIT_EVIDENCE_INVALID", str(exc), 40) from exc
             verified_git_evidence = {
@@ -202,6 +268,42 @@ class WorkflowEngine:
                 "verified_at": evidence.verified_at,
                 "changed_paths": list(evidence.changed_paths),
             }
+            if self.config.schema_version == "1.1":
+                try:
+                    self.evidence_store.record_task_evidence(
+                        run_id=run.id,
+                        task_id=task.id,
+                        artifacts=completion.artifacts,
+                        checks=completion.checks,
+                    )
+                except EvidenceError as exc:
+                    raise WorkflowError(exc.code, str(exc), 40) from exc
+
+        if task.task_group_id is not None:
+            if completion.commit_sha is None:
+                raise WorkflowError("GIT_EVIDENCE_REQUIRED", "task Commit is required", 40)
+            try:
+                handoff_id = self.coordination_store.submit_handoff(
+                    task_id=task.id,
+                    source_commit=completion.commit_sha,
+                    artifact_refs=completion.artifact_paths_and_hashes,
+                    checks=tuple(check.name for check in completion.checks),
+                )
+                remaining = tuple(
+                    candidate for candidate in actions if candidate.task_id != task.id
+                )
+                checkpoint = _coordination_checkpoint(
+                    run.checkpoint,
+                    remaining,
+                    task_group_id=task.task_group_id,
+                    waiting_handoff=handoff_id,
+                    last_commit_sha=completion.commit_sha,
+                )
+                updated = self.store.update_checkpoint(run=run, checkpoint=checkpoint)
+            except (CoordinationError, WorkflowConflictError) as exc:
+                code = exc.code if isinstance(exc, CoordinationError) else "STATE_CONFLICT"
+                raise WorkflowError(code, str(exc), 30) from exc
+            return self._result(updated)
 
         next_version = run.state_version + 1
         next_task: TaskRecord | None = None
@@ -266,8 +368,10 @@ class WorkflowEngine:
         approved: bool,
         reviewer: str,
         reason: str,
+        g4_evidence: G4ApprovalInput | None = None,
     ) -> WorkflowResult:
         run = self._get_run(run_id)
+        self._require_migration_revalidation(run)
         if run.run_status is not RunStatus.NEEDS_APPROVAL:
             raise WorkflowError("APPROVAL_REQUIRED", "workflow is not waiting for approval", 20)
         pending_gate = run.checkpoint.get("pending_gate")
@@ -280,6 +384,59 @@ class WorkflowEngine:
         if not reviewer.strip() or not reason.strip():
             raise WorkflowError("CONFIG_INVALID", "reviewer and reason are required", 2)
 
+        bundle = None
+        if approved and self.config.schema_version == "1.1":
+            source_commit = str(run.checkpoint.get("last_commit_sha") or "")
+            if not source_commit:
+                raise WorkflowError(
+                    "EVIDENCE_INCOMPLETE", "gate has no commit-bound source evidence", 40
+                )
+            try:
+                bundle = self.evidence_store.build_gate_bundle(
+                    run_id=run.id,
+                    gate=gate,
+                    state_version=run.state_version,
+                    source_commit=source_commit,
+                )
+                self.evidence_store.require_complete(bundle)
+            except EvidenceError as exc:
+                raise WorkflowError(exc.code, str(exc), 40) from exc
+
+        publication: dict[str, Any] | None = None
+        if approved and gate is Gate.G4 and self.config.schema_version == "1.1":
+            if g4_evidence is None:
+                raise WorkflowError(
+                    "RELEASE_AUTHORITY_REQUIRED",
+                    "G4 requires PR, merge, version, and explicit release authorization evidence",
+                    20,
+                )
+            try:
+                publication = asdict(
+                    self.g4_publisher.authorize_and_publish(run, g4_evidence)
+                )
+            except ReleaseGovernanceError as exc:
+                raise WorkflowError(exc.code, str(exc), 50) from exc
+
+        if approved and gate is Gate.G2 and self.config.schema_version == "1.1":
+            assert bundle is not None
+            return self._approve_g2_coordination(
+                run,
+                reviewer=reviewer,
+                reason=reason,
+                evidence_bundle_id=bundle.id,
+                evidence_bundle_hash=bundle.bundle_hash,
+            )
+
+        if approved and gate is Gate.G3 and self.config.schema_version == "1.1":
+            assert bundle is not None
+            return self._approve_g3_coordination(
+                run,
+                reviewer=reviewer,
+                reason=reason,
+                evidence_bundle_id=bundle.id,
+                evidence_bundle_hash=bundle.bundle_hash,
+            )
+
         next_version = run.state_version + 1
         next_task: TaskRecord | None = None
         if approved:
@@ -287,7 +444,11 @@ class WorkflowEngine:
             if target_phase is WorkflowPhase.COMPLETED:
                 target_status = RunStatus.COMPLETED
                 next_action = NextAction(kind=ActionKind.COMPLETE)
-                checkpoint = _checkpoint(next_action, approved_gate=gate)
+                checkpoint = _checkpoint(
+                    next_action,
+                    approved_gate=gate,
+                    release_publication=publication,
+                )
             else:
                 target_status = RunStatus.RUNNING
                 next_task, next_action = self._task_and_action(
@@ -317,6 +478,11 @@ class WorkflowEngine:
                 target_status=target_status,
                 checkpoint=checkpoint,
                 next_task=next_task,
+                evidence_bundle_id=bundle.id if bundle is not None else None,
+                evidence_bundle_hash=bundle.bundle_hash if bundle is not None else None,
+                release_authority=(
+                    g4_evidence.model_dump(mode="json") if g4_evidence is not None else None
+                ),
             )
         except WorkflowConflictError as exc:
             raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
@@ -325,8 +491,276 @@ class WorkflowEngine:
             self._allocate_or_block(updated, next_task, base_ref=base_ref)
         return self._result(self.store.get_run(updated.id))
 
+    def review_handoff(
+        self, review: HandoffReviewInput
+    ) -> WorkflowResult:
+        handoff_task = self._task_for_handoff(review.handoff_id)
+        self._require_migration_revalidation(self._get_run(handoff_task.run_id))
+        try:
+            integration = CoordinationService(self.config.root).review_and_integrate(review)
+        except CoordinationError as exc:
+            raise WorkflowError(exc.code, str(exc), 40) from exc
+        run = self._get_run(integration.task_group.run_id)
+        if integration.task_group.status == "completed":
+            phase = WorkflowPhase(integration.task_group.phase)
+            if phase is WorkflowPhase.IMPLEMENTATION:
+                return self._advance_to_coordinated_phase(
+                    run, WorkflowPhase.VERIFY, integration
+                )
+            if phase is WorkflowPhase.VERIFY:
+                return self._advance_group_to_gate(run, Gate.G3, integration)
+            if phase is WorkflowPhase.RELEASE:
+                return self._advance_to_coordinated_phase(
+                    run, WorkflowPhase.MEMORY, integration
+                )
+            if phase is WorkflowPhase.MEMORY:
+                return self._advance_group_to_gate(run, Gate.G4, integration)
+            raise WorkflowError(
+                "STATE_CONFLICT", f"unsupported coordinated phase join: {phase.value}", 30
+            )
+
+        if integration.status == "rejected":
+            task = self._get_task(integration.task_group.ready_task_ids[0]) if (
+                integration.task_group.ready_task_ids
+            ) else self._task_for_handoff(review.handoff_id)
+            actions = (self._action_for_coordinated_task(task),)
+            status = RunStatus.RUNNING
+        elif integration.status in {"blocked", "conflicted"}:
+            actions = ()
+            status = RunStatus.BLOCKED
+        else:
+            actions = self._schedule_group(run, integration.task_group.id)
+            status = RunStatus.RUNNING
+        checkpoint = _coordination_checkpoint(
+            run.checkpoint,
+            actions,
+            task_group_id=integration.task_group.id,
+            waiting_handoff=None,
+            blocker=(
+                {"code": "MERGE_CONFLICT", "paths": list(integration.conflict_paths)}
+                if integration.status == "conflicted"
+                else None
+            ),
+        )
+        try:
+            updated = self.store.update_checkpoint(
+                run=run,
+                checkpoint=checkpoint,
+                status=status,
+            )
+        except WorkflowConflictError as exc:
+            raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
+        return self._result(updated, integration_result=integration)
+
+    def _approve_g2_coordination(
+        self,
+        run: WorkflowRun,
+        *,
+        reviewer: str,
+        reason: str,
+        evidence_bundle_id: str,
+        evidence_bundle_hash: str,
+    ) -> WorkflowResult:
+        source_commit = str(run.checkpoint.get("last_commit_sha") or "")
+        initial_checkpoint: dict[str, Any] = {
+            "next_action": None,
+            "next_actions": [],
+            "approved_gate": Gate.G2.value,
+            "pending_gate": None,
+            "last_commit_sha": source_commit,
+        }
+        try:
+            approved = self.store.approval_transition(
+                run=run,
+                gate=Gate.G2,
+                approved=True,
+                reviewer=reviewer,
+                reason=reason,
+                target_phase=WorkflowPhase.IMPLEMENTATION,
+                target_status=RunStatus.RUNNING,
+                checkpoint=initial_checkpoint,
+                next_task=None,
+                evidence_bundle_id=evidence_bundle_id,
+                evidence_bundle_hash=evidence_bundle_hash,
+            )
+            integration_path = CoordinationService(
+                self.config.root
+            ).ensure_integration_worktree(run.id, base_commit=source_commit)
+            current = self._get_run(approved.id)
+            routing = ProfileRouter(self.store.database, self.config).route(
+                run_id=run.id,
+                requested_profiles=run.profiles,
+                source_commit=source_commit,
+            )
+            group, _planned = self.coordination_store.create_group(
+                run_id=run.id,
+                name="implementation",
+                phase=WorkflowPhase.IMPLEMENTATION.value,
+                base_commit=source_commit,
+                blueprints=routing.tasks,
+            )
+            current = self._get_run(current.id)
+            actions = self._schedule_group(current, group.id)
+            checkpoint = _coordination_checkpoint(
+                current.checkpoint,
+                actions,
+                task_group_id=group.id,
+                waiting_handoff=None,
+                integration_worktree=integration_path.as_posix(),
+            )
+            updated = self.store.update_checkpoint(run=current, checkpoint=checkpoint)
+        except (WorkflowConflictError, CoordinationError) as exc:
+            code = exc.code if isinstance(exc, CoordinationError) else "STATE_CONFLICT"
+            raise WorkflowError(code, str(exc), 40) from exc
+        return self._result(updated)
+
+    def _approve_g3_coordination(
+        self,
+        run: WorkflowRun,
+        *,
+        reviewer: str,
+        reason: str,
+        evidence_bundle_id: str,
+        evidence_bundle_hash: str,
+    ) -> WorkflowResult:
+        initial_checkpoint: dict[str, Any] = {
+            "next_action": None,
+            "next_actions": [],
+            "approved_gate": Gate.G3.value,
+            "pending_gate": None,
+            "last_commit_sha": run.integration_head,
+        }
+        try:
+            approved = self.store.approval_transition(
+                run=run,
+                gate=Gate.G3,
+                approved=True,
+                reviewer=reviewer,
+                reason=reason,
+                target_phase=WorkflowPhase.RELEASE,
+                target_status=RunStatus.RUNNING,
+                checkpoint=initial_checkpoint,
+                next_task=None,
+                evidence_bundle_id=evidence_bundle_id,
+                evidence_bundle_hash=evidence_bundle_hash,
+            )
+            return self._start_coordinated_phase(
+                approved, WorkflowPhase.RELEASE, approved.integration_head or ""
+            )
+        except (WorkflowConflictError, CoordinationError) as exc:
+            code = exc.code if isinstance(exc, CoordinationError) else "STATE_CONFLICT"
+            raise WorkflowError(code, str(exc), 40) from exc
+
+    def _advance_to_coordinated_phase(
+        self,
+        run: WorkflowRun,
+        phase: WorkflowPhase,
+        integration: IntegrationResult,
+    ) -> WorkflowResult:
+        return self._start_coordinated_phase(
+            run,
+            phase,
+            integration.integration_head,
+            integration_result=integration,
+            transition_required=True,
+        )
+
+    def _start_coordinated_phase(
+        self,
+        run: WorkflowRun,
+        phase: WorkflowPhase,
+        base_commit: str,
+        *,
+        integration_result: IntegrationResult | None = None,
+        transition_required: bool = False,
+    ) -> WorkflowResult:
+        if not base_commit:
+            raise WorkflowError("GIT_EVIDENCE_INVALID", "integration HEAD is missing", 40)
+        definition = PHASE_DEFINITIONS[phase]
+        blueprint = TaskBlueprint(
+            key=f"{phase.value}-governed",
+            agent=definition.agent,
+            skill=definition.skill,
+            prompt=definition.prompt,
+            allowed_paths=definition.allowed_paths,
+        )
+        try:
+            group, _planned = self.coordination_store.create_group(
+                run_id=run.id,
+                name=phase.value,
+                phase=phase.value,
+                base_commit=base_commit,
+                blueprints=(blueprint,),
+            )
+            actions = self._schedule_group(run, group.id)
+            checkpoint = _coordination_checkpoint(
+                run.checkpoint,
+                actions,
+                task_group_id=group.id,
+                waiting_handoff=None,
+                last_commit_sha=base_commit,
+            )
+            if transition_required:
+                updated = self.store.advance_after_task_group(
+                    run=run,
+                    checkpoint=checkpoint,
+                    integration_head=base_commit,
+                    target_phase=phase,
+                    target_status=RunStatus.RUNNING,
+                )
+            else:
+                updated = self.store.update_checkpoint(run=run, checkpoint=checkpoint)
+        except (WorkflowConflictError, CoordinationError) as exc:
+            code = exc.code if isinstance(exc, CoordinationError) else "STATE_CONFLICT"
+            raise WorkflowError(code, str(exc), 40) from exc
+        return self._result(updated, integration_result=integration_result)
+
+    def _advance_group_to_gate(
+        self, run: WorkflowRun, gate: Gate, integration: IntegrationResult
+    ) -> WorkflowResult:
+        action = NextAction(
+            kind=ActionKind.APPROVAL,
+            gate=gate,
+            prompt=f"Review evidence and approve or reject {gate.value}.",
+            risk_level=run.risk_level,
+        )
+        checkpoint = _checkpoint(
+            action,
+            pending_gate=gate,
+            last_completed_task=integration.handoff_id,
+            last_commit_sha=integration.integration_head,
+        )
+        try:
+            updated = self.store.advance_after_task_group(
+                run=run,
+                checkpoint=checkpoint,
+                integration_head=integration.integration_head,
+                target_phase=WorkflowPhase(integration.task_group.phase),
+                target_status=RunStatus.NEEDS_APPROVAL,
+            )
+        except WorkflowConflictError as exc:
+            raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
+        return self._result(updated, integration_result=integration)
+
     def resume(self, run_id: str) -> WorkflowResult:
         run = self._get_run(run_id)
+        if run.migration_revalidation_required:
+            try:
+                repository = RepositoryGovernanceService(
+                    self.config.root, config=self.config
+                ).require_ready(target_branch=run.target_branch)
+                bundle_ids = self.evidence_store.audit_migrated_run(run.id)
+                run = self.store.complete_migration_revalidation(
+                    run=run,
+                    repository_check_hash=repository.check_hash,
+                    evidence_bundle_ids=bundle_ids,
+                )
+            except (RepositoryGovernanceError, EvidenceError) as exc:
+                raise WorkflowError(
+                    "MIGRATION_REVALIDATION_REQUIRED", str(exc), 40
+                ) from exc
+            except WorkflowConflictError as exc:
+                raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
         if run.run_status in {RunStatus.RUNNING, RunStatus.NEEDS_APPROVAL}:
             return self._result(run)
         if run.run_status in {RunStatus.COMPLETED, RunStatus.CANCELLED}:
@@ -359,6 +793,7 @@ class WorkflowEngine:
 
     def pause(self, run_id: str, *, reason: str) -> WorkflowResult:
         run = self._get_run(run_id)
+        self._require_migration_revalidation(run)
         normalized = reason.strip()
         if not normalized:
             raise WorkflowError("CONFIG_INVALID", "pause reason is required", 2)
@@ -370,17 +805,104 @@ class WorkflowEngine:
             raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
         return self._result(updated)
 
-    def _result(self, run: WorkflowRun) -> WorkflowResult:
-        action = _action_from_checkpoint(run.checkpoint)
-        active_task = self.store.active_task(run.id)
-        if action is not None and active_task is not None and action.kind is ActionKind.MODEL_TASK:
-            action = action.model_copy(
-                update={
-                    "branch": active_task.branch,
-                    "worktree": active_task.worktree,
-                }
+    @staticmethod
+    def _require_migration_revalidation(run: WorkflowRun) -> None:
+        if run.migration_revalidation_required:
+            raise WorkflowError(
+                "MIGRATION_REVALIDATION_REQUIRED",
+                "resume the workflow to run repository and Gate evidence revalidation",
+                40,
             )
-        return WorkflowResult(run=run, next_action=action, active_task=active_task)
+
+    def _result(
+        self,
+        run: WorkflowRun,
+        *,
+        integration_result: IntegrationResult | None = None,
+    ) -> WorkflowResult:
+        actions = _actions_from_checkpoint(run.checkpoint)
+        tasks = {task.id: task for task in self.store.active_tasks(run.id)}
+        hydrated: list[NextAction] = []
+        for action in actions:
+            task = tasks.get(action.task_id or "")
+            if task is not None and action.kind is ActionKind.MODEL_TASK:
+                action = action.model_copy(
+                    update={"branch": task.branch, "worktree": task.worktree}
+                )
+            hydrated.append(action)
+        next_actions = tuple(hydrated)
+        next_action = next_actions[0] if len(next_actions) == 1 else None
+        active_task = next(iter(tasks.values()), None)
+        return WorkflowResult(
+            run=run,
+            next_action=next_action,
+            active_task=active_task,
+            next_actions=next_actions,
+            integration_result=integration_result,
+        )
+
+    def _schedule_group(self, run: WorkflowRun, group_id: str) -> tuple[NextAction, ...]:
+        planned = self.coordination_store.ready_tasks(
+            group_id, limit=run.max_parallel_agents
+        )
+        actions: list[NextAction] = []
+        base_ref = run.integration_head or run.base_commit or "HEAD"
+        for item in planned:
+            task = self._get_task(item.id)
+            if task.worktree is None:
+                self._allocate_or_block(run, task, base_ref=base_ref)
+                task = self._get_task(item.id)
+            actions.append(
+                NextAction(
+                    kind=ActionKind.MODEL_TASK,
+                    task_id=task.id,
+                    agent=item.agent,
+                    skill=item.skill,
+                    prompt=item.prompt,
+                    input_artifacts=(
+                        "docs/ARCHITECTURE.md",
+                        "docs/API_SPEC.md",
+                        "docs/DATABASE.md",
+                    ),
+                    output_schema={
+                        "type": "object",
+                        "required": ["summary", "artifacts", "checks"],
+                    },
+                    allowed_paths=item.allowed_paths,
+                    branch=task.branch,
+                    worktree=task.worktree,
+                    risk_level=RiskLevel.HIGH,
+                    requires_repository_change=True,
+                )
+            )
+        return tuple(actions)
+
+    def _action_for_coordinated_task(self, task: TaskRecord) -> NextAction:
+        if task.skill is None or task.prompt is None:
+            raise WorkflowError("RECOVERY_UNAVAILABLE", "coordinated task contract is incomplete")
+        return NextAction(
+            kind=ActionKind.MODEL_TASK,
+            task_id=task.id,
+            agent=task.agent,
+            skill=task.skill,
+            prompt=task.prompt,
+            input_artifacts=("docs/ARCHITECTURE.md", "docs/API_SPEC.md", "docs/DATABASE.md"),
+            output_schema={"type": "object", "required": ["artifacts", "checks"]},
+            allowed_paths=task.allowed_paths,
+            branch=task.branch,
+            worktree=task.worktree,
+            risk_level=RiskLevel.HIGH,
+            requires_repository_change=True,
+        )
+
+    def _task_for_handoff(self, handoff_id: str) -> TaskRecord:
+        with self.store.database.connection() as connection:
+            row = connection.execute(
+                "SELECT task_id FROM handoffs WHERE id = ?", (handoff_id,)
+            ).fetchone()
+        if row is None:
+            raise WorkflowError("RECOVERY_UNAVAILABLE", "Handoff task not found")
+        return self._get_task(str(row["task_id"]))
 
     def _allocate_or_block(
         self,
@@ -489,6 +1011,7 @@ def _checkpoint(
     last_commit_sha: str | None = None,
     evidence_refs: tuple[str, ...] = (),
     resumed_from: str | None = None,
+    release_publication: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "next_action": action.model_dump(mode="json"),
@@ -498,6 +1021,7 @@ def _checkpoint(
         "last_commit_sha": last_commit_sha,
         "evidence_refs": list(evidence_refs),
         "resumed_from": resumed_from,
+        "release_publication": release_publication,
     }
 
 
@@ -511,6 +1035,60 @@ def _action_from_checkpoint(checkpoint: dict[str, Any]) -> NextAction | None:
         return NextAction.model_validate(cast(dict[str, Any], raw))
     except ValidationError as exc:
         raise WorkflowError("RECOVERY_UNAVAILABLE", f"invalid next action: {exc}", 30) from exc
+
+
+def _actions_from_checkpoint(checkpoint: dict[str, Any]) -> tuple[NextAction, ...]:
+    raw_actions = checkpoint.get("next_actions")
+    if raw_actions is None:
+        action = _action_from_checkpoint(checkpoint)
+        return (action,) if action is not None else ()
+    if not isinstance(raw_actions, list):
+        raise WorkflowError("RECOVERY_UNAVAILABLE", "invalid next actions checkpoint", 30)
+    actions: list[NextAction] = []
+    for raw in cast(list[object], raw_actions):
+        if not isinstance(raw, dict):
+            raise WorkflowError("RECOVERY_UNAVAILABLE", "invalid next action entry", 30)
+        try:
+            actions.append(NextAction.model_validate(cast(dict[str, Any], raw)))
+        except ValidationError as exc:
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE", f"invalid next action: {exc}", 30
+            ) from exc
+    return tuple(actions)
+
+
+def _coordination_checkpoint(
+    previous: dict[str, Any],
+    actions: tuple[NextAction, ...],
+    *,
+    task_group_id: str,
+    waiting_handoff: str | None,
+    last_commit_sha: str | None = None,
+    integration_worktree: str | None = None,
+    blocker: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    serialized = [action.model_dump(mode="json") for action in actions]
+    return {
+        **previous,
+        "next_action": serialized[0] if len(serialized) == 1 else None,
+        "next_actions": serialized,
+        "task_group_id": task_group_id,
+        "waiting_handoff": waiting_handoff,
+        "last_commit_sha": last_commit_sha or previous.get("last_commit_sha"),
+        "integration_worktree": (
+            integration_worktree or previous.get("integration_worktree")
+        ),
+        "blocker": blocker,
+        "pending_gate": None,
+    }
+
+
+def _default_profiles(project_type: str) -> tuple[str, ...]:
+    if project_type == "frontend":
+        return ("frontend",)
+    if project_type == "fullstack":
+        return ("backend", "frontend")
+    return ("backend",)
 
 
 def _input_artifacts_for(phase: WorkflowPhase) -> tuple[str, ...]:

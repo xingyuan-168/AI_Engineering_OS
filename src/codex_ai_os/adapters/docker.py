@@ -28,8 +28,8 @@ from codex_ai_os.domain.config import (
 )
 
 DEFAULT_EXECUTION_IMAGE = (
-    "python:3.12.13-slim-bookworm@"
-    "sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2"
+    "python:3.12.14-slim-bookworm@"
+    "sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134"
 )
 
 
@@ -250,7 +250,7 @@ class DockerSandbox:
                     f"mount kind is not allowed: {mount.kind.value}",
                 )
             expected_root = (
-                self.root / "artifacts"
+                self.root / ".codex-os" / "artifacts"
                 if mount.kind is MountKind.ARTIFACTS
                 else self.root / ".codex-os" / "cache"
             )
