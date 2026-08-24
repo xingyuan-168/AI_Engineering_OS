@@ -1,79 +1,242 @@
-# 数据与状态存储
+# AI Engineering OS 0.2.0 数据库与迁移设计
 
-V1 使用 SQLite 保存运行状态、任务、审批、执行事件和文档索引；Markdown 和 Git 保存事实内容。
+<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","VERSION-001","MEMORY-001","ROUTING-001"]} -->
 
-## 表
+SQLite 保存运行状态、事件、索引、结构化证据和 provenance；Markdown/Git 保存事实正文。Schema 通过现有 `0001-0003` 和新增 `0004-0006` 追加迁移到版本 `0006`，不得改写已发布迁移。
 
-### `workflows`
+## 1. 数据库运行约束
 
-`id`、`project_id`、`name`、`state`、`risk_level`、`checkpoint_ref`、`created_at`、`updated_at`。
+- 每个连接执行 `PRAGMA foreign_keys=ON`，写库启用 WAL，`busy_timeout` 使用配置上限。
+- 时间使用 UTC RFC3339；JSON 使用 UTF-8、排序 key、无多余空白的规范序列化。
+- 布尔值使用 `INTEGER CHECK(value IN (0,1))`；hash 使用小写十六进制并由应用层验证长度。
+- Workflow、Task、TaskGroup、Handoff、Worktree 和 Memory 均有独立 `state_version >= 0`。
+- 事件、审批、Review、合并、清理和迁移记录只追加；当前状态表可更新，但必须与同事务事件一致。
+- 外部 Git/OCI/GitHub 操作使用 intent/result 记录，禁止在长 SQLite 事务中等待外部进程。
 
-### `tasks`
+## 2. 现有基线
 
-`id`、`workflow_id`、`agent`、`branch`、`worktree`、`status`、`input_ref`、`output_ref`、`review_status`。
+`0001_initial.sql` 已建立 projects、workflow_runs、tasks、events、approvals、artifacts、documents、handoffs、executions、worktrees、memory_records；`0002` 增加 Worktree 唯一/状态索引；`0003` 增加执行 status/error/network/mounts。
 
-### `events`
+新增迁移只扩展这些表或创建新表。应用启动时从 `schema_migrations` 最后一条成功记录推导版本，并校验迁移文件 SHA-256。
 
-`id`、`workflow_id`、`task_id`、`event_type`、`payload_json`、`approval_required`、`created_at`。
+## 3. `0004_repository_governance.sql`
 
-### `approvals`
+### 3.1 项目与文档扩展
 
-`id`、`workflow_id`、`gate`、`decision`、`reviewer`、`reason`、`created_at`。
+向 `projects` 增加：
 
-### `documents`
+| 列 | 类型/默认 | 说明 |
+| --- | --- | --- |
+| `config_schema_version` | TEXT NOT NULL DEFAULT `'1.0'` | 当前读取的配置 Schema |
+| `repository_mode` | TEXT NOT NULL DEFAULT `'formal'` | `formal|fixture_local_only`；后者仅测试能力可写 |
+| `target_branch` | TEXT NOT NULL DEFAULT `'main'` | 项目默认目标分支 |
 
-`path`、`doc_type`、`status`、`content_hash`、`source_commit`、`updated_at`。
+向 `documents` 增加 `schema_version`、`document_version`、`owner`、`requirement_refs_json`、`expires_at`、`validation_json`。旧记录迁移为 `schema_version='1.0'`、`document_version='legacy'`、`owner='unassigned'` 并在下一 Gate 标记复核，不自动视为 1.1 合格。
 
-### `schema_migrations`
+### 3.2 `repository_audits`
 
-追加记录版本、名称、应用版本、checksum、执行人和迁移时间；当前 Schema 版本由最后一条成功记录推导。
+| 列 | 约束 |
+| --- | --- |
+| `id` | TEXT PRIMARY KEY |
+| `project_id` | FK projects, NOT NULL |
+| `run_id` | FK workflow_runs, NULLABLE |
+| `mode` | `formal|fixture_local_only` |
+| `target_branch`、`remote_name`、`remote_host`、`upstream_ref` | NOT NULL（fixture 可使用规范空值） |
+| `head_commit`、`config_hash` | NOT NULL |
+| `git_top_level_ok`、`clean`、`conflicts_free`、`remote_reachable`、`head_pushed`、`target_exists`、`permission_ok`、`hygiene_ok`、`version_ok` | 0/1 |
+| `status` | `passed|failed|stale` |
+| `blockers_json`、`summary_json` | NOT NULL |
+| `checked_at`、`expires_at` | NOT NULL |
 
-### `artifacts`
+索引：`(project_id, head_commit, config_hash, target_branch, status, checked_at DESC)`。报告不保存含凭据的 remote URL；只保存解析后 host/name 与 URL hash。
 
-记录 Workflow/Task 产物路径、类型、hash、来源提交和状态。
+### 3.3 `repository_findings`
 
-### `executions`
+`id`、`audit_id` FK、`category`（git/path/file/tracked/ignore/secret/lifecycle/version）、`rule_id`、`severity`、`path`、`path_hash`、`message`、`remediation`、`auto_cleanable`、`registry_entry_id`、`created_at`。唯一键 `(audit_id, rule_id, path_hash)`。
 
-记录风险级别、命令 hash、镜像 digest、容器 ID、退出码、日志引用和执行时间。
+### 3.4 `file_lifecycle_entries`
 
-### `memory_records`
+`id`、`project_id`、`run_id`、`task_id`、`path`、`real_path_hash`、`kind=disposable|promotable|audit-evidence`、`created_by_runtime`、`owner`、`status=registered|promoted|retained|cleaned|blocked`、`content_hash`、`retention_until`、`created_at`、`updated_at`。只有 `created_by_runtime=1` 且 kind=disposable 可进入自动清理候选。
 
-记录 `memory_id`、`project_id`、`workflow_id`、`task_id`、`type`、`title`、`content_ref`、`source_refs_json`、`source_hashes_json`、`confidence`、`tags_json`、`scope`、`status`、`created_at`、`updated_at`、`expires_at` 和审计引用。`workflow_id`、`task_id` 在项目级记忆中可为空，但必须显式记录为空的原因。事实内容仍在 Markdown/Git 或脱敏产物中，数据库不保存 Secret 或原始聊天记录。
+### 3.5 `routing_decisions`
 
-### `memory_links`
+`id`、`project_id`、`run_id`、`input_hash`、`source_hash`、`workflow_name`、`profiles_json`、`score_json`、`risk_level`、`reasons_json`、`approval_required`、`human_override_json`、`created_at`。唯一键 `(run_id,input_hash)`；覆盖只能提高风险或增加 Profile/审批。
 
-记录记忆之间的 `supersedes`、`conflicts_with`、`derived_from` 和跨项目复用关系，包含来源项目、适用范围、批准人和创建事件。
+### 3.6 结构化证据
 
-### `memory_index`
+`check_evidence`：`id`、project/run/task、`name`、`command_hash`、`execution_id` FK、`exit_code`、`report_path`、`report_hash`、`source_commit`、`started_at`、`ended_at`、`status`。唯一键 `(task_id,name,source_commit,command_hash)`。
 
-记录 Memory 的 FTS5 检索字段和来源 hash；索引失效不能删除 `memory_records` 或审计事件。
+`review_evidence`：`id`、project/run/task、`review_type=code|security|handoff|release`、`reviewer`、`reviewed_commit`、`decision`、`findings_json`、`risks_json`、`report_ref`、`report_hash`、`created_at`。同 reviewer/commit/type 的重复输入以 idempotency key 去重。
 
-### `plugin_runs`
+`gate_evidence_bundles`：`id`、`run_id`、`gate`、`state_version`、`version`、`artifact_refs_json`、`check_refs_json`、`review_refs_json`、`bundle_hash`、`status=building|complete|stale`、`created_at`。唯一键 `(run_id,gate,state_version)`。
 
-记录 `request_id`、`plugin_api`、`hook`、`operation`、`project_id`、`workflow_id`、`task_id`、`source_hash`、`status`、`retry_count`、`error_code`、`started_at` 和 `ended_at`。
+向 `approvals` 增加 `evidence_bundle_id` FK、`evidence_bundle_hash`、`release_authority_json`。审批行与 bundle 必须同一 run/gate/state_version。
 
-### `worktrees`
+### 3.7 版本与发布元数据
 
-记录 `worktree_id`、`project_id`、`workflow_id`、`task_id`、`agent`、`path`、`branch`、`base_commit`、`source_hash`、`status`、`dirty`、`created_at`、`cleaned_at` 和回收审批引用。
+`version_records`：`id`、`project_id`、`run_id`、`requirement_version`、`software_version`、`cli_version`、`plugin_version`、`plugin_api_version`、`config_schema_version`、`database_schema_version`、`git_tag`、`source_commit`、`config_hash`、`lock_hash`、`created_at`；唯一键 `(run_id,software_version)`。
 
-### `handoffs`
+`release_records`：`id`、`run_id`、`task_id`、`version_record_id`、`status=candidate|g4_ready|authorized|tagged|published|blocked|revoked`、`release_worktree_id`、`manifest_path/hash`、`artifact_root`、`sbom_path/hash`、`checksums_path/hash`、`rollback_path/hash`、`pr_number/url_hash/head/base/head_commit`、`merge_commit`、`tag`、`github_release_id`、`authorization_json`、`source_commit`、`state_version`、`created_at`、`updated_at`。唯一键 `(run_id,version_record_id)`。
 
-记录 `handoff_id`、`project_id`、`workflow_id`、`task_id`、`producer`、`consumer`、`source_hash`、`status`、`artifact_refs`、`commit_refs`、`tests_json`、`open_questions_json`、`risk_json`、`created_at`、`accepted_at` 和校验结果。
+### 3.8 执行关联
 
-### `routing_decisions`
+向 `executions` 增加 `run_id` FK、`worktree_id` FK、`command_argv_hash`、`log_redaction_version`、`worktree_dirty_before`、`worktree_dirty_after`、`result_hash`。历史行通过 tasks 回填 run_id/worktree，无法回填者标记 `status='legacy-unverified'`，不能满足 G3。
 
-记录 `routing_id`、`project_id`、`workflow_id`、`task_id`、`input_hash`、`source_hash`、`score`、维度评分、`risk_level`、`workflow`、`profiles`、`reasons_json`、`approval_required`、`human_override` 和 `created_at`。
+## 4. `0005_multi_agent_coordination.sql`
 
-## 约束
+### 4.1 Workflow 扩展
 
-- 事件和审批只追加，不静默覆盖历史。
-- 文档索引必须保留来源路径和 commit。
-- Memory 更新、撤销、过期和删除只追加状态/审计事件，不静默覆盖旧记录；删除时可移除 FTS5 索引，但不擅自改写 Git 历史。
-- 所有新增表必须关联 `project_id`，涉及运行时的记录同时关联 `workflow_id` 和 `task_id`；跨项目关系必须显式记录来源和批准。
-- `handoffs` 的 artifact hash、Commit 和测试结果必须能回查 `artifacts`、`events` 和 `executions`。
-- `routing_decisions` 不得成为安全策略的唯一来源，用户覆盖不能降低 `risk_level`。
-- 数据库迁移必须记录在 `ADR/` 和 `CHANGELOG.md`。
+向 `workflow_runs` 增加：
 
-## 版本与迁移
+`profiles_json DEFAULT '[]'`、`target_branch DEFAULT 'main'`、`integration_branch`、`base_commit`、`integration_head`、`max_parallel DEFAULT 4 CHECK(1..4)`、`migration_status DEFAULT 'current'`。
 
-当前数据库 Schema 基线为 `1.0`。迁移前必须备份并校验，迁移在事务中执行，失败回滚；不支持跨主版本自动降级。详细规则见 [MIGRATION_SPEC.md](MIGRATION_SPEC.md)。
+迁移时，非 completed/cancelled 的旧 run 设置 `migration_status='revalidation_required'`；下一写转换返回 `MIGRATION_REVALIDATION_REQUIRED`。
+
+### 4.2 `task_groups`
+
+`id` PK、`run_id` FK、`name`、`phase`、`status=pending|running|joining|completed|blocked|failed`、`join_policy='all_accepted_merged'`、`base_commit`、`state_version`、`created_at`、`updated_at`。索引 `(run_id,phase,status)`。
+
+### 4.3 Task 扩展与依赖
+
+向 `tasks` 增加 `task_group_id` FK、`allowed_paths_json DEFAULT '[]'`、`dependency_input_hash`、`base_commit`、`completed_commit`、`lease_owner`、`lease_expires_at`。现有 `state_version` 继续作为任务乐观锁。
+
+`task_dependencies`：`task_id`、`depends_on_task_id`、`dependency_type=artifact|path-order|review|manual`、`reason`、`created_at`，复合主键；CHECK 禁止自依赖，应用层进行有向无环验证。
+
+### 4.4 Handoff Review
+
+向 `handoffs` 增加 `source_commit`、`reviewed_by`、`review_reason`、`rejected_reason`、`blocked_reason`、`reviewed_at`、`updated_at`、`state_version DEFAULT 0`。旧 `accepted_at` 保留兼容。
+
+`handoff_reviews`：`id`、`handoff_id`、`task_id`、`review_evidence_id`、`reviewer`、`decision=accepted|rejected|blocked`、`reason`、`reviewed_commit`、`expected_handoff_version`、`created_at`。只追加；数据库 trigger 拒绝 ready 之外的首次 review 和 terminal 状态再次改变。新 Commit 由应用服务创建新 handoff version，不改写旧 Review。
+
+### 4.5 集成合并与锁
+
+`coordination_locks`：`lock_key` PK（`integration:<run-id>`）、`owner`、`lease_token_hash`、`acquired_at`、`expires_at`、`state_version`。获取/续租使用 expected version；过期锁只有同 run 的恢复器可接管。
+
+`integration_merges`：`id`、`run_id`、`task_group_id`、`task_id`、`handoff_id`、`source_branch`、`source_commit`、`integration_branch`、`integration_head_before`、`merge_commit`、`parent_commits_json`、`status=pending|merged|conflicted|blocked`、`conflict_paths_json`、`error_code`、`created_at`、`updated_at`。唯一键 `(handoff_id,source_commit)`。
+
+### 4.6 Worktree 扩展与清理
+
+向 `worktrees` 增加 `kind=task|integration|release`、`state_version DEFAULT 0`、`head_commit`、`open_review_count DEFAULT 0`、`cleanup_status=not_requested|requested|approved|completed|blocked`。
+
+`worktree_cleanups`：`id`、`worktree_id`、`requested_by`、`approved_by`、`reason`、`precondition_json`、`status=requested|approved|completed|blocked|failed`、`git_result_json`、`created_at`、`completed_at`。成功行要求 precondition 中 merged/clean/no_open_review/no_unknown_files 均为 true。
+
+## 5. `0006_memory_fts.sql`
+
+### 5.1 状态迁移
+
+在事务内执行：
+
+```sql
+UPDATE memory_records SET status = 'pending' WHERE status = 'candidate';
+UPDATE memory_records SET status = 'needs_review' WHERE status = 'invalidated';
+```
+
+其他未知状态使迁移失败并恢复备份，不静默映射。
+
+向 `memory_records` 增加 `state_version DEFAULT 0`、`reviewed_by`、`review_reason`、`revoked_at`、`deleted_at`、`source_validation_at`。应用/trigger 只允许：
+
+```text
+pending -> active | needs_review | revoked | expired | deleted
+active -> needs_review | superseded | revoked | expired | deleted
+needs_review -> active | superseded | revoked | expired | deleted
+superseded/revoked/expired -> deleted
+deleted -> terminal
+```
+
+### 5.2 `memory_reviews` 与 `memory_links`
+
+`memory_reviews`：`id`、`memory_id`、`reviewer`、`decision`、`reason`、`source_hashes_json`、`secret_check_id`、`scope_valid`、`confidence_valid`、`expected_version`、`created_at`，只追加。
+
+`memory_links`：`id`、`project_id`、`from_memory_id`、`to_memory_id`、`relation=supersedes|conflicts_with|derived_from|cross_project_reuse`、`scope`、`approved_by`、`created_at`。唯一键 `(from_memory_id,to_memory_id,relation)`；跨项目 relation 要求 approved_by 非空。
+
+### 5.3 FTS5
+
+`memory_search_documents` 保存经 Secret 检查的派生索引文本：`memory_id` PK/FK、`project_id`、`status`、`scope`、`title`、`tags_text`、`search_text`、`source_hash`、`updated_at`。
+
+```sql
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+  memory_id UNINDEXED,
+  project_id UNINDEXED,
+  status UNINDEXED,
+  scope UNINDEXED,
+  title,
+  tags_text,
+  search_text,
+  content='memory_search_documents',
+  content_rowid='rowid',
+  tokenize='unicode61 remove_diacritics 2'
+);
+```
+
+INSERT/UPDATE/DELETE triggers 保持 external-content FTS 同步。只有 `active` 文档进入默认查询；deleted 移除 search document 但保留 memory tombstone/reviews/events。查询必须先绑定当前 `project_id` 和允许状态，再拼接经过 FTS5 参数化的 MATCH 表达式。
+
+## 6. 事务边界
+
+### 6.1 任务完成
+
+`BEGIN IMMEDIATE` -> 验证 task expected version/status -> 插入 artifacts/check refs -> 更新 task completed/version -> 创建 handoff ready/version 0 -> 追加事件 -> COMMIT。不得在此事务推进 Workflow。
+
+### 6.2 Handoff accepted 与合并
+
+事务 A 保存 Review 和 merge intent，提交；外部 Git 持锁合并；事务 B 以 integration head before 和 lock token 条件更新 merge result、Workflow integration head 与事件。若事务 B 失败，恢复器通过 Git parents/HEAD 对账后幂等补写。
+
+### 6.3 join barrier
+
+`BEGIN IMMEDIATE` -> 查询 group 全任务/Handoff/merge -> 验证全部 accepted+merged -> `UPDATE task_groups ... WHERE state_version=?` -> `UPDATE workflow_runs ... WHERE state_version=?` -> 追加 group/workflow 事件 -> COMMIT。任一版本冲突整体回滚并重算。
+
+### 6.4 Gate approval
+
+在同事务读取 complete bundle、核验 bundle hash/state version、插入 approval、更新 Workflow 双轴状态/version、将旧 bundle 标记 stale、追加事件。G4 的 GitHub 查询在事务前完成并作为短期、Commit-bound evidence 保存。
+
+### 6.5 数据库强制不变量
+
+应用服务负责给出友好错误，但以下约束必须由 SQLite 的 `CHECK`、FK、唯一索引或 trigger 再次强制：
+
+- `workflow_runs.max_parallel_agents BETWEEN 1 AND 4`；task group、task、Handoff、merge 和 evidence 的 project/run/group 归属必须一致，删除父记录受 FK 限制。
+- Handoff 只能按 `ready -> accepted|rejected|blocked` 转换；decision reviewer 不得等于 task producer，reviewed Commit 必须等于 task head Commit。
+- `integration_merges.status='merged'` 只允许对应 Handoff 为 accepted、source Commit 匹配且 merge parent 列表同时包含 integration head before 和 source Commit；同一 Handoff/source Commit 唯一。
+- task group 只能在全部 task completed、Handoff accepted 且 integration merge 成功时进入 completed；依赖 task 未达到 accepted+merged 时，consumer 不能进入 running。
+- Worktree cleanup 只能从 approved request 进入 completed，且快照必须同时证明 merged、clean、no open review、no unknown files；失败现场 Worktree 不允许自动完成清理。
+- approval 必须引用同 run/gate/state version 的 complete bundle；release record 只能在 G4 approval 与精确 release authority 存在后进入 authorized/tagged/published，tag/version 在项目内唯一。
+- Memory 激活必须有通过 Secret/scope/source/confidence checks 的 review；superseded 必须有 `supersedes` link，deleted 必须保留 tombstone 且不再有 FTS search document。
+
+跨多行的 DAG 环检测与 Git parent 可达性仍由协调器执行，但写入结果受上述 FK、版本条件和 trigger 保护；绕过应用层直接写库也不能推进治理状态。
+
+## 7. 备份、迁移与恢复
+
+1. 获取项目级迁移锁并关闭写入口。
+2. `PRAGMA wal_checkpoint(TRUNCATE)` 后使用 SQLite backup API 创建 `.codex-os/state/backups/state-<utc>-pre-0004.db`。
+3. 生成 `.sha256`，重新打开备份并运行 `integrity_check`、`foreign_key_check`、读取 `schema_migrations`。
+4. 校验迁移文件 checksum，按 0004/0005/0006 各自独立事务执行并记录。
+5. 执行 post-migration integrity/foreign-key/FTS rebuild test；失败保留失败库并用已校验备份原子恢复。
+6. 重复运行时已记录相同 checksum 的迁移跳过；同版本不同 checksum 返回 `MIGRATION_CHECKSUM_MISMATCH`。
+
+回滚不执行反向 DROP/ALTER。发布前失败恢复备份；发布后 Schema 回滚需要新 forward migration 或恢复整个版本备份并进入只读维护模式。
+
+## 8. 数据保留与隐私
+
+- events、approvals、reviews、merge、release 与 migration 证据按项目策略保留，不被普通清理删除。
+- execution stdout/stderr、SBOM 和报告正文位于受管制品区，SQLite 只保存脱敏引用/hash。
+- remote URL、命令参数和日志在写库前脱敏；token、密码、私钥和原始聊天禁止入库/FTS。
+- Memory delete 保存 tombstone 和审计；法定删除需求通过受控 purge Workflow 与独立审批处理。
+
+## 9. 索引与性能
+
+除上述索引外，至少建立：
+
+- `tasks(task_group_id,status,updated_at)`、`task_dependencies(depends_on_task_id)`。
+- `handoffs(task_id,status,updated_at)`、`handoff_reviews(handoff_id,created_at)`。
+- `integration_merges(run_id,status,updated_at)`、`worktrees(run_id,kind,status)`。
+- `check_evidence(run_id,source_commit,status)`、`review_evidence(run_id,reviewed_commit,decision)`。
+- `release_records(run_id,status,updated_at)`、`memory_records(project_id,status,updated_at)`。
+
+状态查询必须在单个项目/run 范围内分页；日志正文和制品不通过 SQLite result 返回。
+
+## 10. Schema 验收
+
+- 从空库运行 0001-0006、从真实 0003 备份升级、重复执行、checksum 冲突、每条迁移失败恢复。
+- `integrity_check=ok`、`foreign_key_check` 空、FTS5 可创建/rebuild/query。
+- task/group/workflow 乐观锁并发只有一个提交成功；失败方收到 `STATE_VERSION_CONFLICT`。
+- ready Handoff 不能解锁依赖；accepted+merged 的全组才能越过 join。
+- 旧活动 Workflow 强制 migration revalidation；旧文本验证不能满足 Gate。
+- Memory 状态迁移、Secret 拦截、项目隔离、来源变化和 deleted tombstone 全部有自动化测试。

@@ -40,7 +40,7 @@ def test_init_status_and_check_docs_json_contract(tmp_path: Path) -> None:
     status_result = runner.invoke(app, ["status", str(tmp_path), "--json"])
     assert status_result.exit_code == 0, status_result.output
     status_payload = _json_output(status_result.output)
-    assert status_payload["data"]["schema_version"] == "0003"
+    assert status_payload["data"]["schema_version"] == "0006"
     assert status_payload["data"]["events"] == 1
 
     docs_result = runner.invoke(app, ["check-docs", str(tmp_path), "--json"])
@@ -84,6 +84,7 @@ def test_workflow_cli_returns_dual_state_and_next_action(tmp_path: Path) -> None
         ],
     )
     assert initialized.exit_code == 0
+    _use_legacy_fixture_config(tmp_path)
     _initialize_git_repository(tmp_path)
 
     started = runner.invoke(
@@ -132,6 +133,7 @@ def test_approval_cli_refuses_gate_before_evidence(tmp_path: Path) -> None:
             "backend",
         ],
     )
+    _use_legacy_fixture_config(tmp_path)
     _initialize_git_repository(tmp_path)
     started = runner.invoke(
         app,
@@ -172,6 +174,16 @@ def _initialize_git_repository(root: Path) -> None:
     _git(root, "config", "user.email", "test@example.invalid")
     _git(root, "add", ".")
     _git(root, "commit", "-m", "test: initialize CLI project")
+
+
+def _use_legacy_fixture_config(root: Path) -> None:
+    config = root / ".codex-os" / "project.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "schema_version: '1.1'", "schema_version: '1.0'"
+        ),
+        encoding="utf-8",
+    )
 
 
 def _git(root: Path, *arguments: str) -> str:

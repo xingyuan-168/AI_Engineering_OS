@@ -23,14 +23,14 @@ def test_memory_candidate_activation_search_and_source_invalidation(tmp_path: Pa
     )
     active = store.activate(candidate.id)
 
-    assert candidate.status == "candidate"
+    assert candidate.status == "pending"
     assert active.status == "active"
     assert store.activate(candidate.id) == active
     assert store.search("sqlite") == [active]
 
     _write(tmp_path, "docs/source.md", "# Changed decision source\n")
     assert store.invalidate_changed_sources() == (candidate.id,)
-    assert store.get(candidate.id).status == "invalidated"
+    assert store.get(candidate.id).status == "needs_review"
     assert store.search("sqlite") == []
 
     with database.connection() as connection:
@@ -40,7 +40,7 @@ def test_memory_candidate_activation_search_and_source_invalidation(tmp_path: Pa
                 "SELECT event_type FROM events WHERE event_type LIKE 'memory.%' ORDER BY sequence"
             ).fetchall()
         ]
-    assert event_types == ["memory.candidate", "memory.activated", "memory.invalidated"]
+    assert event_types == ["memory.pending", "memory.active", "memory.needs_review"]
 
 
 def test_memory_rejects_secrets_low_confidence_and_unsafe_sources(tmp_path: Path) -> None:
@@ -66,7 +66,7 @@ def test_memory_rejects_secrets_low_confidence_and_unsafe_sources(tmp_path: Path
         source_refs=("docs/source.md",),
         confidence=0.6,
     )
-    with pytest.raises(MemoryStoreError, match="activation threshold"):
+    with pytest.raises(MemoryStoreError, match=r"confidence >= 0\.7"):
         store.activate(tentative.id)
 
     with pytest.raises(MemoryStoreError, match="unsafe"):

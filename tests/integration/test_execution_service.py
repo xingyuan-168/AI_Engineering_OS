@@ -155,6 +155,7 @@ def test_execution_service_selects_configured_podman_backend(tmp_path: Path) -> 
         project_id="PROJECT-PODMAN",
         name="Podman fixture",
         project_type=ProjectType.BACKEND,
+        schema_version="1.0",
     )
     policy_path = tmp_path / ".codex-os" / "execution-policy.yaml"
     policy_path.write_text(
@@ -171,6 +172,7 @@ def _assigned_request(root: Path) -> SandboxRequest:
         project_id="PROJECT-EXECUTION",
         name="Execution fixture",
         project_type=ProjectType.BACKEND,
+        schema_version="1.0",
     )
     engine = WorkflowEngine(
         root,

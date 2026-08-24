@@ -66,8 +66,10 @@ class WorkflowStore:
                     INSERT INTO workflow_runs(
                         id, project_id, workflow_name, goal, workflow_phase, run_status,
                         state_version, risk_level, checkpoint_json, config_hash,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, profiles_json, target_branch,
+                        integration_branch, base_commit, integration_head,
+                        max_parallel_agents, migration_revalidation_required
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run.id,
@@ -82,6 +84,13 @@ class WorkflowStore:
                         run.config_hash,
                         run.created_at,
                         run.updated_at,
+                        _json(run.profiles),
+                        run.target_branch,
+                        run.integration_branch,
+                        run.base_commit,
+                        run.integration_head,
+                        run.max_parallel_agents,
+                        int(run.migration_revalidation_required),
                     ),
                 )
                 _insert_task(connection, task)
@@ -136,6 +145,111 @@ class WorkflowStore:
                 (run_id,),
             ).fetchone()
         return _task_from_row(row) if row is not None else None
+
+    def active_tasks(self, run_id: str) -> tuple[TaskRecord, ...]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM tasks
+                WHERE run_id = ? AND status IN ('pending', 'running')
+                ORDER BY created_at, id
+                """,
+                (run_id,),
+            ).fetchall()
+        return tuple(_task_from_row(row) for row in rows)
+
+    def update_checkpoint(
+        self,
+        *,
+        run: WorkflowRun,
+        checkpoint: dict[str, Any],
+        status: RunStatus | None = None,
+    ) -> WorkflowRun:
+        now = _utc_now()
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _assert_run_version(connection, run.id, run.state_version)
+                _update_run(
+                    connection,
+                    run,
+                    target_phase=run.workflow_phase,
+                    target_status=status or run.run_status,
+                    checkpoint=checkpoint,
+                    now=now,
+                )
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=None,
+                    event_type="workflow.coordination_updated",
+                    idempotency_key=f"{run.id}:{run.state_version + 1}:coordination",
+                    payload={"run_status": (status or run.run_status).value},
+                )
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
+    def advance_after_task_group(
+        self,
+        *,
+        run: WorkflowRun,
+        checkpoint: dict[str, Any],
+        integration_head: str,
+        target_phase: WorkflowPhase,
+        target_status: RunStatus,
+        next_task: TaskRecord | None = None,
+    ) -> WorkflowRun:
+        now = _utc_now()
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _assert_run_version(connection, run.id, run.state_version)
+                changed = connection.execute(
+                    """
+                    UPDATE workflow_runs
+                    SET workflow_phase = ?, run_status = ?,
+                        state_version = state_version + 1, checkpoint_json = ?,
+                        integration_head = ?, updated_at = ?
+                    WHERE id = ? AND state_version = ?
+                    """,
+                    (
+                        target_phase.value,
+                        target_status.value,
+                        _json(checkpoint),
+                        integration_head,
+                        now,
+                        run.id,
+                        run.state_version,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise WorkflowConflictError(f"workflow transition conflict: {run.id}")
+                if next_task is not None:
+                    _insert_task(connection, next_task)
+                    _insert_task_created_event(
+                        connection, run, next_task, run.state_version + 1
+                    )
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=next_task.id if next_task is not None else None,
+                    event_type="task_group.joined",
+                    idempotency_key=f"{run.id}:{run.state_version + 1}:task_group.joined",
+                    payload={
+                        "integration_head": integration_head,
+                        "target_phase": target_phase.value,
+                    },
+                )
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
 
     def block_run_for_task(
         self,
@@ -225,6 +339,7 @@ class WorkflowStore:
                     """
                     UPDATE tasks
                     SET status = ?, branch = ?, output_ref = ?, review_status = ?,
+                        head_commit = ?,
                         state_version = state_version + 1, updated_at = ?
                     WHERE id = ? AND status IN ('pending', 'running')
                     """,
@@ -233,6 +348,7 @@ class WorkflowStore:
                         completion.branch,
                         completion_json,
                         "verified" if completion.verification_results else "pending",
+                        completion.commit_sha,
                         now,
                         task.id,
                     ),
@@ -368,6 +484,9 @@ class WorkflowStore:
         target_status: RunStatus,
         checkpoint: dict[str, Any],
         next_task: TaskRecord | None,
+        evidence_bundle_id: str | None = None,
+        evidence_bundle_hash: str | None = None,
+        release_authority: dict[str, Any] | None = None,
     ) -> WorkflowRun:
         now = _utc_now()
         new_version = run.state_version + 1
@@ -380,8 +499,9 @@ class WorkflowStore:
                     """
                     INSERT INTO approvals(
                         id, run_id, gate, decision, reviewer, reason,
-                        evidence_refs_json, state_version, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        evidence_refs_json, state_version, created_at,
+                        evidence_bundle_id, evidence_bundle_hash, release_authority_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         new_id("APPROVAL"),
@@ -393,8 +513,33 @@ class WorkflowStore:
                         _json(checkpoint.get("evidence_refs", [])),
                         new_version,
                         now,
+                        evidence_bundle_id,
+                        evidence_bundle_hash,
+                        _json(release_authority) if release_authority is not None else None,
                     ),
                 )
+                completed_task = run.checkpoint.get("last_completed_task")
+                if approved and isinstance(completed_task, str):
+                    connection.execute(
+                        """
+                        UPDATE handoffs SET status = 'accepted', reviewer = ?,
+                            decision_reason = ?, reviewed_commit = (
+                                SELECT t.head_commit FROM tasks t WHERE t.id = handoffs.task_id
+                            ), accepted_at = ?,
+                            updated_at = ?, state_version = state_version + 1
+                        WHERE run_id = ? AND status = 'ready' AND EXISTS (
+                            SELECT 1 FROM tasks t
+                            WHERE t.id = handoffs.task_id AND t.task_group_id IS NULL
+                        )
+                        """,
+                        (
+                            reviewer,
+                            reason,
+                            now,
+                            now,
+                            run.id,
+                        ),
+                    )
                 _update_run(
                     connection,
                     run,
@@ -453,6 +598,60 @@ class WorkflowStore:
                     event_type="workflow.resumed",
                     idempotency_key=f"{run.id}:{new_version}:workflow.resumed",
                     payload={"workflow_phase": run.workflow_phase.value},
+                )
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
+    def complete_migration_revalidation(
+        self,
+        *,
+        run: WorkflowRun,
+        repository_check_hash: str,
+        evidence_bundle_ids: tuple[str, ...],
+    ) -> WorkflowRun:
+        now = _utc_now()
+        checkpoint = {
+            **run.checkpoint,
+            "migration_revalidation": {
+                "repository_check_hash": repository_check_hash,
+                "evidence_bundle_ids": list(evidence_bundle_ids),
+                "completed_at": now,
+            },
+        }
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _assert_run_version(connection, run.id, run.state_version)
+                changed = connection.execute(
+                    """
+                    UPDATE workflow_runs
+                    SET state_version = state_version + 1, checkpoint_json = ?,
+                        migration_revalidation_required = 0, updated_at = ?
+                    WHERE id = ? AND state_version = ?
+                      AND migration_revalidation_required = 1
+                    """,
+                    (_json(checkpoint), now, run.id, run.state_version),
+                ).rowcount
+                if changed != 1:
+                    raise WorkflowConflictError(
+                        "migration revalidation state changed concurrently"
+                    )
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=None,
+                    event_type="workflow.migration_revalidated",
+                    idempotency_key=(
+                        f"{run.id}:{run.state_version + 1}:migration_revalidated"
+                    ),
+                    payload={
+                        "repository_check_hash": repository_check_hash,
+                        "evidence_bundle_ids": list(evidence_bundle_ids),
+                    },
                 )
                 connection.commit()
             except (sqlite3.Error, WorkflowConflictError):
@@ -625,6 +824,17 @@ def _run_from_row(row: sqlite3.Row) -> WorkflowRun:
         config_hash=str(row["config_hash"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        profiles=_string_tuple(str(row["profiles_json"])),
+        target_branch=str(row["target_branch"]),
+        integration_branch=(
+            str(row["integration_branch"]) if row["integration_branch"] is not None else None
+        ),
+        base_commit=str(row["base_commit"]) if row["base_commit"] is not None else None,
+        integration_head=(
+            str(row["integration_head"]) if row["integration_head"] is not None else None
+        ),
+        max_parallel_agents=int(row["max_parallel_agents"]),
+        migration_revalidation_required=bool(row["migration_revalidation_required"]),
     )
 
 
@@ -644,6 +854,15 @@ def _task_from_row(row: sqlite3.Row) -> TaskRecord:
         state_version=int(row["state_version"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        task_group_id=(
+            str(row["task_group_id"]) if row["task_group_id"] is not None else None
+        ),
+        task_key=str(row["task_key"]) if row["task_key"] is not None else None,
+        allowed_paths=_string_tuple(str(row["allowed_paths_json"])),
+        head_commit=str(row["head_commit"]) if row["head_commit"] is not None else None,
+        producer=str(row["producer"]) if row["producer"] is not None else None,
+        skill=str(row["skill"]) if row["skill"] is not None else None,
+        prompt=str(row["prompt"]) if row["prompt"] is not None else None,
     )
 
 
@@ -655,6 +874,16 @@ def _object_dict(raw: str) -> dict[str, Any]:
     if not all(isinstance(key, str) for key in object_value):
         raise ValueError("stored JSON object keys must be strings")
     return cast(dict[str, Any], object_value)
+
+
+def _string_tuple(raw: str) -> tuple[str, ...]:
+    value: object = json.loads(raw)
+    if not isinstance(value, list):
+        raise ValueError("stored JSON must be a string array")
+    object_value = cast(list[object], value)
+    if not all(isinstance(item, str) for item in object_value):
+        raise ValueError("stored JSON must be a string array")
+    return tuple(cast(list[str], object_value))
 
 
 def _json(value: object) -> str:

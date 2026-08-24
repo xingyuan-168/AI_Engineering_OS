@@ -46,7 +46,7 @@ class SandboxBackend(StrEnum):
 
 
 class ProjectConfig(StrictModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.1"
     project_id: str = Field(pattern=r"^PROJECT-[A-Z0-9][A-Z0-9-]*$")
     name: str = Field(min_length=1, max_length=100)
     root: Path
@@ -57,6 +57,9 @@ class ProjectConfig(StrictModel):
     approval_policy: Literal["critical-gates-human"] = "critical-gates-human"
     default_agent_profile: str = "standard"
     git_push_policy: GitPushPolicy = GitPushPolicy.REMOTE_REQUIRED
+    target_branch: str = Field(default="main", pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
+    github_hosts: frozenset[str] = frozenset({"github.com"})
+    max_parallel_agents: int = Field(default=4, ge=1, le=4)
 
     @field_validator("root")
     @classmethod
@@ -75,14 +78,33 @@ class ProjectConfig(StrictModel):
         object.__setattr__(self, "source_of_truth", candidate)
         return self
 
+    @field_validator("github_hosts")
+    @classmethod
+    def github_hosts_are_normalized(cls, values: frozenset[str]) -> frozenset[str]:
+        if not values:
+            raise ValueError("github_hosts cannot be empty")
+        normalized = frozenset(value.strip().casefold() for value in values)
+        if any(
+            not value
+            or "/" in value
+            or "\\" in value
+            or ":" in value
+            or value.startswith(".")
+            for value in normalized
+        ):
+            raise ValueError("github_hosts must contain host names only")
+        return normalized
+
 
 class ExecutionPolicy(StrictModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.1"
     sandbox: SandboxBackend = SandboxBackend.DOCKER
     network: NetworkMode = NetworkMode.DISABLED
     allowed_network_hosts: frozenset[str] = frozenset()
     allowed_mounts: frozenset[str] = frozenset({"worktree", "artifacts", "cache"})
-    allowed_commands: frozenset[str] = frozenset({"git", "python", "pytest", "ruff", "pyright"})
+    allowed_commands: frozenset[str] = frozenset(
+        {"git", "python", "pytest", "ruff", "pyright", "pip-audit", "detect-secrets"}
+    )
     approval_for: frozenset[str] = frozenset(
         {"network", "migration", "delete", "credential", "release"}
     )

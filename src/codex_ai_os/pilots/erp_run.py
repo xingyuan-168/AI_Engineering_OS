@@ -50,6 +50,7 @@ class ErpPilotRunner:
             name="ERP Procurement Pilot",
             project_type=ProjectType.BACKEND,
             git_push_policy=GitPushPolicy.FIXTURE_LOCAL_ONLY,
+            schema_version="1.0",
         )
         _git(root, "add", ".")
         _git(root, "commit", "-m", "chore: initialize ERP pilot baseline")
@@ -164,7 +165,10 @@ class ErpPilotRunner:
         if phase is not WorkflowPhase.VERIFY:
             return (f"{phase.value}: artifacts generated", "git diff: reviewed")
         environment = os.environ.copy()
-        environment["PYTHONPATH"] = str(worktree / "src")
+        inherited_pythonpath = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = os.pathsep.join(
+            part for part in (str(worktree / "src"), inherited_pythonpath) if part
+        )
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "tests", "-q"],
             cwd=worktree,
@@ -221,13 +225,17 @@ def _phase_files(
             )
             + "\n",
             "reports/SECURITY.json": json.dumps(
-                {"secret_scan": "passed", "dependency_audit": "passed"}, indent=2
+                {  # Legacy schema 1.0 fixture text; never accepted as Plugin API 1.1 evidence.
+                    "secret_scan": "passed",  # pragma: allowlist secret
+                    "dependency_audit": "passed",
+                },
+                indent=2,
             )
             + "\n",
             "reports/REVIEW.md": "# Review\n\nResult: approved.\n",
         }
     if phase is WorkflowPhase.RELEASE:
-        prefix = "dist/release-candidate"
+        prefix = "release"
         manifest = json.dumps(
             {"run_id": run_id, "task_id": task_id, "version": "0.1.0"},
             indent=2,
