@@ -13,10 +13,18 @@ from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.application.verification import VerificationService
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
+from codex_ai_os.domain.workflow import PHASE_DEFINITIONS, WorkflowPhase
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentManager, PathDeniedError
 from codex_ai_os.infrastructure.memory import MemoryStore, MemoryStoreError
+
+
+def test_backend_task_contract_allows_dependency_lock_updates() -> None:
+    allowed_paths = PHASE_DEFINITIONS[WorkflowPhase.IMPLEMENTATION].allowed_paths
+
+    assert "pyproject.toml" in allowed_paths
+    assert "uv.lock" in allowed_paths
 
 
 def test_fixture_repository_check_detects_hygiene_and_tracked_pollution(tmp_path: Path) -> None:
