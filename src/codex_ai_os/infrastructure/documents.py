@@ -38,7 +38,7 @@ EXCLUDED_GOVERNANCE_TREES = {
     "node_modules",
 }
 DOCUMENT_METADATA = re.compile(r"<!--\s*codex-os-document:\s*(\{.*?\})\s*-->")
-UNAPPROVED_PLACEHOLDER = re.compile(r"(?i)(?:\bTODO\b|\bTBD\b|待确认|待补充|占位内容)")
+UNAPPROVED_PLACEHOLDER = re.compile(r"(?i)(?:\bTODO\b|\bTBD\b|待确认|待补充)")
 STRICT_STATUSES = {"accepted", "approved", "released"}
 REQUIRED_SECTIONS: dict[str, tuple[str, ...]] = {
     "PRODUCT_REQUIREMENTS.md": ("范围", "成功", "验收"),

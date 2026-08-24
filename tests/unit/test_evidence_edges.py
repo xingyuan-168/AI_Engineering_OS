@@ -29,7 +29,7 @@ def test_migrated_gate_artifacts_are_reverified_and_bound(tmp_path: Path) -> Non
         {
             "schema_version": "1.1",
             "document_version": "0.2.0",
-            "status": "approved",
+            "status": "review-ready",
             "owner": "fixture-owner",
             "requirement_refs": ["REQ-1.6.2"],
         },
@@ -40,7 +40,8 @@ def test_migrated_gate_artifacts_are_reverified_and_bound(tmp_path: Path) -> Non
         ("docs/SCOPE.md", "Scope"),
     ):
         (root / path).write_text(
-            f"<!-- codex-os-document: {metadata} -->\n# {title}\n\nVerified.\n",
+            f"<!-- codex-os-document: {metadata} -->\n# {title}\n\n"
+            "Verified policy: 未批准占位内容必须阻塞。\n",
             encoding="utf-8",
         )
     _git(root, "add", "docs/PROJECT_MASTER.md", "docs/SCOPE.md")

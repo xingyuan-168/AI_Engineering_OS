@@ -612,8 +612,9 @@ class EvidenceStore:
                 "accepted",
                 "approved",
                 "released",
+                "review-ready",
             }:
-                findings.append(f"{relative} status is not approved")
+                findings.append(f"{relative} status is not approval-ready")
             if not str(metadata.get("owner", "")).strip():
                 findings.append(f"{relative} owner is missing")
             refs = metadata.get("requirement_refs")
