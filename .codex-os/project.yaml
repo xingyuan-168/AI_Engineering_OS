@@ -1,0 +1,11 @@
+schema_version: '1.0'
+project_id: PROJECT-AI-ENGINEERING-OS
+name: AI Engineering OS
+root: D:\Projects-tools\AI-OS
+project_type: backend
+risk_level: high
+source_of_truth: D:\Projects-tools\AI-OS\docs
+active_workflow: new-project
+approval_policy: critical-gates-human
+default_agent_profile: standard
+git_push_policy: remote_required

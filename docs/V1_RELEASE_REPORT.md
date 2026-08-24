@@ -6,9 +6,9 @@
 
 实施分支：`codex/m6-v1-expansion`
 
-验收基线提交：`5200392efb13a77c506f27bff16ffbabb3973645`
+验收基线提交：`cae41b67351fafbc5c086ba7fe01a7ba50b8841c`
 
-状态：M0-M6 实现与自动化验收完成；发布和合并因真实 OCI 环境、Codex CLI 安装验证与 G4 人工批准未完成而保持 `blocked`。
+状态：M0-M6 实现、自动化验收与真实 Podman OCI 复验完成；发布和合并因 Codex Hook 信任复核与 G4 人工批准未完成而保持 `blocked`。
 
 ## 1. 已落地范围
 
@@ -31,8 +31,9 @@
 | Podman 沙箱适配 | `1b31dba` | 已推送 |
 | V1 Skills 与 Profiles | `ed0b41e` | 已推送 |
 | 仓库文档治理扫描修复 | `5200392` | 已推送 |
+| 真实 Podman 沙箱集成测试 | `cae41b6` | 已推送 |
 
-远端固定为 `git@github.com:xingyuan-168/AI_Engineering_OS.git`。验收基线时本地 HEAD 与远端 M6 分支均为 `5200392efb13a77c506f27bff16ffbabb3973645`，工作区干净。
+远端固定为 `git@github.com:xingyuan-168/AI_Engineering_OS.git`。真实 OCI 验收基线时本地 HEAD 与远端 M6 分支均为 `cae41b67351fafbc5c086ba7fe01a7ba50b8841c`，工作区干净。
 
 ## 3. 自动化验收结果
 
@@ -42,35 +43,35 @@
 | 构建 | 通过 | wheel 与 sdist 均成功；wheel SHA256：`E71DE6F47BBC95E8CC1087D3AFDFED75F1BD7947AF06C9CBDF2E498DA2222793` |
 | Lint | 通过 | Ruff 无错误 |
 | 类型 | 通过 | Pyright 0 errors、0 warnings |
-| 测试 | 通过 | 114 passed，分支覆盖率 83.70%，门槛 80% |
+| 测试 | 通过 | 115 passed（含显式启用的真实 Podman 测试），分支覆盖率 83.73%，门槛 80% |
 | 文档治理 | 通过 | 44 个 Markdown 文件；必需文档、标题、本地链接和复制目录检查无错误 |
 | 依赖安全 | 通过 | `pip-audit` 无已知漏洞；本地未发布包按预期跳过 PyPI 查询 |
 | Secret | 通过 | `detect-secrets` 扫描全部 Git 跟踪文件，结果为空 |
 | Plugin | 通过 | 官方 Plugin validator 通过，19 个 Skill 全部通过 `quick_validate.py` |
 | MCP | 通过 | 真实 stdio 子进程列出并调用 11 个工具，Host 握手走集成测试 |
 | Wheel 安装 | 通过 | 全新 Python 3.12 虚拟环境安装 wheel，`init/status/check-docs` 均成功，Schema 为 0003 |
-| ERP E2E | 受控通过 | PA-001～PA-010 全部满足；PA-007 以沙箱缺失时正确阻塞验收，不代表真实容器已启动 |
+| ERP E2E | 通过 | PA-001～PA-010 全部满足；PA-007 已用生产 `PodmanSandbox`、真实 Git Worktree 和锁定镜像复验 |
 
 构建使用 Python 3.12.13、uv 0.12.3、SQLite 3.53.1。`uv.lock` SHA256 为 `F2809647B9C2425E5427AC9DF18359CEA55D6AC39DAFACE703174F9FAAB14D66`。
 
-## 4. 阻塞项
+## 4. 环境门禁与剩余阻塞项
 
-### ENV-SANDBOX-001：真实 OCI 容器未复验
+### ENV-SANDBOX-001：已解除
 
-`codex-os doctor --json` 返回 exit 50：Docker Desktop CLI 与 Podman CLI 均不存在，WSL 未安装。策略单元测试与假执行器验证通过，但不能把它们等同于真实镜像检查、容器启动、cgroup/资源限制和挂载行为。
+当前主机已安装 WSL 2.7.12（内核 6.18.33.2）和 Podman 5.8.3，`podman-machine-default` 以 rootless WSL machine 运行，资源为 2 CPU、4 GiB 内存和 20 GiB 磁盘。Podman 服务端版本为 5.8.6，`codex-os doctor --json` 返回 exit 0、`ok=true`。
 
-解除条件：安装并启动 Docker Desktop/WSL2 或 Podman machine，预拉取锁定 digest，重新运行 `doctor`、Docker/Podman 实容器集成测试和 ERP PA-007。
+锁定镜像 `python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2` 已预拉取并通过 RepoDigest 核对。`EXEC-REAL-OCI-001` 使用生产 `PodmanSandbox` 在真实受管 Worktree 中执行，command hash 为 `36be837556551c0c04e6826524d943027624b02c5e59aecee27a3a6470db2927`，验证 UID/GID `65532:65532`、`--network none`、只读根文件系统、capabilities 全部移除、`no-new-privileges`、2 CPU、4 GiB、PID 256、禁止运行时拉取且 Worktree 干净。证据由提交 `cae41b6` 中的 opt-in 集成测试固化。
 
 ### ENV-CODEX-001：Codex Plugin 自动重装未复验
 
-Plugin cachebuster 已更新为 `0.1.0+codex.20260821051926`，但当前 WindowsApps 中的 `codex.exe` 启动返回 WinError 5/拒绝访问。因此无法从 CLI 完成 marketplace 注册、插件重装、Host UI 发现和 Hook hash 信任复核。Plugin manifest、Skills、Hooks、启动器和 MCP 子进程本身均已通过仓库级验证。
+Plugin cachebuster 已更新为 `0.1.0+codex.20260821051926`。当前 Codex Host 已发现该 Plugin 的 19 个 Skill，并连接全部 11 个 `ai_engineering_os` MCP 工具；但 WindowsApps 中的 `codex.exe` 仍返回 WinError 5/拒绝访问，且本次环境复验未取得 `/hooks` 信任页面证据。Plugin manifest、Skills、Hooks、启动器和 MCP 子进程均已通过仓库级验证。
 
-解除条件：修复 Codex CLI 执行 ACL 或从 Codex App 安装本地 marketplace，在新任务中确认 19 个 Skill、11 个 MCP 工具及 `/hooks` 信任状态。
+解除条件：在 Codex App 的 `/hooks` 页面复核当前 Plugin Hook hash 信任状态；CLI 自动重装行为在修复 WindowsApps 执行 ACL 后单独复验。
 
 ### GOV-G4-001：人工发布批准和主分支合并待完成
 
-当前仅创建并推送里程碑分支，没有创建 tag、生产发布或改写 `main`。真实 OCI 与 Codex Host 门禁解除后，由用户完成 G4；随后按仓库保护规则通过 PR 合并，或在确认未启用保护时使用保留历史的 `--no-ff` 合并并立即推送。
+当前仅创建并推送里程碑分支，没有创建 tag、生产发布或改写 `main`。Codex Hook 信任门禁解除后，由用户完成 G4；随后按仓库保护规则通过 PR 合并，或在确认未启用保护时使用保留历史的 `--no-ff` 合并并立即推送。
 
 ## 5. 结论
 
-V1 功能实现和可在当前环境完成的自动化验收已完成，未发现审批绕过、越权写入、重复任务、缺失 Git 证据或工作区遗留改动。由于三个阻塞项仍存在，本报告不授权发布、打 tag 或合并 `main`，也不把受控阻塞描述为真实容器或 Codex Host 验收通过。
+V1 功能实现、自动化验收和真实 Podman OCI 复验已完成，未发现审批绕过、越权写入、重复任务、缺失 Git 证据或工作区遗留改动。由于 Codex Hook 信任复核和 G4 人工批准两个阻塞项仍存在，本报告不授权发布、打 tag 或合并 `main`。

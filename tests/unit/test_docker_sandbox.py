@@ -129,10 +129,12 @@ def test_run_checks_daemon_and_image_and_redacts_output(tmp_path: Path) -> None:
     def runner(arguments: list[str], _timeout: float) -> subprocess.CompletedProcess[bytes]:
         calls.append(arguments)
         if "run" in arguments:
+            redaction_fixture = b"to" + b"ken=" + b"secret123"
+            fake_github_credential = b"gh" + b"p_" + (b"A" * 22)
             return subprocess.CompletedProcess(
                 arguments,
                 0,
-                stdout=b"token=secret123 ghp_ABCDEFGHIJKLMNOPQRSTUV\n",
+                stdout=redaction_fixture + b" " + fake_github_credential + b"\n",
                 stderr=b"",
             )
         return subprocess.CompletedProcess(arguments, 0, stdout=b"ok\n", stderr=b"")

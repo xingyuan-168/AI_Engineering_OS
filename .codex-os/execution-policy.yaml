@@ -1,0 +1,9 @@
+schema_version: '1.0'
+sandbox: podman
+network: disabled
+allowed_network_hosts: []
+allowed_mounts: [worktree, artifacts, cache]
+allowed_commands: [git, python, pytest, ruff, pyright]
+approval_for: [network, migration, delete, credential, release]
+max_duration_seconds: 1800
+allow_host_execution: false
