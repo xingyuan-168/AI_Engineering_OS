@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.release import ReleaseCandidateService
 from codex_ai_os.application.repository import RepositoryGovernanceService
+from codex_ai_os.application.responses import error_envelope, success_envelope
 from codex_ai_os.application.verification import VerificationService
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError, WorkflowResult
 from codex_ai_os.application.worktree import WorktreeService, WorktreeServiceError
@@ -26,7 +28,9 @@ from codex_ai_os.domain.governance import (
     G4ApprovalInput,
     ReleaseAuthority,
     ReviewDecision,
+    ReviewFinding,
 )
+from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import (
     ChangeKind,
@@ -49,6 +53,10 @@ mcp = MCPServer(
         "Use these tools to run deterministic engineering workflows. Execute the returned "
         "next_action in Codex, then report repository evidence through task_complete."
     ),
+)
+
+_INVOCATION_CONTEXT: ContextVar[InvocationContext | None] = ContextVar(
+    "codex_ai_os_invocation_context", default=None
 )
 
 
@@ -270,7 +278,7 @@ def handoff_review(
     reason: str,
     report_ref: str,
     report_hash: str,
-    findings: list[str] | None = None,
+    findings: list[dict[str, Any]] | None = None,
     risks: list[str] | None = None,
 ) -> dict[str, Any]:
     """Accept, reject, or block a ready Handoff and integrate only accepted evidence."""
@@ -282,7 +290,7 @@ def handoff_review(
             reviewed_commit=reviewed_commit,
             decision=ReviewDecision(decision),
             reason=reason,
-            findings=tuple(findings or ()),
+            findings=tuple(ReviewFinding.model_validate(item) for item in findings or ()),
             risks=tuple(risks or ()),
             report_ref=report_ref,
             report_hash=report_hash,
@@ -591,7 +599,7 @@ def run_server() -> None:
 
 def _workflow_payload(result: WorkflowResult, project_root: Path) -> dict[str, Any]:
     database = Database(project_root.resolve() / ".codex-os" / "state" / "state.db")
-    with database.connection() as connection:
+    with database.read_connection() as connection:
         groups = [
             dict(row)
             for row in connection.execute(
@@ -629,12 +637,16 @@ def _workflow_payload(result: WorkflowResult, project_root: Path) -> dict[str, A
                 (result.run.id,),
             ).fetchall()
         ]
+    actions = [action.model_dump(mode="json") for action in result.next_actions]
+    if not actions and result.next_action is not None:
+        actions = [result.next_action.model_dump(mode="json")]
     return _success(
+        run_id=result.run.id,
+        run_status=result.run.run_status.value,
+        workflow_phase=result.run.workflow_phase.value,
+        state_version=result.run.state_version,
+        next_actions=actions,
         run=result.run.model_dump(mode="json"),
-        next_action=(
-            result.next_action.model_dump(mode="json") if result.next_action is not None else None
-        ),
-        next_actions=[action.model_dump(mode="json") for action in result.next_actions],
         active_task=(
             result.active_task.model_dump(mode="json") if result.active_task is not None else None
         ),
@@ -670,27 +682,75 @@ def _memory_payload(record: MemoryRecord) -> dict[str, Any]:
         "tags": list(record.tags),
         "scope": record.scope,
         "status": record.status,
+        "state_version": record.state_version,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
         "expires_at": record.expires_at,
     }
 
 
-def _success(**data: Any) -> dict[str, Any]:
-    return {"ok": True, **data}
+def _success(
+    *,
+    run_id: str | None = None,
+    run_status: str | None = None,
+    workflow_phase: str | None = None,
+    state_version: int | None = None,
+    next_actions: list[dict[str, Any]] | None = None,
+    warnings: list[str] | None = None,
+    **data: Any,
+) -> dict[str, Any]:
+    context = _INVOCATION_CONTEXT.get() or InvocationContext.local(InvocationSource.MCP)
+    compatibility_warnings = list(warnings or ())
+    warning = data.pop("warning", None)
+    if isinstance(warning, str):
+        compatibility_warnings.append(warning)
+    return success_envelope(
+        data,
+        context=context,
+        run_id=run_id,
+        run_status=run_status,
+        workflow_phase=workflow_phase,
+        state_version=state_version,
+        next_actions=next_actions or (),
+        warnings=compatibility_warnings,
+    )
 
 
 def _invoke(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    context = InvocationContext.local(InvocationSource.MCP)
+    token = _INVOCATION_CONTEXT.set(context)
     try:
         return operation()
     except WorkflowError as exc:
-        return {"ok": False, "error": {"code": exc.code, "message": str(exc)}}
+        return error_envelope(
+            exc.code,
+            str(exc),
+            context=context,
+            retryable=_retryable_error(exc.code),
+        )
     except MemoryStoreError as exc:
-        return {"ok": False, "error": {"code": "MEMORY_INVALID", "message": str(exc)}}
+        return error_envelope("MEMORY_INVALID", str(exc), context=context)
     except (CoordinationError, ExecutionServiceError, WorktreeServiceError) as exc:
-        return {"ok": False, "error": {"code": exc.code, "message": str(exc)}}
+        return error_envelope(
+            exc.code,
+            str(exc),
+            context=context,
+            retryable=_retryable_error(exc.code),
+        )
     except (ConfigError, MigrationError, ValidationError, ValueError, OSError) as exc:
-        return {"ok": False, "error": {"code": "CONFIG_INVALID", "message": str(exc)}}
+        return error_envelope("CONFIG_INVALID", str(exc), context=context)
+    finally:
+        _INVOCATION_CONTEXT.reset(token)
+
+
+def _retryable_error(code: str) -> bool:
+    return code in {
+        "STATE_VERSION_CONFLICT",
+        "OPERATION_LEASED",
+        "REMOTE_UNREACHABLE",
+        "PUSH_FAILED",
+        "RECONCILIATION_REQUIRED",
+    }
 
 
 if __name__ == "__main__":

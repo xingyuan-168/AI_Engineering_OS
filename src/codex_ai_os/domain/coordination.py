@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from codex_ai_os.domain.config import StrictModel
-from codex_ai_os.domain.governance import ReviewDecision
+from codex_ai_os.domain.governance import (
+    ReviewDecision,
+    ReviewFinding,
+    ReviewFindingSeverity,
+    ReviewFindingStatus,
+)
 
 
 class TaskBlueprint(StrictModel):
@@ -40,10 +45,21 @@ class HandoffReviewInput(StrictModel):
     reviewed_commit: str = Field(pattern=r"^[0-9a-fA-F]{7,64}$")
     decision: ReviewDecision
     reason: str = Field(min_length=1, max_length=2000)
-    findings: tuple[str, ...] = ()
+    findings: tuple[ReviewFinding, ...] = ()
     risks: tuple[str, ...] = ()
     report_ref: str = Field(min_length=1, max_length=1024)
     report_hash: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+    @model_validator(mode="after")
+    def accepted_review_has_no_open_blocker(self) -> HandoffReviewInput:
+        if self.decision is ReviewDecision.ACCEPTED and any(
+            finding.status is ReviewFindingStatus.OPEN
+            and finding.severity
+            in {ReviewFindingSeverity.HIGH, ReviewFindingSeverity.CRITICAL}
+            for finding in self.findings
+        ):
+            raise ValueError("accepted Handoff cannot contain open high/critical findings")
+        return self
 
 
 class TaskGroupView(StrictModel):

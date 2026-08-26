@@ -47,6 +47,7 @@ class Gate(StrEnum):
 class ActionKind(StrEnum):
     MODEL_TASK = "model_task"
     APPROVAL = "approval"
+    HOST_OPERATION = "host_operation"
     COMPLETE = "complete"
 
 
@@ -73,7 +74,9 @@ class PushStatus(StrEnum):
 
 class NextAction(StrictModel):
     kind: ActionKind
+    operation_id: str | None = None
     task_id: str | None = None
+    task_group_id: str | None = None
     gate: Gate | None = None
     agent: str | None = None
     skill: str | None = None
@@ -81,10 +84,13 @@ class NextAction(StrictModel):
     input_artifacts: tuple[str, ...] = ()
     output_schema: dict[str, Any] = Field(default_factory=dict)
     allowed_paths: tuple[str, ...] = ()
+    dependencies: tuple[str, ...] = ()
     branch: str | None = None
     worktree: str | None = None
     risk_level: RiskLevel = RiskLevel.MEDIUM
     requires_repository_change: bool = False
+    expected_task_version: int | None = Field(default=None, ge=0)
+    expected_state_version: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def fields_match_action_kind(self) -> Self:
@@ -98,6 +104,11 @@ class NextAction(StrictModel):
                 raise ValueError("approval action requires a gate")
             if self.task_id is not None:
                 raise ValueError("approval action cannot carry a task_id")
+        elif self.kind is ActionKind.HOST_OPERATION:
+            if self.operation_id is None:
+                raise ValueError("host_operation requires operation_id")
+            if self.gate is not None:
+                raise ValueError("host_operation cannot carry a gate")
         elif self.kind is ActionKind.COMPLETE and any((self.task_id, self.gate)):
             raise ValueError("complete action cannot carry task_id or gate")
         return self
@@ -174,8 +185,8 @@ class TaskCompletion(StrictModel):
             raise ValueError("pushed repository completion requires remote_name")
         if self.push_status is PushStatus.LOCAL_ONLY and self.remote_name is not None:
             raise ValueError("local-only repository completion cannot claim a remote")
-        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", self.commit_sha):
-            raise ValueError("commit_sha must be a 7-40 character hexadecimal Git SHA")
+        if not re.fullmatch(r"[0-9a-fA-F]{7,64}", self.commit_sha):
+            raise ValueError("commit_sha must be a 7-64 character hexadecimal Git SHA")
         if not self.artifact_paths_and_hashes:
             raise ValueError("repository completion requires at least one artifact hash")
         for path, digest in self.artifact_paths_and_hashes.items():

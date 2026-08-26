@@ -60,15 +60,45 @@ class ReviewDecision(StrEnum):
     BLOCKED = "blocked"
 
 
+class ReviewFindingSeverity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class ReviewFindingStatus(StrEnum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
+class ReviewFinding(StrictModel):
+    id: str = Field(min_length=1, max_length=128)
+    severity: ReviewFindingSeverity
+    status: ReviewFindingStatus
+    summary: str = Field(min_length=1, max_length=2000)
+
+
 class ReviewEvidenceInput(StrictModel):
     review_type: str = Field(pattern=r"^(code|security|handoff|release)$")
     reviewer: str = Field(min_length=1, max_length=128)
     reviewed_commit: str = Field(pattern=r"^[0-9a-fA-F]{7,64}$")
     decision: ReviewDecision
-    findings: tuple[str, ...] = ()
+    findings: tuple[ReviewFinding, ...] = ()
     risks: tuple[str, ...] = ()
     report_ref: str = Field(min_length=1, max_length=1024)
     report_hash: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+    @model_validator(mode="after")
+    def accepted_review_has_no_open_blocker(self) -> Self:
+        if self.decision is ReviewDecision.ACCEPTED and any(
+            finding.status is ReviewFindingStatus.OPEN
+            and finding.severity
+            in {ReviewFindingSeverity.HIGH, ReviewFindingSeverity.CRITICAL}
+            for finding in self.findings
+        ):
+            raise ValueError("accepted review cannot contain open high/critical findings")
+        return self
 
 
 class HandoffStatus(StrEnum):

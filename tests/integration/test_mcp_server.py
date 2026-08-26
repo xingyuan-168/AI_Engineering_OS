@@ -95,21 +95,25 @@ def test_mcp_initializes_and_starts_a_workflow(tmp_path: Path) -> None:
 
     initialized, started, checked = asyncio.run(exercise())
     assert initialized["ok"] is True
-    assert initialized["project_id"] == "PROJECT-MCP"
-    assert started["run"]["workflow_phase"] == "intake"
+    _assert_api_envelope(initialized)
+    _assert_api_envelope(started)
+    _assert_api_envelope(checked)
+    assert initialized["data"]["project_id"] == "PROJECT-MCP"
+    assert started["data"]["run"]["workflow_phase"] == "intake"
     assert started["next_action"]["kind"] == "model_task"
     assert started["next_action"]["branch"].startswith("agent/product-manager/")
     assert ".worktrees" in started["next_action"]["worktree"]
-    assert checked == {
-        "ok": True,
+    assert checked["data"] == {
         "valid": True,
         "checks": [
             {"name": "sqlite_integrity", "ok": True},
             {"name": "document_governance", "ok": True},
         ],
         "deprecated": True,
-        "warning": "Supply run_id and task_id for governed verification.",
     }
+    assert checked["warnings"] == [
+        "Supply run_id and task_id for governed verification."
+    ]
 
 
 def test_mcp_host_handshake_completes_the_full_fixture_workflow(
@@ -250,7 +254,26 @@ def test_mcp_host_handshake_completes_the_full_fixture_workflow(
 
 
 def _structured(result: Any) -> dict[str, Any]:
-    return cast(dict[str, Any], result.structured_content)
+    payload = cast(dict[str, Any], result.structured_content)
+    _assert_api_envelope(payload)
+    data = cast(dict[str, Any], payload["data"])
+    return {
+        **data,
+        "ok": payload["ok"],
+        "next_action": payload["next_action"],
+        "next_actions": payload["next_actions"],
+    }
+
+
+def _assert_api_envelope(payload: dict[str, Any]) -> None:
+    assert payload["api_version"] == "1.2"
+    assert str(payload["request_id"]).startswith("REQ-")
+    assert str(payload["correlation_id"]).startswith("CORR-")
+    next_actions = cast(list[object], payload["next_actions"])
+    assert isinstance(next_actions, list)
+    assert isinstance(payload["warnings"], list)
+    if len(next_actions) == 1:
+        assert payload["next_action"] == next_actions[0]
 
 
 def _initialize_git_repository(root: Path) -> None:

@@ -847,10 +847,15 @@ class WorkflowEngine:
         hydrated: list[NextAction] = []
         for action in actions:
             task = tasks.get(action.task_id or "")
+            updates: dict[str, Any] = {"expected_state_version": run.state_version}
             if task is not None and action.kind is ActionKind.MODEL_TASK:
-                action = action.model_copy(
-                    update={"branch": task.branch, "worktree": task.worktree}
+                updates.update(
+                    branch=task.branch,
+                    worktree=task.worktree,
+                    task_group_id=task.task_group_id,
+                    expected_task_version=task.state_version,
                 )
+            action = action.model_copy(update=updates)
             hydrated.append(action)
         next_actions = tuple(hydrated)
         next_action = next_actions[0] if len(next_actions) == 1 else None
@@ -878,6 +883,7 @@ class WorkflowEngine:
                 NextAction(
                     kind=ActionKind.MODEL_TASK,
                     task_id=task.id,
+                    task_group_id=task.task_group_id,
                     agent=item.agent,
                     skill=item.skill,
                     prompt=item.prompt,
@@ -891,10 +897,13 @@ class WorkflowEngine:
                         "required": ["summary", "artifacts", "checks"],
                     },
                     allowed_paths=item.allowed_paths,
+                    dependencies=item.depends_on_task_ids,
                     branch=task.branch,
                     worktree=task.worktree,
                     risk_level=RiskLevel.HIGH,
                     requires_repository_change=True,
+                    expected_task_version=task.state_version,
+                    expected_state_version=run.state_version + 1,
                 )
             )
         return tuple(actions)
@@ -905,17 +914,29 @@ class WorkflowEngine:
         return NextAction(
             kind=ActionKind.MODEL_TASK,
             task_id=task.id,
+            task_group_id=task.task_group_id,
             agent=task.agent,
             skill=task.skill,
             prompt=task.prompt,
             input_artifacts=("docs/ARCHITECTURE.md", "docs/API_SPEC.md", "docs/DATABASE.md"),
             output_schema={"type": "object", "required": ["artifacts", "checks"]},
             allowed_paths=task.allowed_paths,
+            dependencies=self._task_dependencies(task.id),
             branch=task.branch,
             worktree=task.worktree,
             risk_level=RiskLevel.HIGH,
             requires_repository_change=True,
+            expected_task_version=task.state_version,
         )
+
+    def _task_dependencies(self, task_id: str) -> tuple[str, ...]:
+        with self.store.database.read_connection() as connection:
+            rows = connection.execute(
+                "SELECT depends_on_task_id FROM task_dependencies "
+                "WHERE task_id = ? ORDER BY depends_on_task_id",
+                (task_id,),
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows)
 
     def _task_for_handoff(self, handoff_id: str) -> TaskRecord:
         with self.store.database.connection() as connection:
@@ -1011,6 +1032,8 @@ class WorkflowEngine:
             allowed_paths=definition.allowed_paths,
             risk_level=definition.risk_level,
             requires_repository_change=True,
+            expected_task_version=task.state_version,
+            expected_state_version=state_version,
         )
         return task, action
 
@@ -1027,6 +1050,8 @@ class WorkflowEngine:
             allowed_paths=definition.allowed_paths,
             risk_level=definition.risk_level,
             requires_repository_change=True,
+            expected_task_version=task.state_version,
+            expected_state_version=run.state_version,
         )
 
 

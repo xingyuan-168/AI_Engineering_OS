@@ -11,7 +11,12 @@ from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
 from codex_ai_os.domain.coordination import HandoffReviewInput, TaskBlueprint
-from codex_ai_os.domain.governance import ReviewDecision
+from codex_ai_os.domain.governance import (
+    ReviewDecision,
+    ReviewFinding,
+    ReviewFindingSeverity,
+    ReviewFindingStatus,
+)
 from codex_ai_os.infrastructure.coordination import (
     CoordinationError,
     CoordinationStore,
@@ -281,7 +286,14 @@ def _review(
         reviewed_commit=commit,
         decision=ReviewDecision(decision),
         reason=f"{decision} after evidence review",
-        findings=("finding",),
+        findings=(
+            ReviewFinding(
+                id="FINDING-1",
+                severity=ReviewFindingSeverity.MEDIUM,
+                status=ReviewFindingStatus.OPEN,
+                summary="finding",
+            ),
+        ),
         risks=("risk",),
         report_ref=report_ref,
         report_hash=report_hash,

@@ -353,7 +353,12 @@ class CoordinationStore:
                         review.reviewed_commit.casefold(),
                         review.decision.value,
                         review.reason,
-                        _json(review.findings),
+                        _json(
+                            [
+                                finding.model_dump(mode="json")
+                                for finding in review.findings
+                            ]
+                        ),
                         _json(review.risks),
                         review.report_ref,
                         review.report_hash.casefold(),

@@ -228,7 +228,7 @@ class EvidenceStore:
                     review.reviewer,
                     review.reviewed_commit.casefold(),
                     review.decision.value,
-                    _json(review.findings),
+                    _json([finding.model_dump(mode="json") for finding in review.findings]),
                     _json(review.risks),
                     review.report_ref,
                     review.report_hash.casefold(),

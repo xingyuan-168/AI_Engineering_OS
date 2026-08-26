@@ -627,7 +627,11 @@ def _emit_workflow(result: WorkflowResult, *, json_output: bool) -> None:
             run_status=result.run.run_status.value,
             workflow_phase=result.run.workflow_phase.value,
             state_version=result.run.state_version,
-            next_action=action,
+            next_actions=[
+                next_action.model_dump(mode="json")
+                for next_action in result.next_actions
+            ]
+            or ([action] if action is not None else []),
         ),
         json_output=json_output,
         human=(

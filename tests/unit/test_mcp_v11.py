@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.cli import mcp_server
@@ -18,7 +19,7 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
     root = _project(tmp_path / "mcp")
     repository = mcp_server.repository_check(str(root), target_branch="main")
     assert repository["ok"] is True
-    assert repository["repository_ready"] is True
+    assert _data(repository)["repository_ready"] is True
 
     started = mcp_server.workflow_start(
         str(root),
@@ -28,8 +29,10 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
         target_branch="main",
     )
     assert started["ok"] is True
-    run_id = str(started["run"]["id"])
-    assert mcp_server.workflow_status(str(root), run_id)["run"]["id"] == run_id
+    started_data = _data(started)
+    run_id = str(cast(dict[str, Any], started_data["run"])["id"])
+    status_data = _data(mcp_server.workflow_status(str(root), run_id))
+    assert cast(dict[str, Any], status_data["run"])["id"] == run_id
     assert mcp_server.workflow_step(str(root), run_id)["next_action"] is not None
     assert mcp_server.workflow_resume(str(root), run_id)["ok"] is True
 
@@ -39,7 +42,7 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
     invalid_completion = mcp_server.task_complete(
         str(root),
         run_id,
-        str(started["active_task"]["id"]),
+        str(cast(dict[str, Any], started_data["active_task"])["id"]),
         "invalid",
         artifact_paths_and_hashes={},
     )
@@ -70,7 +73,7 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
     assert cleanup["error"]["code"] == "RECOVERY_UNAVAILABLE"
     docs = mcp_server.docs_check(str(root))
     assert docs["ok"] is True
-    assert docs["valid"] is True
+    assert _data(docs)["valid"] is True
 
 
 def test_mcp_memory_candidate_review_search_and_errors(tmp_path: Path) -> None:
@@ -90,11 +93,11 @@ def test_mcp_memory_candidate_review_search_and_errors(tmp_path: Path) -> None:
         tags=["mcp", "governance"],
     )
     assert candidate["ok"] is True
-    memory_id = str(candidate["record"]["id"])
+    memory_id = str(cast(dict[str, Any], _data(candidate)["record"])["id"])
     activated = mcp_server.memory_review(
         str(root), memory_id, "owner", "activate", "source verified"
     )
-    assert activated["record"]["status"] == "active"
+    assert cast(dict[str, Any], _data(activated)["record"])["status"] == "active"
     searched = mcp_server.memory_search(
         str(root),
         "MCP",
@@ -103,7 +106,8 @@ def test_mcp_memory_candidate_review_search_and_errors(tmp_path: Path) -> None:
         tags=["mcp"],
         source_ref="docs/MCP_MEMORY.md",
     )
-    assert [item["id"] for item in searched["results"]] == [memory_id]
+    results = cast(list[dict[str, Any]], _data(searched)["results"])
+    assert [item["id"] for item in results] == [memory_id]
 
     missing = mcp_server.memory_review(
         str(root), "MEMORY-MISSING", "owner", "activate", "missing"
@@ -131,6 +135,13 @@ def _project(root: Path) -> Path:
     _git(root, "add", ".")
     _git(root, "commit", "-m", "chore: initialize MCP fixture")
     return root
+
+
+def _data(payload: dict[str, Any]) -> dict[str, Any]:
+    assert payload["api_version"] == "1.2"
+    assert str(payload["request_id"]).startswith("REQ-")
+    assert str(payload["correlation_id"]).startswith("CORR-")
+    return cast(dict[str, Any], payload["data"])
 
 
 def _git(root: Path, *arguments: str) -> None:
