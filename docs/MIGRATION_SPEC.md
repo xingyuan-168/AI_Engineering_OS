@@ -6,7 +6,7 @@
 
 ## 1. Schema 版本
 
-格式为 `MAJOR.MINOR`，当前基线为 `1.0`。主版本不兼容时禁止自动升级；次版本迁移必须可重复执行并写入迁移记录。
+公共配置/文档/Profile Schema 使用 `MAJOR.MINOR`，0.2.0 目标为 `1.2`，兼容读取 1.0/1.1。SQLite 使用四位追加迁移编号，目标为 `0007`。不兼容升级禁止静默执行；每条 SQLite 迁移必须确定、可审计、校验 checksum 并写入迁移记录。
 
 ## 2. 表和约束
 
@@ -70,23 +70,31 @@
 
 `id` 主键、`routing_id`、`project_id`、`workflow_id`、`task_id`、`input_hash`、`source_hash`、`score`、`dimension_scores_json`、`risk_level`、`workflow`、`profiles_json`、`reasons_json`、`approval_required`、`human_override_json`、`created_at`。
 
+### `host_operations`
+
+`operation_id` 主键、project/run/task/group/handoff/release 关联、operation kind、幂等键、request hash、expected versions、`pending/running/succeeded/failed/reconcile_required` 状态、租约、attempt、脱敏 request/result、错误码和开始/结束时间。该表是 Git、OCI、GitHub 副作用的恢复事实源。
+
+### `api_call_audits`
+
+保存 request/correlation ID、受信 principal、operation/对象 ID、结果码、状态版本、时长和脱敏摘要；不得保存凭据、Secret 或原始授权头。
+
 ## 3. 迁移流程
 
 1. 读取当前 Schema 版本和迁移 checksum。
 2. 创建数据库备份并校验可读性。
-3. 在事务中按顺序执行未应用迁移。
+3. 校验所有已应用迁移 checksum 未漂移，在独立事务中按顺序执行未应用迁移至 `0007`。
 4. 向 `schema_migrations` 追加成功记录并提交。
-5. 运行外键、索引、事件计数和关键查询校验。
-6. 失败时回滚事务；备份不可恢复时进入 `blocked`。
+5. 运行 integrity、foreign key、索引、FTS rebuild/query、事件计数和关键查询校验。
+6. 失败时回滚事务，将备份恢复到同目录临时数据库并完成相同校验后原子替换活动库；备份不可恢复时进入 `blocked`。
 7. 新增表迁移必须同时创建项目、Workflow、Task 外键/索引，并回填来源 hash 和审计引用；不能以空值绕过旧记录校验。
 
 迁移脚本必须是确定性的、可审计的，并记录执行人、应用版本和时间。
 
 ## 4. 备份与恢复
 
-- 每次迁移前生成带时间戳的 SQLite 备份和 SHA-256 校验和。
+- 每次写迁移前生成带时间戳的 SQLite 备份和 SHA-256 校验和；只读 `status`/`step` 不触发迁移或创建目录。
 - 每日保留最近 7 份备份，发布前保留发布前快照。
-- 恢复先复制到临时路径执行完整性检查，再替换活动数据库。
+- 恢复先复制到与活动库同文件系统的临时路径，执行 integrity、foreign-key、FTS 和关键查询检查，再原子替换活动数据库。
 - 恢复后必须重建 Memory FTS 索引并校验文档 hash。
 
 ## 5. 兼容限制
@@ -95,7 +103,17 @@
 - 旧事件和审批记录不得被迁移脚本删除或改写。
 - 数据库迁移不能替代 Git 文档迁移；两者必须在同一变更记录和 ADR 中关联。
 - Memory FTS5 重建、Handoff hash 校验、Worktree 路径校验和 Routing Decision 输入 hash 校验必须作为迁移后的完整性检查。
+- 受管 Worktree 中的公共调用不得依据旧配置绝对路径静默迁移另一 checkout；必须明确返回 coordinator root 指引。
+- 旧活动 Workflow 保留原 task/handoff/approval/event。证据不足时设置 `MIGRATION_REVALIDATION_REQUIRED`，不得为满足 1.2 约束伪造 Task Group、Review 或 Evidence。
+- `0007` 重建 Handoff/merge 相关 trigger，使 push/对账失败只阻塞 merge/run，不把 accepted Handoff 改写为 rejected。
 
-## 6. 完成定义
+## 6. 0007 验收矩阵
+
+- fresh install `0001 -> 0007`、真实 `0006 -> 0007`、重复迁移和 checksum 冲突。
+- 备份损坏、迁移中断、恢复校验失败、原子替换失败与活动库保持可恢复。
+- FK、integrity、FTS rebuild/query、Host Operation 唯一/租约/状态、Memory version 和 Handoff trigger。
+- 配置/文档/Profile 1.0/1.1 兼容读取，输出 1.2 warning；旧自由文本证据不满足 1.2 Gate。
+
+## 7. 完成定义
 
 迁移规格只有在 Schema、约束、版本、事务、备份、恢复、校验、失败回滚和兼容限制均有测试时才算完成。

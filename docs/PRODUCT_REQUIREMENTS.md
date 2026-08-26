@@ -83,16 +83,16 @@ AI Engineering OS 是运行在 Codex Host 周围的工程治理与执行层。Co
 | ID | 要求 | 可观察验收标准 |
 | --- | --- | --- |
 | MEMORY-001 | Memory 具备完整生命周期、来源校验和 FTS5 检索 | 状态统一为 `pending/active/needs_review/superseded/revoked/expired/deleted`；旧状态按迁移规则转换；ADR 接受、Bug 关闭、Release、回滚和重要失败产生候选；来源变化进入复核；Secret 不进入索引；查询按项目、类型、状态、标签、时间和来源隔离 |
-| ROUTING-001 | Profile 真实参与 Workflow | `frontend/backend/large` Profile 影响路由决策、任务生成、证据和审批；决策被持久化并可通过 status/MCP 查询，而非仅完成加载测试 |
+| ROUTING-001 | Profile 真实参与 Workflow | `frontend-project/backend-project/large-project` Profile 作为 YAML 事实源影响路由决策、任务生成、允许路径、依赖、证据和审批；短名只作 warning 兼容；决策在 G0 前持久化并可通过 status/MCP 查询 |
 | FRONTEND-001 | 提供实际 Frontend Engineer 路径 | `frontend-engineer` Profile、Frontend Implementation Skill、Agent 资产、任务生成、允许路径、Review 和验证 fixture 全部通过验证器与端到端测试 |
 
 ### 4.7 公共接口、迁移与兼容
 
 | ID | 要求 | 可观察验收标准 |
 | --- | --- | --- |
-| API-001 | Plugin API 1.1 暴露受管治理用例 | 提供 `repository_check`、`handoff_review`、`worktree_cleanup`、`memory_candidate_submit`、`memory_review`；扩展 workflow、task、verification、release 和 G4 approval 接口；单任务响应保留 `next_action` 兼容字段并增加 `next_actions` |
-| MIGRATION-001 | 通过追加式 `0004-0006` 安全迁移 | 迁移前备份 SQLite；checksum、外键、幂等和恢复测试通过；活动旧 Workflow 在下一次转换进入 `MIGRATION_REVALIDATION_REQUIRED`，不得沿用旧 Gate 直接发布 |
-| COMPAT-001 | 配置与旧调用保持受控兼容 | 配置 Schema 1.1 可读取 1.0；无 `run_id/task_id` 的旧 verification 调用仅执行兼容健康检查并返回弃用提示；未配置 GitHub 的旧项目可读但不能执行仓库写任务 |
+| API-001 | Plugin API 1.2 暴露受管治理用例 | CLI/MCP 共用模型、服务、响应与错误码；提供 Repository、Handoff、Cleanup、Verification Prepare/Run、Host Operation、Migration、Release Candidate 和 Memory；响应含双轴状态、版本、`next_actions` 与兼容 `next_action` |
+| MIGRATION-001 | 通过追加式 `0007` 安全迁移 | 不改写 0001-0006；迁移前备份，checksum、外键、FTS、Host Operation、幂等、临时库恢复与原子替换测试通过；活动旧 Workflow 进入 `MIGRATION_REVALIDATION_REQUIRED` |
+| COMPAT-001 | 配置与旧调用保持受控兼容 | 配置/API/文档/Profile Schema 1.2 可读取/调用 1.0/1.1 并 warning；旧健康检查和自由文本验证不能满足新 Gate；未配置 GitHub 的旧项目可读但不能执行仓库写任务 |
 
 ## 5. Gate 必需成果
 
@@ -101,8 +101,8 @@ AI Engineering OS 是运行在 Codex Host 周围的工程治理与执行层。Co
 | G0 | 目标、范围、成功标准、风险、Routing Decision | 任一字段缺失、范围冲突或路由无来源 |
 | G1 | 产品需求、用户故事、业务规则、范围及可测试验收标准 | 草案状态、未批准占位内容、需求无 ID 或不可映射测试 |
 | G2 | 开源研究、版本/License、技术栈、架构及适用的 API/数据库/安全/迁移/ADR | 必需设计缺失、版本或 License 未核验、重大决策无 ADR |
-| G3 | 测试、Ruff、Pyright、Secret、依赖、安全和代码 Review 的真实执行证据 | 退出码非零、来源 Commit 不一致、报告缺失或以自由文本代替证据 |
-| G4 | Release Manifest、SBOM、校验和、回滚、CHANGELOG、ADR 索引、Memory、GitHub PR 和目标分支合并证据 | PR/merge/tag/版本不一致、发布授权缺失或制品 hash 不匹配 |
+| G3 | Ruff、Pyright、pytest+coverage、文档、Secret、依赖、Bandit、Plugin/Skill/Hook/MCP、构建安装、镜像扫描、真实 OCI、安全和代码 Review 的 Commit-bound 证据 | 退出码非零、来源 Commit 不一致、报告缺失、真实 OCI skip 或以自由文本代替证据 |
+| G4 | candidate/final manifest、SBOM、checksums、rollback、release review、CHANGELOG、ADR、Release Memory 与 PR/tag/assets 对账 | PR/merge/tag/版本不一致、发布授权未先持久化、制品 hash 不匹配或资产未复核 |
 
 ## 6. 非功能需求
 
@@ -120,7 +120,7 @@ AI Engineering OS 是运行在 Codex Host 周围的工程治理与执行层。Co
 2. 无 Git 或不满足 GitHub/upstream/clean HEAD 条件的项目在首个写任务前被阻塞。
 3. 至少一次未 mock 的公共 MCP 多 Agent 流程通过，包含并行、Review、集成、join 与恢复证据。
 4. Ruff、Pyright、pytest、Secret、依赖审计、Plugin/Skill/Hook/MCP Schema 验证和真实 Podman 测试全部通过。
-5. SQLite `0003 -> 0006`、配置 `1.0 -> 1.1`、失败恢复与重复迁移通过。
+5. SQLite fresh install/`0006 -> 0007`、配置/API 1.0/1.1 到 1.2、失败恢复与重复迁移通过。
 6. 工作树干净，无孤儿 Worktree、未知临时文件或未登记制品。
 7. Release Manifest、SBOM、校验和、回滚、ADR、CHANGELOG、Memory 和 Git 证据完整。
 8. 只有显式 G4 批准后才创建 `v0.2.0` tag 和 GitHub Release；本需求不授权部署。

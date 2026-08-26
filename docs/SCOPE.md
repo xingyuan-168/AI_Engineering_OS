@@ -44,20 +44,28 @@
 - 建立 Workflow 集成 Worktree、独占合并锁、`--no-ff` 合并、冲突阻塞与显式 `worktree_cleanup`。
 - 将 frontend/backend/large Profile 接入运行时；增加 `frontend-engineer` Profile 与 Frontend Implementation Skill。
 
-### 2.5 M4：Execution、Release、Memory 与 Plugin API 1.1
+### 2.5 M4：Execution、Release、Memory 与 Plugin API 1.2
 
 - 将 ExecutionService 接入正常 MCP/Workflow 的测试、构建、代码执行和高风险命令路径。
 - 修复 Release Worktree 与 `.codex-os/artifacts/<run-id>/` 的职责边界。
 - 扩展 G4 GitHub PR、merge Commit、版本、发布授权和 tag/Release 验证。
 - 将 Memory 状态迁移为完整生命周期，增加候选提交、Review、supersedes、撤销、过期和 FTS5。
-- 提供 Plugin API 1.1 新接口与旧单任务/健康检查兼容字段。
+- 提供 Plugin API 1.2 的统一输入/响应/错误契约；1.0/1.1 单任务、短 Profile 名和健康检查入口保留弃用兼容。
 
 ### 2.6 M5：迁移与完整验收
 
-- 增加 SQLite 追加迁移 `0004-0006`，包含备份、checksum、外键、幂等和恢复验证。
+- 增加 SQLite 追加迁移 `0004-0007`，包含备份、checksum、外键、幂等和恢复验证；不得改写 `0001`～`0006`。
 - 对旧活动 Workflow 强制 `MIGRATION_REVALIDATION_REQUIRED`。
-- 完成配置 `1.0 -> 1.1` 兼容、SQLite `0003 -> 0006`、公共 MCP 多 Agent E2E 与真实 Podman 复验。
+- 完成配置 `1.0/1.1 -> 1.2` 兼容、SQLite `0006 -> 0007`、公共 MCP 多 Agent E2E 与真实 Podman 复验。
 - 生成 Release Manifest、SBOM、校验和、回滚、ADR、CHANGELOG 和 Memory 证据。
+
+### 2.7 M6：0.2.0 发布收口
+
+- 以持久化 Host Operation 闭合 G2 集成准备、Handoff 合并、G3 发布准备和 G4 发布副作用。
+- 所有 Gate、Review、文档和发布证据从登记 Commit 或受管审计区重新读取并校验。
+- 增加 verification cache prepare、可复现离线构建、官方 Bookworm digest/SBOM/Trivy 证据和 final manifest。
+- 统一 CLI/MCP 应用模型，补齐 Release Candidate、Memory、Migration、Verification Prepare 与 Host Operation 映射。
+- 以 [RELEASE_CLOSURE_MATRIX.md](RELEASE_CLOSURE_MATRIX.md) 作为缺陷、测试和 Gate 的关闭索引。
 
 ## 3. 明确不在本轮范围
 
@@ -132,7 +140,7 @@
 
 ### 6.5 兼容与公共接口
 
-- 配置 1.0 到 1.1、SQLite 0003 到 0006、失败恢复、备份 checksum 和重复迁移。
+- 配置/接口 1.0 与 1.1 到 1.2、SQLite fresh install 与 0006 到 0007、失败恢复、备份 checksum、FTS 重建和重复迁移。
 - 未 mock 的公共 MCP 完成至少一次多 Agent 端到端流程。
 - Plugin validator、全部新增/更新 Skills、Agent Profile、Hook fixture 与 MCP Schema。
 

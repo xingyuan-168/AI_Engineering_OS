@@ -32,6 +32,7 @@
 | [BOUNDARY_SPEC.md](BOUNDARY_SPEC.md) | 模块职责、权限归属和越权冲突处理 | 模块边界或权限策略变化时 |
 | [design/UX_RESEARCH.md](design/UX_RESEARCH.md) | 用户画像、场景、痛点、研究假设和设计映射 | UX 研究结论或主要场景变化时 |
 | [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) | Windows、Plugin、沙箱和发布候选物检查 | 发布前和发布流程变化时 |
+| [RELEASE_CLOSURE_MATRIX.md](RELEASE_CLOSURE_MATRIX.md) | 0.2.0 缺陷、实现、测试与 Gate 关闭映射 | 发布收口状态变化时 |
 | [V1_RELEASE_REPORT.md](V1_RELEASE_REPORT.md) | V1 实现、构建、测试、Git 证据和环境阻塞项 | 发布候选复验或阻塞解除时 |
 | [PILOT_ACCEPTANCE.md](PILOT_ACCEPTANCE.md) | ERP 采购模块端到端验收场景 | 试点范围或验收标准变化时 |
 | [PRODUCT_REQUIREMENTS.md](PRODUCT_REQUIREMENTS.md) | 产品目标、用户、功能和验收标准 | 需求分析和需求变更时 |
@@ -62,5 +63,5 @@
 - 需求基线：已从 V2.0 需求文档整理。
 - 文档状态：本批次文档已补齐并通过结构审计；实施前如发生范围变化，必须按变更规则更新。
 - 技术栈状态：见 [TECH_STACK.md](TECH_STACK.md)；运行时基线见 [ADR-0001](ADR/ADR-0001-mvp-runtime-stack.md)，契约收敛见 [ADR-0002](ADR/ADR-0002-v1-runtime-contract-convergence.md)。
-- 实施状态：M0-M6 实现已完成；发布候选的环境门禁和待办见 [V1_RELEASE_REPORT.md](V1_RELEASE_REPORT.md)。
+- 实施状态：`ab879c0` 是已验证候选基线；0.2.0 正按 [发布收口矩阵](RELEASE_CLOSURE_MATRIX.md) 补齐 API 1.2、SQLite 0007、持久化 Host Operation、Commit-bound Evidence 与正式发布闭环，尚未完成 G3/G4。
 - 实现契约：已补齐运行时、配置、Workflow 路由、Skill、Agent 交接、Plugin、Worktree、边界、Memory、执行、可观测性、迁移、发布和试点验收文档。

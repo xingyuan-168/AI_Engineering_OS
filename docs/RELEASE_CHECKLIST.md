@@ -4,7 +4,7 @@
 状态：可执行实现规格基线
 适用：Windows 本地 CLI、Codex Plugin、项目配置和沙箱运行时。
 
-当前 `0.1.0` 发布候选的逐项结果和未通过门禁见 [V1_RELEASE_REPORT.md](V1_RELEASE_REPORT.md)；本模板中的未勾选项不得因实现完成而自动视为通过。
+当前目标为需求 `REQ-1.6.2`、发行版 `0.2.0`、Plugin API/配置/文档/Profile `1.2`、SQLite `0007`。`ab879c0` 仅是候选基线；本清单和 [发布收口矩阵](RELEASE_CLOSURE_MATRIX.md) 中的未勾选项不得因实现完成而自动视为通过。
 
 ## 1. 版本与依赖
 
@@ -13,6 +13,7 @@
 - [ ] 直接依赖、传递依赖、License 和安全扫描已归档。
 - [ ] SBOM、依赖 hash 和构建环境信息已生成。
 - [ ] 重大技术变化有 ADR，用户可见变化已写入 CHANGELOG。
+- [ ] `RuntimeVersions` 输出与 pyproject、Plugin manifest、MCP、配置、文档、Profile、数据库及 manifests 完全一致。
 
 ## 2. Windows 安装与升级
 
@@ -33,13 +34,14 @@
 
 ## 4. 沙箱与安全
 
-- [x] Docker Desktop 或 Podman 前置检查通过。
+- [ ] `doctor` 已确认正式阶段的 Podman machine、锁定镜像、Trivy snapshot 和 `gh` 均可用；当前主机 Podman machine 已停止且未安装 `gh`。
 - [x] 默认网络关闭、挂载路径最小化、Docker socket 未挂载。
 - [ ] L0-L4 命令风险策略已测试。
 - [ ] 容器不可用时高风险任务进入 `blocked`，没有宿主机静默降级。
 - [ ] Secret、路径、依赖和镜像安全扫描通过。
 - [ ] 取消、超时、资源超限和强制终止均保留审计证据。
 - [ ] Worktree 路径、Branch、清理和失败现场保留规则已验证。
+- [ ] 官方 Python 3.12.14 Bookworm 的 registry index/platform digest、SBOM 与 Trivy 报告已归档，未批准 high/critical finding 为零。
 
 ## 5. 质量与验收
 
@@ -50,6 +52,9 @@
 - [ ] ERP 采购模块试点通过 [PILOT_ACCEPTANCE.md](PILOT_ACCEPTANCE.md)。
 - [ ] 发布候选物包含构建日志、测试报告、Review、安全报告、SBOM 和回滚包。
 - [ ] 发布后健康检查、故障联系人和回滚窗口已确认。
+- [ ] 所有 `integration_prepare`、`integration_merge`、`release_prepare`、`release_publish` Host Operation 均为 succeeded，或已完成结果未知对账且无残留 lease。
+- [ ] candidate/final manifest 区分 source/candidate/PR merge Commit；tag、draft/published Release 和全部资产 hash 已对账。
+- [ ] 真实 Podman 测试实际运行且通过，测试汇总中没有必需检查 skip。
 
 ## 6. 发布后
 
@@ -60,4 +65,4 @@
 
 ## 7. 通过标准
 
-任一必选项未完成，发布状态为 `blocked`。只有所有必选项完成、证据可定位、回滚已验证并获得 G4 人工批准，才能标记为发布完成。
+任一必选项未完成，发布状态为 `blocked`。只有所有必选项完成、证据可从绑定 Commit/审计区复算、回滚已验证、PR 已合并并获得独立 G4 人工批准，持久化 publish operation 才能创建/对账 `v0.2.0` 和 GitHub Release。本实施请求本身不等同于 G4 发布授权。

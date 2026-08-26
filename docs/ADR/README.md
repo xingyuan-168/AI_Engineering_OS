@@ -7,5 +7,6 @@
 - [ADR-0001：MVP Runtime Stack](ADR-0001-mvp-runtime-stack.md)
 - [ADR-0002：V1 Runtime Contract Convergence](ADR-0002-v1-runtime-contract-convergence.md)
 - [ADR-0003：治理运行时边界、仓库拓扑与版本基线](ADR-0003-governance-runtime-boundary.md)
+- [ADR-0004：0.2.0 发布收口、事务边界与证据来源](ADR-0004-release-closure-transaction-boundaries.md)
 
 新增 ADR 必须使用唯一编号，记录状态、上下文、选项、决定和后果；不得覆盖既有历史。

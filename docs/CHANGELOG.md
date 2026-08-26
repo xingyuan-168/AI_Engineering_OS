@@ -1,6 +1,6 @@
 # 变更记录
 
-## [Unreleased] - 2026-08-21
+## [Unreleased] - 2026-08-26
 
 ### Added
 
@@ -42,6 +42,10 @@
 
 ### Governance
 
+- 接受 ADR-0004，冻结 `REQ-1.6.2` / 软件与 Plugin `0.2.0` / API、配置、文档与 Profile `1.2` / SQLite `0007`，并规定 1.0/1.1 在 0.2.x 的弃用兼容期。
+- 新增 0.2.0 发布收口矩阵，把版本漂移、项目根混淆、Host Operation、合并/发布恢复、Commit-bound Evidence、离线验证缓存、Routing/Plugin 资源和 OCI 供应链逐项绑定测试与 Gate。
+- 决定 Git/OCI/GitHub 副作用先持久化 intent 与授权、结果未知先对账；文档、Review 和制品从绑定 Commit 或受管审计区重读，不接受活动 Worktree 未提交内容替代。
+- 将正式镜像决策统一为 Python 3.12.14 full Bookworm，并要求 index/platform digest、SBOM、Trivy 与 high/critical finding 策略证据。
 - 固定需求基线 `REQ-1.6.2`、软件/CLI/Core `0.2.0`、Plugin API `1.1`、配置 Schema `1.1`、SQLite Schema `0006` 和预期 tag `v0.2.0`，不再混用需求与软件版本。
 - 迁移后的活动 Workflow 在下一次状态变化前进入 `MIGRATION_REVALIDATION_REQUIRED`；只有仓库预检及已批准 Gate 的 1.1 证据包重审通过后才能恢复。
 - 绑定 GitHub 远端，实施每个逻辑变更提交并立即推送的交付协议。
@@ -57,6 +61,7 @@
 - 当前 Windows 环境已验证 Git、uv、Python 3.12 与 SQLite FTS5。
 - 已安装 WSL 2.7.12 和 Podman 5.8.3，启动 rootless `podman-machine-default` 并预拉取项目锁定 digest；`doctor` 返回 `ok=true`。
 - 真实 Podman 沙箱复验通过，ENV-SANDBOX-001 与 ERP PA-007 环境遗留项已解除；Docker Desktop 未安装且不再是阻塞条件。
+- 2026-08-26 当前主机复核发现 Podman machine 已停止且未安装 `gh`；开发诊断可继续，但新的真实 G3/G4 在恢复环境并形成证据前保持 blocked。
 
 ### Documentation baseline (2026-08-20)
 

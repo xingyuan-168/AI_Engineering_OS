@@ -4,9 +4,9 @@ AI Engineering OS 是面向 Codex 的 Windows 本地工程工作流运行时。�
 
 ## 当前状态
 
-V1 实现已覆盖 `new-project`、`feature-development`、`bug-fix` 和 `release`：从业务目标开始，经过 G0-G4 门禁，在隔离 Worktree 与 Docker/Podman 策略沙箱中形成可审计发布候选。
+当前候选实现已覆盖 `new-project`、`feature-development`、`bug-fix` 和 `release`：从业务目标开始，经过 G0-G4 门禁，在隔离 Worktree 与 Docker/Podman 策略沙箱中形成可审计发布候选。0.2.0 收口目标为 Plugin API/配置/文档/Profile 1.2 与 SQLite 0007，详见 [发布收口矩阵](docs/RELEASE_CLOSURE_MATRIX.md)。
 
-当前已具备 Python 3.12 包、严格配置、SQLite 迁移、追加式事件、文档治理、双轴工作流、审批、Git/Handoff 证据、Worktree、Docker/Podman 适配、Memory 生命周期、Codex 私有插件、stdio MCP 主路径和 ERP 纵向试点。当前主机缺少 Docker/Podman，真实 OCI 容器启动仍由 `doctor` 阻塞；详见 [V1 验收报告](docs/V1_RELEASE_REPORT.md)。
+当前已具备 Python 3.12 包、严格配置、SQLite 迁移、追加式事件、文档治理、双轴工作流、审批、Git/Handoff 证据、Worktree、Docker/Podman 适配、Memory 生命周期、Codex 私有插件、stdio MCP 主路径和 ERP 纵向试点。基线仍是“候选而非发布”：G3/G4、`main`、tag、GitHub Release 和 final release/memory records 尚未闭环。当前主机已安装 Podman 但 machine 停止，且未安装 `gh`；正式 OCI/GitHub Gate 会保持 blocked。
 
 ## 本地开发
 
@@ -74,4 +74,4 @@ SQLite state + Markdown/Git facts + Docker/Podman execution
 - Windows 本地运行，Python 3.12。
 - Docker Desktop 是默认沙箱；项目级基础策略可显式选择兼容同一安全契约的 Podman。
 - Codex Host/MCP 是模型编排主路径；`codex exec` 仅为环境验证后的可选叶子适配器。
-- V1 不包含 Web 控制台、DeepSeek Harness、公共插件发布或远程多租户服务。
+- 0.2.0 不包含 Web 控制台、DeepSeek Harness、公共插件市场、远程多租户或生产部署能力。

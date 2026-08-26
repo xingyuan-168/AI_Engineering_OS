@@ -76,7 +76,7 @@
 
 - `BR-048`：CHANGELOG、Release Manifest 和回滚文档写入 Release Worktree，Review 后合入集成分支。
 - `BR-049`：Wheel、压缩包、SBOM 和校验和写入 `.codex-os/artifacts/<run-id>/` 并被 Git 忽略；SQLite 与 Manifest 保存 hash、来源 Commit 和生成环境。
-- `BR-050`：需求基线为 `REQ-1.6.2`；软件、CLI、Plugin 核心版本为 `0.2.0`；Plugin API 与配置 Schema 为 `1.1`；SQLite 通过 `0004-0006` 管理。
+- `BR-050`：需求基线为 `REQ-1.6.2`；软件、CLI、Plugin 核心版本为 `0.2.0`；Plugin API、配置、文档与 Profile Schema 为 `1.2`；SQLite 通过 `0001-0007` 管理。
 - `BR-051`：Release Manifest 必须绑定版本、构建 Commit、GitHub PR、merge Commit、tag、文档版本、配置 hash、依赖锁 hash、制品 hash 和 Memory 记录。
 - `BR-052`：G4 审批必须携带 PR 编号、URL、merge Commit、版本和独立发布授权；Runtime 必须验证 PR head 对应集成分支且目标分支包含集成提交。
 - `BR-053`：只有 G4 批准后才允许创建并推送 annotated tag `v0.2.0`；GitHub Release 失败时 Workflow 保持阻塞。
@@ -84,10 +84,10 @@
 
 ## 9. 迁移与兼容
 
-- `BR-055`：SQLite 迁移顺序固定为 `0004_repository_governance.sql`、`0005_multi_agent_coordination.sql`、`0006_memory_fts.sql`，不得改写已发布迁移。
+- `BR-055`：SQLite 迁移顺序固定为 `0004_repository_governance.sql`、`0005_multi_agent_coordination.sql`、`0006_memory_fts.sql`、`0007_release_closure.sql`，不得改写已发布迁移。
 - `BR-056`：迁移前强制备份数据库并生成 checksum；迁移必须验证外键、重复执行和备份恢复。
 - `BR-057`：旧活动 Workflow 在下一次状态转换时进入 `MIGRATION_REVALIDATION_REQUIRED`，完成新 Gate 证据审计后才能恢复。
-- `BR-058`：配置 1.1 兼容读取 1.0；旧 verification 无运行参数时仅执行健康检查并返回弃用提示。
+- `BR-058`：配置/API 1.2 兼容读取/调用 1.0/1.1；旧 verification 无运行参数时仅执行健康检查并返回弃用提示，不能满足 1.2 Gate。
 - `BR-059`：未配置 GitHub 的旧项目可执行 status、docs 与只读检查，但所有仓库写任务保持阻塞。
 
 ## 10. Memory 与 Routing

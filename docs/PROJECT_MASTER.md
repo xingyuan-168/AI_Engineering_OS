@@ -60,6 +60,11 @@ Codex Host 负责模型、Session、Tool Runtime 和宿主交互；AI Engineerin
 | Document Manager | 管理文档事实、影响检查和文档索引 | Markdown 变更、完整性报告 |
 | Approval Manager | 管理 G0-G4 审批和高风险确认 | 审批记录、阻塞/放行决定 |
 | Release Manager | 汇总证据并生成发布候选物 | 候选物、校验和、回滚包 |
+| Host Operation Manager | 持久化并对账 Git、OCI 与 GitHub 外部副作用 | intent、租约、尝试、结果和恢复证据 |
+
+### 版本矩阵
+
+0.2.0 固定使用需求 `REQ-1.6.2`、软件/CLI/Plugin `0.2.0`、Plugin API/配置/文档/Profile Schema `1.2` 和 SQLite `0007`。1.0/1.1 兼容入口在 0.2.x 内保留并返回弃用 warning；最早只可在 0.3.0 经 ADR 移除。版本事实由 Runtime 唯一版本对象提供，禁止各模块散落硬编码。
 
 ## 3. 项目事实来源
 
@@ -100,8 +105,8 @@ V1 支持 `new-project`、`feature-development`、`bug-fix`、`release`；路由
 - G0：目标、范围和验收标准明确。
 - G1：需求、用户故事、业务规则和产品文档完成。
 - G2：架构、技术栈、API、数据库和安全设计完成。
-- G3：实现、测试、代码 Review 和安全扫描通过。
-- G4：发布候选物、CHANGELOG、ADR 和 Memory 完成。
+- G3：实现、测试、代码 Review、安全扫描、Plugin/Skill/Hook/MCP、构建安装与真实 OCI 证据全部绑定 integration Commit 并通过。
+- G4：候选/final manifest、SBOM、checksums、rollback、Release Review、Memory 与 PR/tag/assets 对账完成；发布授权先持久化，再执行外部副作用。
 
 需求冻结、架构冻结、外部依赖、破坏性迁移、敏感数据处理和生产发布必须人工确认。命令和文件操作必须受 Execution Manager 策略约束。模块职责和越权冲突以 [BOUNDARY_SPEC.md](BOUNDARY_SPEC.md) 为准；冲突默认阻塞，不允许静默覆盖。
 
@@ -116,6 +121,8 @@ V1 支持 `new-project`、`feature-development`、`bug-fix`、`release`；路由
 - [TECH_STACK.md](TECH_STACK.md)
 - [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - [ADR-0001](ADR/ADR-0001-mvp-runtime-stack.md)
+- [ADR-0004](ADR/ADR-0004-release-closure-transaction-boundaries.md)
+- [RELEASE_CLOSURE_MATRIX.md](RELEASE_CLOSURE_MATRIX.md)
 - [RUNTIME_SPEC.md](RUNTIME_SPEC.md)
 - [CONFIG_SPEC.md](CONFIG_SPEC.md)
 - [WORKFLOW_SPEC.md](WORKFLOW_SPEC.md)

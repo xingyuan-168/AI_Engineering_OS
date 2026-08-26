@@ -1,16 +1,17 @@
-# AI Engineering OS Plugin API 1.1 与 CLI 契约
+# AI Engineering OS Plugin API 1.2 与 CLI 契约
 
 <!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001"]} -->
 
-Plugin API 1.1 由 MCP 与 Typer CLI 共享同一应用服务。接口只执行确定性治理用例；不触发模型推理。所有路径输入为项目根相对路径或经过解析的项目根，禁止任意绝对输出路径。
+Plugin API 1.2 由 MCP 与 Typer CLI 共享同一输入模型、应用服务、响应封装和错误码。接口只执行确定性治理用例；不触发模型推理。所有路径输入为项目根相对路径或显式解析的 coordinator root，禁止任意绝对输出路径；受管任务 Worktree 发起的公共调用不得静默重定向到其他 checkout。
 
 ## 1. 通用响应
 
 ```json
 {
-  "api_version": "1.1",
+  "api_version": "1.2",
   "ok": true,
   "request_id": "REQ-...",
+  "correlation_id": "CORR-...",
   "run_id": "RUN-...",
   "workflow_phase": "implementation",
   "run_status": "running",
@@ -35,6 +36,7 @@ Plugin API 1.1 由 MCP 与 Typer CLI 共享同一应用服务。接口只执行�
 ```json
 {
   "kind": "model_task|approval|host_operation|complete",
+  "operation_id": "OP-...",
   "task_id": "TASK-...",
   "task_group_id": "GROUP-...",
   "agent": "backend-engineer",
@@ -48,7 +50,8 @@ Plugin API 1.1 由 MCP 与 Typer CLI 共享同一应用服务。接口只执行�
   "worktree": "D:/.../.worktrees/RUN-.../backend-engineer/TASK-...",
   "risk_level": "high",
   "requires_repository_change": true,
-  "expected_task_version": 1
+  "expected_task_version": 1,
+  "expected_state_version": 7
 }
 ```
 
@@ -201,7 +204,7 @@ status 严格只读，不获取写租约，不推进 Workflow。
 
 ### 4.4 `task_complete`
 
-Plugin API 1.1 输入：
+Plugin API 1.2 输入：
 
 ```json
 {
@@ -241,7 +244,7 @@ Plugin API 1.1 输入：
 
 约束：Reviewer 与 producer 不得相同；reviewed Commit 必须等于 Handoff source Commit；开放 high/critical finding 禁止 accepted。
 
-accepted 后 Runtime 进入集成队列并尝试持锁 `--no-ff` 合并。输出 `handoff`、`merge`、`task_group` 和重新计算的 `next_actions`。冲突返回业务成功 `ok=true` 但 `merge.status=conflicted`、run blocked 与 `MERGE_CONFLICT` blocker，便于持久化恢复。
+accepted 后 Runtime 在同一事务保存 Review、期望版本和 `integration_merge` Host Operation，输出包含 operation ID 的 `next_actions`。Host 执行/恢复该 operation 后才进行持锁 `--no-ff` 合并。冲突返回业务成功 `ok=true` 但 `merge.status=conflicted`、run blocked 与 `MERGE_CONFLICT` blocker，便于持久化恢复；push 失败不得把 accepted Handoff 改成 rejected。
 
 ### 5.2 `worktree_cleanup`
 
@@ -286,6 +289,18 @@ Runtime 从 task 找 Worktree，通过 ExecutionService 建立一个或多个锁
 
 无 `run_id/task_id` 的 1.0 调用只运行 runtime/SQLite/docs 健康检查，返回 `DEPRECATED_HEALTH_CHECK` warning，不能满足 G3。
 
+### 7.2 `verification_prepare`
+
+输入：`project_root`、`run_id`、`expected_state_version`、`idempotency_key`、`network_approval_ref`、`expires_at`、目标 Python/平台。输出与 `uv.lock` hash 绑定的 wheelhouse manifest、pip-audit snapshot 和 Trivy DB snapshot。prepare 是显式联网 Host Operation；正式 `verification_run` 只读消费已批准、未过期且 hash/平台匹配的缓存。
+
+### 7.3 `host_operation_execute` / `host_operation_reconcile`
+
+输入：`project_root`、`operation_id`、`expected_operation_version`、`idempotency_key`。Adapter 从受信 `InvocationContext` 获取活动 principal 和允许动作，不接受请求体自报 producer/reviewer/approver 权限。结果未知时 `execute` 返回 `reconcile_required`，调用方必须先运行 reconcile；禁止盲目重放 merge、push、tag、Release 或资产上传。
+
+### 7.4 `database_migrate`
+
+输入：显式 coordinator `project_root`、`expected_schema_version`、`target_schema_version=0007`、`idempotency_key`。迁移是高风险 Host Operation：先备份与校验，失败恢复到临时数据库并通过 integrity/FK/FTS 后原子替换；`status`、`workflow_step` 和其他只读接口不得隐式调用迁移。
+
 ## 8. Release 接口
 
 ### 8.1 `release_candidate_create`
@@ -294,7 +309,7 @@ Runtime 从 task 找 Worktree，通过 ExecutionService 建立一个或多个锁
 
 前置：G3 approved、当前任务角色 release-manager、Worktree 类型 release、integration HEAD 与任务 base 一致。输出 Manifest path/hash、可提交文件、制品目录与 required checks。重复调用相同 version/source Commit 返回同一候选；不同 source 返回 `RELEASE_SOURCE_CHANGED`。
 
-Tag 与 GitHub Release 不由该接口创建，只在 G4 批准后的 release finalize host operation 中执行。
+Tag 与 GitHub Release 不由该接口创建，只在 G4 授权已持久化且 PR 已合并后的 `release_publish` Host Operation 中执行。候选响应区分 `source_commit` 与提交候选文件的 `candidate_commit`；发布完成后返回 final manifest hash 与远端资产对账结果。
 
 ## 9. Memory 接口
 
@@ -312,7 +327,7 @@ Runtime 验证 content/source 路径、hash、项目范围与 Secret 扫描，�
 
 ### 9.3 `memory_search`
 
-输入扩展：`query`、`types[]?`、`statuses[]?=active`、`tags[]?`、`created_from/to?`、`source_ref?`、`limit<=100`。`project_id` 始终从项目配置注入，普通调用不能跨项目。
+输入扩展：`query`、`types[]?`、`statuses[]?=active`、`tags[]?`、`created_from/to?`、`source_ref?`、不透明 `cursor?`、`limit<=100`。结果按稳定键排序并返回 `next_cursor|null`；`project_id` 始终从项目配置注入，普通调用不能跨项目。
 
 ## 10. 文档接口
 
@@ -326,10 +341,15 @@ Runtime 验证 content/source 路径、hash、项目范围与 Secret 扫描，�
 | `repository_check` | `codex-os repo-check` |
 | `workflow_start` | `codex-os run <workflow>` |
 | `workflow_status` | `codex-os status` |
+| `workflow_step` | `codex-os step` |
 | `workflow_resume` | `codex-os resume` |
 | `handoff_review` | `codex-os handoff review` |
 | `worktree_cleanup` | `codex-os worktree cleanup` |
 | `verification_run` | `codex-os verify` |
+| `verification_prepare` | `codex-os verification prepare` |
+| `host_operation_execute` | `codex-os host-operation execute` |
+| `host_operation_reconcile` | `codex-os host-operation reconcile` |
+| `database_migrate` | `codex-os database migrate` |
 | `release_candidate_create` | `codex-os release candidate` |
 | `approval_submit` | `codex-os approve|reject` |
 | `memory_candidate_submit` | `codex-os memory submit` |
@@ -362,12 +382,12 @@ CLI `--json` stdout 只输出一个通用响应；日志写 stderr。MCP 与 CLI
 
 ## 14. 兼容与弃用
 
-- Plugin API 1.1 读取配置 1.0 并将缺失新字段填为安全默认，但输出始终标注实际兼容模式。
+- Plugin API 1.2 读取配置 1.0/1.1 并将缺失新字段填为安全默认，但输出始终为 1.2 响应并标注实际兼容模式和弃用 warning。
 - 1.0 `workflow_start` 未提供 Profile/target 时使用路由结果和 `main`；响应保留 `next_action`。
 - 1.0 `task_complete` 自由文本验证只能保存审计备注，不能通过新 Gate。
 - 1.0 `verification_run(project_root)` 只作健康检查并发出弃用 warning。
 - 不提供允许正式仓库降级为 local-only、跳过 Review、跳过 Gate 或 Host 执行的兼容开关。
-- API 1.0 兼容入口在 0.2.x 保留；移除需要新 ADR、CHANGELOG 和主版本升级。
+- API 1.0/1.1 兼容入口、单动作响应、短 Profile 名和健康检查在 0.2.x 保留；最早在 0.3.0 通过新 ADR 与 CHANGELOG 移除。
 
 ## 15. 契约完成定义
 
