@@ -1,4 +1,4 @@
-schema_version: "1.0"
+schema_version: "1.2"
 name: frontend-project
 description: Add product, interaction, UI, accessibility, and frontend verification evidence.
 project_types: [frontend, fullstack]

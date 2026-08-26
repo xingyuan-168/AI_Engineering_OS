@@ -18,6 +18,7 @@ from codex_ai_os.application.execution import ExecutionService, ExecutionService
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
 from codex_ai_os.domain.config import RiskLevel
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import RunStatus, WorkflowPhase
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
@@ -45,11 +46,11 @@ class ReleaseCandidate:
 
 
 class ReleaseCandidateService:
-    VERSION = "0.2.0"
-    REQUIREMENT_BASELINE = "REQ-1.6.2"
-    PLUGIN_API = "1.1"
-    CONFIG_SCHEMA = "1.1"
-    SQLITE_SCHEMA = "0006"
+    VERSION = RUNTIME_VERSIONS.software
+    REQUIREMENT_BASELINE = RUNTIME_VERSIONS.requirement_baseline
+    PLUGIN_API = RUNTIME_VERSIONS.api
+    CONFIG_SCHEMA = RUNTIME_VERSIONS.config_schema
+    SQLITE_SCHEMA = RUNTIME_VERSIONS.sqlite_schema
 
     def __init__(
         self,
@@ -119,7 +120,7 @@ class ReleaseCandidateService:
 
         rollback_relative = "release/rollback.md"
         rollback_content = (
-            "# AI Engineering OS 0.2.0 Rollback\n\n"
+            f"# AI Engineering OS {self.VERSION} Rollback\n\n"
             f"Source Commit: `{source_commit}`\n\n"
             "Rollback uses a new `git revert` Commit and the verified pre-0004 SQLite backup; "
             "never rewrite pushed history or run reverse DROP migrations. If schema recovery is "
@@ -133,13 +134,17 @@ class ReleaseCandidateService:
 
         manifest_relative = "release/manifest.json"
         manifest: dict[str, object] = {
-            "schema_version": "1.1",
+            "schema_version": RUNTIME_VERSIONS.document_schema,
             "requirement_baseline": self.REQUIREMENT_BASELINE,
             "software_version": self.VERSION,
+            "plugin_version": RUNTIME_VERSIONS.plugin,
             "plugin_api_version": self.PLUGIN_API,
             "config_schema_version": self.CONFIG_SCHEMA,
+            "document_schema_version": RUNTIME_VERSIONS.document_schema,
+            "profile_schema_version": RUNTIME_VERSIONS.profile_schema,
             "sqlite_schema_version": self.SQLITE_SCHEMA,
-            "git_tag": f"v{self.VERSION}",
+            "execution_image": RUNTIME_VERSIONS.execution_image,
+            "git_tag": RUNTIME_VERSIONS.git_tag,
             "project_id": result.run.project_id,
             "run_id": run_id,
             "release_task_id": result.active_task.id,
@@ -295,9 +300,11 @@ class ReleaseCandidateService:
                         id, project_id, requirement_baseline, software_version,
                         plugin_api_version, config_schema_version, sqlite_schema_version,
                         git_tag, source_commit, config_hash, dependency_lock_hash,
-                        status, created_at, updated_at
+                        status, created_at, updated_at, plugin_version,
+                        document_schema_version, profile_schema_version, execution_image
                     ) SELECT ?, project_id, ?, ?, ?, ?, ?, ?, ?, config_hash, ?,
-                             'candidate', ?, ? FROM workflow_runs WHERE id = ?
+                             'candidate', ?, ?, ?, ?, ?, ?
+                      FROM workflow_runs WHERE id = ?
                     """,
                     (
                         version_id,
@@ -311,6 +318,10 @@ class ReleaseCandidateService:
                         lock_hash,
                         now,
                         now,
+                        RUNTIME_VERSIONS.plugin,
+                        RUNTIME_VERSIONS.document_schema,
+                        RUNTIME_VERSIONS.profile_schema,
+                        RUNTIME_VERSIONS.execution_image,
                         run_id,
                     ),
                 )
@@ -326,8 +337,11 @@ class ReleaseCandidateService:
                         id, run_id, task_id, version_record_id, status,
                         release_worktree_id, manifest_path, manifest_hash, artifact_root,
                         sbom_path, sbom_hash, checksums_path, checksums_hash,
-                        rollback_path, rollback_hash, source_commit, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        rollback_path, rollback_hash, source_commit,
+                        integration_source_commit, candidate_manifest_path,
+                        candidate_manifest_hash, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                              ?, ?, ?, ?, ?)
                     """,
                     (
                         release_id,
@@ -345,6 +359,9 @@ class ReleaseCandidateService:
                         candidate.rollback_path,
                         candidate.rollback_hash,
                         candidate.source_commit,
+                        candidate.source_commit,
+                        candidate.manifest_path,
+                        candidate.manifest_hash,
                         now,
                         now,
                     ),

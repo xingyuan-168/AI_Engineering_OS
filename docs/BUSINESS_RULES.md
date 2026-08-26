@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 业务与治理规则
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
 
 这些规则是运行时必须强制执行的产品约束。提示词、说明文字或操作者自觉不能替代程序校验和审计证据。
 

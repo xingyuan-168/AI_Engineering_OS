@@ -8,6 +8,7 @@ from typing import Self
 from pydantic import Field, model_validator
 
 from codex_ai_os.domain.config import StrictModel
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 
 
 class EvidenceStatus(StrEnum):
@@ -128,12 +129,14 @@ class ReleaseAuthority(StrictModel):
 class G4ApprovalInput(StrictModel):
     pr_number: int = Field(gt=0)
     pr_url: str = Field(pattern=r"^https://[^\s]+/pull/\d+$")
-    merge_commit: str = Field(pattern=r"^[0-9a-fA-F]{40}$")
-    version: str = Field(pattern=r"^0\.2\.0$")
+    merge_commit: str = Field(pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+    version: str = Field(min_length=1, max_length=32)
     release_authority: ReleaseAuthority
 
     @model_validator(mode="after")
     def authority_must_be_explicit(self) -> Self:
         if not self.release_authority.authorized:
             raise ValueError("G4 requires explicit tag and GitHub Release authorization")
+        if self.version != RUNTIME_VERSIONS.software:
+            raise ValueError(f"G4 version must be {RUNTIME_VERSIONS.software}")
         return self

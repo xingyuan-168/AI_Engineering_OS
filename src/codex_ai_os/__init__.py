@@ -1,5 +1,7 @@
 """AI Engineering OS runtime package."""
 
-__version__ = "0.2.0"
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 
-__all__ = ["__version__"]
+__version__ = RUNTIME_VERSIONS.software
+
+__all__ = ["RUNTIME_VERSIONS", "__version__"]

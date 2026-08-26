@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 安全设计
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"security-reviewer","requirement_refs":["REQ-1.6.2","REPO-001","GATE-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","HYGIENE-001","MEMORY-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"security-reviewer","requirement_refs":["REQ-1.6.2","REPO-001","GATE-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","HYGIENE-001","MEMORY-001"]} -->
 
 安全目标是让不受信的仓库内容、Agent 输出、远端响应、依赖和日志无法绕过路径、执行、证据、审批与发布边界。所有高风险失败默认阻塞，不降级到宿主执行或人工口头确认。
 

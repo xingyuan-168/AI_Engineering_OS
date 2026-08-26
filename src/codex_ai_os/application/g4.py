@@ -14,6 +14,7 @@ from typing import Protocol, cast
 from urllib.parse import urlsplit
 
 from codex_ai_os.domain.governance import G4ApprovalInput
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import WorkflowRun
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
@@ -60,8 +61,11 @@ class GitHubReleaseGovernanceService:
     def authorize_and_publish(
         self, run: WorkflowRun, approval: G4ApprovalInput
     ) -> G4PublicationResult:
-        if approval.version != "0.2.0":
-            raise ReleaseGovernanceError("VERSION_MISMATCH", "G4 version must be 0.2.0")
+        if approval.version != RUNTIME_VERSIONS.software:
+            raise ReleaseGovernanceError(
+                "VERSION_MISMATCH",
+                f"G4 version must be {RUNTIME_VERSIONS.software}",
+            )
         if run.integration_branch is None or run.integration_head is None:
             raise ReleaseGovernanceError(
                 "RELEASE_INCOMPLETE", "workflow has no verified integration branch and head"
@@ -264,12 +268,16 @@ class GitHubReleaseGovernanceService:
     ) -> tuple[str, str]:
         relative = f".codex-os/artifacts/{run.id}/release-manifest.json"
         payload = {
-            "schema_version": "1.1",
-            "requirement_baseline": "REQ-1.6.2",
+            "schema_version": RUNTIME_VERSIONS.document_schema,
+            "requirement_baseline": RUNTIME_VERSIONS.requirement_baseline,
             "software_version": approval.version,
-            "plugin_api_version": "1.1",
-            "config_schema_version": "1.1",
-            "sqlite_schema_version": "0006",
+            "plugin_version": RUNTIME_VERSIONS.plugin,
+            "plugin_api_version": RUNTIME_VERSIONS.api,
+            "config_schema_version": RUNTIME_VERSIONS.config_schema,
+            "document_schema_version": RUNTIME_VERSIONS.document_schema,
+            "profile_schema_version": RUNTIME_VERSIONS.profile_schema,
+            "sqlite_schema_version": RUNTIME_VERSIONS.sqlite_schema,
+            "execution_image": RUNTIME_VERSIONS.execution_image,
             "source_commit": release["source_commit"],
             "integration_head": run.integration_head,
             "pull_request": {"number": approval.pr_number, "url": approval.pr_url},

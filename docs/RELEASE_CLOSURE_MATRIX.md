@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 发布收口矩阵
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"product-manager","requirement_refs":["REQ-1.6.2","VERSION-001","GATE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"product-manager","requirement_refs":["REQ-1.6.2","VERSION-001","GATE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
 
 本矩阵把 `ab879c0` 候选基线的已知缺口绑定到实现、自动测试和 Gate。行状态只有在代码、文档、测试和可定位证据全部完成后才能关闭。
 

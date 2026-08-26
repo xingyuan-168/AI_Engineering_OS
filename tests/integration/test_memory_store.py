@@ -24,7 +24,9 @@ def test_memory_candidate_activation_search_and_source_invalidation(tmp_path: Pa
     active = store.activate(candidate.id)
 
     assert candidate.status == "pending"
+    assert candidate.state_version == 0
     assert active.status == "active"
+    assert active.state_version == 1
     assert store.activate(candidate.id) == active
     assert store.search("sqlite") == [active]
 
@@ -41,6 +43,37 @@ def test_memory_candidate_activation_search_and_source_invalidation(tmp_path: Pa
             ).fetchall()
         ]
     assert event_types == ["memory.pending", "memory.active", "memory.needs_review"]
+
+
+def test_memory_review_requires_current_expected_version(tmp_path: Path) -> None:
+    store, _database = _store(tmp_path, "PROJECT-MEMORY-VERSION")
+    _write(tmp_path, "docs/source.md", "# Decision source\n")
+    _write(tmp_path, "docs/memory.md", "Versioned review.\n")
+    candidate = store.create_candidate(
+        record_type="decision",
+        title="Versioned review",
+        content_ref="docs/memory.md",
+        source_refs=("docs/source.md",),
+        confidence=0.9,
+    )
+
+    active = store.review(
+        candidate.id,
+        reviewer="memory-reviewer",
+        decision="activate",
+        reason="verified",
+        expected_version=0,
+    )
+
+    assert active.state_version == 1
+    with pytest.raises(MemoryStoreError, match="STATE_VERSION_CONFLICT"):
+        store.review(
+            candidate.id,
+            reviewer="memory-reviewer",
+            decision="needs_review",
+            reason="stale caller",
+            expected_version=0,
+        )
 
 
 def test_memory_rejects_secrets_low_confidence_and_unsafe_sources(tmp_path: Path) -> None:

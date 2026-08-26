@@ -11,6 +11,7 @@ from typing import Literal
 import yaml
 
 from codex_ai_os.domain.config import GitPushPolicy, ProjectConfig, ProjectType, RiskLevel
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentCheckReport, DocumentManager
@@ -39,7 +40,7 @@ class ProjectInitializer:
         project_type: ProjectType,
         risk_level: RiskLevel = RiskLevel.MEDIUM,
         git_push_policy: GitPushPolicy = GitPushPolicy.REMOTE_REQUIRED,
-        schema_version: Literal["1.0", "1.1"] = "1.1",
+        schema_version: Literal["1.0", "1.1", "1.2"] = "1.2",
     ) -> ProjectInitResult:
         root = project_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -76,7 +77,7 @@ class ProjectInitializer:
 
         database_path = root / ".codex-os" / "state" / "state.db"
         database = Database(database_path)
-        database.migrate(app_version="0.2.0")
+        database.migrate(app_version=RUNTIME_VERSIONS.software)
         config_hash = hashlib.sha256(
             json.dumps(_serializable_config(config), sort_keys=True).encode("utf-8")
         ).hexdigest()
@@ -112,6 +113,8 @@ class ProjectInitializer:
 
 def _serializable_config(config: ProjectConfig) -> dict[str, object]:
     data = config.model_dump(mode="json")
+    data["root"] = "."
+    data["source_of_truth"] = config.source_of_truth.relative_to(config.root).as_posix()
     return {str(key): value for key, value in data.items()}
 
 
@@ -133,7 +136,7 @@ def _runtime_entry_files() -> dict[str, str]:
         )
         + "\n",
         ".codex-os/execution-policy.yaml": (
-            "schema_version: '1.1'\n"
+            f"schema_version: '{RUNTIME_VERSIONS.config_schema}'\n"
             "sandbox: docker\n"
             "network: disabled\n"
             "allowed_network_hosts: []\n"

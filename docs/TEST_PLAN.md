@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 测试计划
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"qa","requirement_refs":["REQ-1.6.2","GATE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"qa","requirement_refs":["REQ-1.6.2","GATE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
 
 测试以 `REQ-1.6.2`、Plugin API/配置/文档/Profile 1.2、SQLite 0007 和 [ADR-0004](ADR/ADR-0004-release-closure-transaction-boundaries.md) 为基线。任何跳过的必需真实检查都视为未通过，不以 mock 或自由文本替代。
 

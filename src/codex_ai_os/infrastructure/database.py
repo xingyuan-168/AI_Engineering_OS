@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
+import tempfile
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 
 
 class MigrationError(RuntimeError):
@@ -51,10 +55,30 @@ class Database:
         finally:
             connection.close()
 
+    @contextmanager
+    def read_connection(self) -> Generator[sqlite3.Connection]:
+        """Open an existing database without creating files or changing journal mode."""
+
+        if not self.path.is_file():
+            raise MigrationError(f"database does not exist: {self.path}")
+        connection = sqlite3.connect(
+            f"{self.path.as_uri()}?mode=ro",
+            uri=True,
+            timeout=5.0,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA query_only = ON")
+        try:
+            yield connection
+        finally:
+            connection.close()
+
     def migrate(
         self,
         *,
-        app_version: str = "0.2.0",
+        app_version: str = RUNTIME_VERSIONS.software,
         applied_by: str = "codex-os",
     ) -> MigrationResult:
         existed_before = self.path.exists() and self.path.stat().st_size > 0
@@ -103,6 +127,7 @@ class Database:
             if failure is None:
                 try:
                     self._integrity_check_connection(connection)
+                    self._fts_check_connection(connection)
                 except MigrationError as exc:
                     failure = exc
 
@@ -119,8 +144,15 @@ class Database:
             self._integrity_check_connection(connection)
 
     def current_version(self) -> str | None:
-        with self.connection() as connection:
-            self._bootstrap_migration_table(connection)
+        if not self.path.is_file():
+            return None
+        with self.read_connection() as connection:
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'schema_migrations'"
+            ).fetchone()
+            if table is None:
+                return None
             row = connection.execute(
                 "SELECT version FROM schema_migrations "
                 "ORDER BY applied_at DESC, version DESC LIMIT 1"
@@ -189,8 +221,9 @@ class Database:
         backup_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         backup_path = backup_dir / f"{self.path.stem}-{stamp}-pre-migration.db"
-        with sqlite3.connect(backup_path) as backup_connection:
+        with closing(sqlite3.connect(backup_path)) as backup_connection:
             connection.backup(backup_connection)
+            backup_connection.commit()
         digest = hashlib.sha256(backup_path.read_bytes()).hexdigest()
         backup_path.with_suffix(".db.sha256").write_text(
             f"{digest}  {backup_path.name}\n",
@@ -208,15 +241,67 @@ class Database:
         actual = hashlib.sha256(backup_path.read_bytes()).hexdigest()
         if actual != expected:
             raise MigrationError(f"backup checksum mismatch: {backup_path}")
-        with sqlite3.connect(backup_path) as connection:
+        with closing(sqlite3.connect(backup_path)) as connection:
             connection.execute("PRAGMA foreign_keys = ON")
             self._integrity_check_connection(connection)
+            self._fts_check_connection(connection)
 
     def _restore_backup(self, backup_path: Path) -> None:
         self._verify_backup(backup_path)
-        with sqlite3.connect(backup_path) as source, sqlite3.connect(self.path) as target:
-            source.backup(target)
-        self.integrity_check()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary: Path | None = None
+        failed_path: Path | None = None
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            dir=self.path.parent,
+            prefix=f".{self.path.stem}.restore-",
+            suffix=".db",
+        ) as handle:
+            temporary = Path(handle.name)
+        try:
+            source_uri = f"{backup_path.resolve().as_uri()}?mode=ro"
+            with closing(sqlite3.connect(source_uri, uri=True)) as source, closing(
+                sqlite3.connect(temporary)
+            ) as target:
+                source.backup(target)
+                target.commit()
+            with closing(sqlite3.connect(temporary)) as restored:
+                restored.execute("PRAGMA foreign_keys = ON")
+                self._integrity_check_connection(restored)
+                self._fts_check_connection(restored)
+
+            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+            if self.path.exists():
+                failed_path = self.path.with_name(
+                    f"{self.path.stem}-{stamp}-failed-migration.db"
+                )
+                os.replace(self.path, failed_path)
+                self._preserve_sidecars(failed_path)
+            os.replace(temporary, self.path)
+            temporary = None
+            with self.read_connection() as restored:
+                self._integrity_check_connection(restored)
+                self._fts_check_connection(restored)
+        except (OSError, sqlite3.Error, MigrationError) as exc:
+            if failed_path is not None and failed_path.exists():
+                if self.path.exists():
+                    broken_restore = failed_path.with_name(
+                        f"{failed_path.stem}-restore-attempt.db"
+                    )
+                    os.replace(self.path, broken_restore)
+                os.replace(failed_path, self.path)
+            if isinstance(exc, MigrationError):
+                raise
+            raise MigrationError(f"atomic database restore failed: {exc}") from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _preserve_sidecars(self, failed_path: Path) -> None:
+        for suffix in ("-wal", "-shm"):
+            source = Path(f"{self.path}{suffix}")
+            if source.exists():
+                os.replace(source, Path(f"{failed_path}{suffix}"))
 
     @staticmethod
     def _integrity_check_connection(connection: sqlite3.Connection) -> None:
@@ -226,6 +311,18 @@ class Database:
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise MigrationError(f"SQLite foreign-key violations: {len(violations)}")
+
+    @staticmethod
+    def _fts_check_connection(connection: sqlite3.Connection) -> None:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_fts'"
+        ).fetchone()
+        if table is None:
+            return
+        try:
+            connection.execute("SELECT count(*) FROM memory_fts").fetchone()
+        except sqlite3.Error as exc:
+            raise MigrationError(f"SQLite FTS validation failed: {exc}") from exc
 
 
 def _split_sql(script: str) -> list[str]:

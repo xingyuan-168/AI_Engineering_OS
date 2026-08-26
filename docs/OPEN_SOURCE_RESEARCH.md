@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 开源研究与复用决策
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","REPO-001","AGENT-001","EXEC-001","MEMORY-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","REPO-001","AGENT-001","EXEC-001","MEMORY-001"]} -->
 
 核验日期：2026-08-24
 

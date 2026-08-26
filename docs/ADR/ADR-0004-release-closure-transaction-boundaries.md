@@ -1,6 +1,6 @@
 # ADR-0004：0.2.0 发布收口、事务边界与证据来源
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","VERSION-001","GATE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","VERSION-001","GATE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001"]} -->
 
 - 状态：Accepted
 - 日期：2026-08-26

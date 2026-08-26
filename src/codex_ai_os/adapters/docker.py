@@ -26,11 +26,9 @@ from codex_ai_os.domain.config import (
     ExecutionPolicy,
     RiskLevel,
 )
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 
-DEFAULT_EXECUTION_IMAGE = (
-    "python:3.12.14-bookworm@"
-    "sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a"
-)
+DEFAULT_EXECUTION_IMAGE = RUNTIME_VERSIONS.execution_image
 
 
 class DockerSandboxError(RuntimeError):

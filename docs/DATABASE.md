@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 数据库与迁移设计
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","VERSION-001","MEMORY-001","ROUTING-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","VERSION-001","MEMORY-001","ROUTING-001"]} -->
 
 SQLite 保存运行状态、事件、索引、结构化证据和 provenance；Markdown/Git 保存事实正文。Schema 通过 `0001`～`0007` 追加迁移到版本 `0007`，不得改写任何已发布迁移。
 

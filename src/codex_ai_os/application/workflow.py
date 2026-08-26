@@ -35,6 +35,7 @@ from codex_ai_os.domain.config import GitPushPolicy, RiskLevel
 from codex_ai_os.domain.coordination import HandoffReviewInput, TaskBlueprint
 from codex_ai_os.domain.governance import G4ApprovalInput
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import (
     AUTOMATIC_NEXT_PHASE,
     GATE_AFTER_PHASE,
@@ -87,17 +88,32 @@ class WorkflowEngine:
         git_evidence: GitEvidenceVerifier | None = None,
         worktrees: TaskWorktreeAllocator | None = None,
         g4_publisher: G4Publisher | None = None,
+        readonly: bool = False,
     ) -> None:
         self.config = load_project_config(project_root.resolve())
         database = Database(self.config.root / ".codex-os" / "state" / "state.db")
-        database.migrate()
+        if readonly:
+            current = database.current_version()
+            if current != RUNTIME_VERSIONS.sqlite_schema:
+                raise WorkflowError(
+                    "MIGRATION_REQUIRED",
+                    f"read-only workflow access requires SQLite "
+                    f"{RUNTIME_VERSIONS.sqlite_schema}, found {current}",
+                    40,
+                )
+        else:
+            database.migrate()
         self.store = WorkflowStore(database)
         self.evidence_store = EvidenceStore(database, self.config.root)
         self.coordination_store = CoordinationStore(database)
         self.worktree_store = WorktreeStore(database)
         self.git_evidence = git_evidence
-        self.worktrees = worktrees or WorktreeService(self.config.root)
-        self.g4_publisher = g4_publisher or GitHubReleaseGovernanceService(self.config.root)
+        self.worktrees = worktrees or (
+            None if readonly else WorktreeService(self.config.root)
+        )
+        self.g4_publisher = g4_publisher or (
+            None if readonly else GitHubReleaseGovernanceService(self.config.root)
+        )
 
     def start(
         self,
@@ -128,7 +144,7 @@ class WorkflowEngine:
         selected_profiles = profiles or _default_profiles(self.config.project_type.value)
         if len(selected_profiles) > self.config.max_parallel_agents:
             raise WorkflowError("CONFIG_INVALID", "profiles exceed max_parallel_agents", 2)
-        if self.config.schema_version == "1.1":
+        if self.config.schema_version != "1.0":
             try:
                 RepositoryGovernanceService(
                     self.config.root, config=self.config
@@ -162,7 +178,7 @@ class WorkflowEngine:
             max_parallel_agents=self.config.max_parallel_agents,
         )
         created = self.store.create_run(run, task)
-        if self.config.schema_version == "1.1":
+        if self.config.schema_version != "1.0":
             ProfileRouter(self.store.database, self.config).route(
                 run_id=created.id,
                 requested_profiles=selected_profiles,
@@ -268,7 +284,7 @@ class WorkflowEngine:
                 "verified_at": evidence.verified_at,
                 "changed_paths": list(evidence.changed_paths),
             }
-            if self.config.schema_version == "1.1":
+            if self.config.schema_version != "1.0":
                 try:
                     self.evidence_store.record_task_evidence(
                         run_id=run.id,
@@ -385,7 +401,7 @@ class WorkflowEngine:
             raise WorkflowError("CONFIG_INVALID", "reviewer and reason are required", 2)
 
         bundle = None
-        if approved and self.config.schema_version == "1.1":
+        if approved and self.config.schema_version != "1.0":
             source_commit = str(run.checkpoint.get("last_commit_sha") or "")
             if not source_commit:
                 raise WorkflowError(
@@ -403,12 +419,18 @@ class WorkflowEngine:
                 raise WorkflowError(exc.code, str(exc), 40) from exc
 
         publication: dict[str, Any] | None = None
-        if approved and gate is Gate.G4 and self.config.schema_version == "1.1":
+        if approved and gate is Gate.G4 and self.config.schema_version != "1.0":
             if g4_evidence is None:
                 raise WorkflowError(
                     "RELEASE_AUTHORITY_REQUIRED",
                     "G4 requires PR, merge, version, and explicit release authorization evidence",
                     20,
+                )
+            if self.g4_publisher is None:
+                raise WorkflowError(
+                    "READ_ONLY_OPERATION",
+                    "G4 publication is unavailable from a read-only workflow engine",
+                    40,
                 )
             try:
                 publication = asdict(
@@ -417,7 +439,7 @@ class WorkflowEngine:
             except ReleaseGovernanceError as exc:
                 raise WorkflowError(exc.code, str(exc), 50) from exc
 
-        if approved and gate is Gate.G2 and self.config.schema_version == "1.1":
+        if approved and gate is Gate.G2 and self.config.schema_version != "1.0":
             assert bundle is not None
             return self._approve_g2_coordination(
                 run,
@@ -427,7 +449,7 @@ class WorkflowEngine:
                 evidence_bundle_hash=bundle.bundle_hash,
             )
 
-        if approved and gate is Gate.G3 and self.config.schema_version == "1.1":
+        if approved and gate is Gate.G3 and self.config.schema_version != "1.0":
             assert bundle is not None
             return self._approve_g3_coordination(
                 run,
@@ -911,6 +933,12 @@ class WorkflowEngine:
         *,
         base_ref: str,
     ) -> None:
+        if self.worktrees is None:
+            raise WorkflowError(
+                "READ_ONLY_OPERATION",
+                "Worktree allocation is unavailable from a read-only workflow engine",
+                40,
+            )
         try:
             self.worktrees.allocate(run_id=run.id, task_id=task.id, base_ref=base_ref)
         except WorktreeServiceError as exc:

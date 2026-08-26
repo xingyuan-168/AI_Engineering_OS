@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 用户故事
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
 
 本文使用 Given/When/Then 表达可测试行为。每个故事必须映射到 [产品需求](PRODUCT_REQUIREMENTS.md) 和 [业务规则](BUSINESS_RULES.md)。
 

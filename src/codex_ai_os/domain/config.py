@@ -46,7 +46,7 @@ class SandboxBackend(StrEnum):
 
 
 class ProjectConfig(StrictModel):
-    schema_version: Literal["1.0", "1.1"] = "1.1"
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
     project_id: str = Field(pattern=r"^PROJECT-[A-Z0-9][A-Z0-9-]*$")
     name: str = Field(min_length=1, max_length=100)
     root: Path
@@ -97,7 +97,7 @@ class ProjectConfig(StrictModel):
 
 
 class ExecutionPolicy(StrictModel):
-    schema_version: Literal["1.0", "1.1"] = "1.1"
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
     sandbox: SandboxBackend = SandboxBackend.DOCKER
     network: NetworkMode = NetworkMode.DISABLED
     allowed_network_hosts: frozenset[str] = frozenset()

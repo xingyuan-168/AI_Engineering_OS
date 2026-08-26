@@ -265,7 +265,7 @@ def _use_legacy_fixture_config(root: Path) -> None:
     config = root / ".codex-os" / "project.yaml"
     config.write_text(
         config.read_text(encoding="utf-8").replace(
-            "schema_version: '1.1'", "schema_version: '1.0'"
+            "schema_version: '1.2'", "schema_version: '1.0'"
         ),
         encoding="utf-8",
     )

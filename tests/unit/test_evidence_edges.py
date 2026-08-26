@@ -27,7 +27,7 @@ def test_migrated_gate_artifacts_are_reverified_and_bound(tmp_path: Path) -> Non
     assert current.active_task is not None
     metadata = json.dumps(
         {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "document_version": "0.2.0",
             "status": "review-ready",
             "owner": "fixture-owner",

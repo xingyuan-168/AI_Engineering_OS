@@ -1,4 +1,4 @@
-schema_version: "1.0"
+schema_version: "1.2"
 name: large-project
 description: Add multi-Agent coordination, independent review, risk, and recovery evidence.
 project_types: [backend, frontend, fullstack, desktop, generic]

@@ -1,10 +1,10 @@
-schema_version: '1.0'
+schema_version: '1.2'
 project_id: PROJECT-AI-ENGINEERING-OS
 name: AI Engineering OS
-root: D:\Projects-tools\AI-OS
+root: .
 project_type: backend
 risk_level: high
-source_of_truth: D:\Projects-tools\AI-OS\docs
+source_of_truth: docs
 active_workflow: new-project
 approval_policy: critical-gates-human
 default_agent_profile: standard

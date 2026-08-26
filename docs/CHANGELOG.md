@@ -4,6 +4,10 @@
 
 ### Added
 
+- 增加唯一不可变 `RuntimeVersions`，统一软件、Plugin、API、配置、文档、Profile、SQLite、需求和执行镜像版本；公共 1.2 配置使用可移植项目根。
+- 增加 SQLite `0007_release_closure`：Host Operation、脱敏调用审计、Memory 乐观版本、Routing 评分、Release candidate/final 对账、Check 时间和不可逆 accepted Handoff 约束。
+- 增加受管 Worktree/coordinator root 明确拒绝、0006→0007 重验证、Memory expected-version 和迁移失败临时库校验/原子恢复测试。
+- `status` 与 `step` 改用 SQLite 只读连接，不再隐式迁移、创建状态目录、分配任务或推进 Workflow。
 - 增加 Plugin API 1.1 公共接口：`repository_check`、结构化 `task_complete`、`handoff_review`、`worktree_cleanup`、受管 `verification_run`、Release Candidate 与 Memory 审核；配置 Schema 1.1 兼容读取 1.0。
 - 增加 `0004`～`0006` 追加式迁移，覆盖仓库审计、强证据 Gate、版本/发布记录、多 Agent DAG、Handoff Review、集成合并、Worktree 清理、Memory 生命周期与 FTS5；迁移前数据库备份带 checksum、完整性及恢复校验。
 - 增加正式 GitHub 仓库预检与独立 Repository Governance Service，检查 Git 根、干净状态、remote/upstream/HEAD/目标分支、复制式版本目录、临时文件、跟踪污染、Secret、`.gitignore` 和路径逃逸。

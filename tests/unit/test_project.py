@@ -32,7 +32,11 @@ def test_project_initialization_is_idempotent_and_preserves_user_content(tmp_pat
     assert second.document_report.ok
     assert first.context_path.is_file()
     assert load_execution_policy(tmp_path).sandbox.value == "docker"
-    assert Database(first.database_path).current_version() == "0006"
+    assert Database(first.database_path).current_version() == "0007"
+    config_text = (tmp_path / ".codex-os" / "project.yaml").read_text(encoding="utf-8")
+    assert "schema_version: '1.2'" in config_text
+    assert "root: ." in config_text
+    assert "source_of_truth: docs" in config_text
 
 
 def test_project_registration_and_init_event_are_persisted(tmp_path: Path) -> None:

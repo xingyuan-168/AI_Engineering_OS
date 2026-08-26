@@ -135,7 +135,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         name="Governed V11",
         project_type=ProjectType.FULLSTACK,
         git_push_policy=GitPushPolicy.FIXTURE_LOCAL_ONLY,
-        schema_version="1.1",
+        schema_version="1.2",
     )
     _git(root, "add", ".")
     _git(root, "commit", "-m", "chore: initialize governed fixture")
@@ -378,7 +378,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
 def _doc(title: str, sections: tuple[str, ...]) -> str:
     metadata = json.dumps(
         {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "document_version": "0.2.0",
             "status": "approved",
             "owner": "fixture-owner",

@@ -34,7 +34,7 @@ class WorkflowStore:
         self.database = database
 
     def project_config_hash(self, project_id: str) -> str:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute(
                 "SELECT config_hash FROM projects WHERE id = ?", (project_id,)
             ).fetchone()
@@ -45,7 +45,7 @@ class WorkflowStore:
     def find_active_run(
         self, project_id: str, workflow_name: str, goal: str
     ) -> WorkflowRun | None:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM workflow_runs
@@ -119,7 +119,7 @@ class WorkflowStore:
         return self.get_run(run.id)
 
     def get_run(self, run_id: str) -> WorkflowRun:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute(
                 "SELECT * FROM workflow_runs WHERE id = ?", (run_id,)
             ).fetchone()
@@ -128,14 +128,14 @@ class WorkflowStore:
         return _run_from_row(row)
 
     def get_task(self, task_id: str) -> TaskRecord:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if row is None:
             raise WorkflowNotFoundError(f"task not found: {task_id}")
         return _task_from_row(row)
 
     def active_task(self, run_id: str) -> TaskRecord | None:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM tasks
@@ -147,7 +147,7 @@ class WorkflowStore:
         return _task_from_row(row) if row is not None else None
 
     def active_tasks(self, run_id: str) -> tuple[TaskRecord, ...]:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM tasks

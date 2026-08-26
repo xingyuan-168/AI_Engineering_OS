@@ -17,6 +17,7 @@ from codex_ai_os.domain.governance import (
     ReviewEvidenceInput,
 )
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import Gate
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DOCUMENT_METADATA, UNAPPROVED_PLACEHOLDER
@@ -238,7 +239,7 @@ class EvidenceStore:
         return review_id
 
     def audit_migrated_run(self, run_id: str) -> tuple[str, ...]:
-        """Require every previously approved Gate to reference a complete 1.1 bundle."""
+        """Require every previously approved Gate to reference a complete 1.2 bundle."""
         self._promote_legacy_artifacts(run_id)
         self._rebuild_migrated_gate_bundles(run_id)
         with self.database.connection() as connection:
@@ -271,13 +272,14 @@ class EvidenceStore:
         if missing:
             raise EvidenceError(
                 "MIGRATION_REVALIDATION_REQUIRED",
-                "approved Gates require complete Plugin API 1.1 evidence bundles: "
+                f"approved Gates require complete Plugin API {RUNTIME_VERSIONS.api} "
+                "evidence bundles: "
                 f"{sorted(set(missing))}",
             )
         return tuple(bundle_ids)
 
     def _promote_legacy_artifacts(self, run_id: str) -> None:
-        """Re-verify legacy artifact rows before admitting them as 1.1 evidence."""
+        """Re-verify legacy artifact rows before admitting them as 1.2 evidence."""
         with self.database.connection() as connection:
             rows = connection.execute(
                 """
@@ -604,10 +606,15 @@ class EvidenceStore:
             metadata: dict[str, object] = {
                 str(key): value for key, value in mapping.items()
             }
-            if metadata.get("schema_version") != "1.1":
-                findings.append(f"{relative} schema_version is not 1.1")
-            if metadata.get("document_version") != "0.2.0":
-                findings.append(f"{relative} document_version is not 0.2.0")
+            if metadata.get("schema_version") != RUNTIME_VERSIONS.document_schema:
+                findings.append(
+                    f"{relative} schema_version is not "
+                    f"{RUNTIME_VERSIONS.document_schema}"
+                )
+            if metadata.get("document_version") != RUNTIME_VERSIONS.software:
+                findings.append(
+                    f"{relative} document_version is not {RUNTIME_VERSIONS.software}"
+                )
             if str(metadata.get("status", "")).casefold() not in {
                 "accepted",
                 "approved",

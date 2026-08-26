@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 技术栈
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","EXEC-001","VERSION-001","MEMORY-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","EXEC-001","VERSION-001","MEMORY-001"]} -->
 
 状态：G2 评审就绪；执行镜像新 digest 必须在实现前完成扫描并由 ADR 冻结。
 

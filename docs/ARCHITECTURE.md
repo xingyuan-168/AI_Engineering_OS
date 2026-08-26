@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 系统架构
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
 
 本架构实现 [ADR-0003](ADR/ADR-0003-governance-runtime-boundary.md) 与 [ADR-0004](ADR/ADR-0004-release-closure-transaction-boundaries.md)。它保留现有 Python 状态机、SQLite、Git 证据、Worktree、Plugin 和 OCI 沙箱，不引入第二个模型客户端。
 

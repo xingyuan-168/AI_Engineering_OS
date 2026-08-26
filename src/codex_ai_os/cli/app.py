@@ -156,7 +156,7 @@ def status_command(
 
     if run_id is not None:
         try:
-            result = WorkflowEngine(project_root).status(run_id)
+            result = WorkflowEngine(project_root, readonly=True).status(run_id)
         except WorkflowError as exc:
             _workflow_fail(exc, json_output)
             return
@@ -171,7 +171,7 @@ def status_command(
         database = Database(config.root / ".codex-os" / "state" / "state.db")
         version = database.current_version()
         report = DocumentManager(config.root).check(config.project_type.value)
-        with database.connection() as connection:
+        with database.read_connection() as connection:
             event_count = int(connection.execute("SELECT COUNT(*) FROM events").fetchone()[0])
             workflow_count = int(
                 connection.execute("SELECT COUNT(*) FROM workflow_runs").fetchone()[0]
@@ -354,7 +354,7 @@ def step_command(
     """Return the current deterministic next action without executing it."""
 
     try:
-        result = WorkflowEngine(project_root).status(run_id)
+        result = WorkflowEngine(project_root, readonly=True).status(run_id)
     except WorkflowError as exc:
         _workflow_fail(exc, json_output)
         return

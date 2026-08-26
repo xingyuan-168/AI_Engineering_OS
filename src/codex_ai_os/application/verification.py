@@ -13,6 +13,7 @@ from codex_ai_os.application.execution import ExecutionService, ExecutionService
 from codex_ai_os.domain.config import RiskLevel
 from codex_ai_os.domain.governance import CheckEvidenceInput, CheckStatus
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentManager
@@ -169,7 +170,7 @@ class VerificationService:
                 blockers.append(f"{name}:{exc.code}:{exc}")
                 continue
             report = {
-                "schema_version": "1.1",
+                "schema_version": RUNTIME_VERSIONS.api,
                 "run_id": run_id,
                 "task_id": task_id,
                 "source_commit": source_commit,

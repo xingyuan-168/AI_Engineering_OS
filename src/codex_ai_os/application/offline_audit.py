@@ -15,7 +15,9 @@ from typing import Any, cast
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
-SNAPSHOT_SCHEMA_VERSION = "1.1"
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
+
+SNAPSHOT_SCHEMA_VERSION = RUNTIME_VERSIONS.api
 MAX_SNAPSHOT_AGE = timedelta(hours=24)
 
 

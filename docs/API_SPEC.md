@@ -1,6 +1,6 @@
 # AI Engineering OS Plugin API 1.2 与 CLI 契约
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001"]} -->
 
 Plugin API 1.2 由 MCP 与 Typer CLI 共享同一输入模型、应用服务、响应封装和错误码。接口只执行确定性治理用例；不触发模型推理。所有路径输入为项目根相对路径或显式解析的 coordinator root，禁止任意绝对输出路径；受管任务 Worktree 发起的公共调用不得静默重定向到其他 checkout。
 

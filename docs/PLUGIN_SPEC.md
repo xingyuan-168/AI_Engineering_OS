@@ -48,17 +48,20 @@ Plugin 向 CLI Runtime 提交结构化请求：
 
 ```yaml
 request_id: REQ-001
+api_version: "1.2"
 operation: project.init | workflow.start | workflow.status | workflow.step
            | workflow.resume | approval.submit | task.complete
-           | docs.check | verification.run | release.candidate.create
-           | memory.search
+           | docs.check | verification.prepare | verification.run
+           | host_operation.execute | host_operation.reconcile
+           | database.migrate | release.candidate.create
+           | memory.submit | memory.review | memory.search
 project_id: PROJECT-001
 workflow_id: WF-001
 payload: {}
 idempotency_key: string
 ```
 
-Runtime 返回 `ok`、`request_id`、`run_id`、`run_status`、`workflow_phase`、`state_version`、`next_action`、`data` 和 `error`。Plugin 只展示或转发结果，不自行创建状态。
+Runtime 返回 `api_version=1.2`、request/correlation ID、双轴状态、`state_version`、`next_actions`、兼容 `next_action`、warnings、data 和结构化 error。Plugin 只展示或转发结果，不自行创建状态。
 
 ## 6. 权限边界
 
@@ -74,6 +77,8 @@ Plugin 默认只能读取 Skill/Agent 元数据和显示 Runtime 返回值。写
 | Plugin 次版本较低 | Runtime 较新 | 仅在兼容窗口内启用 |
 
 兼容矩阵写入 manifest 和 `CHANGELOG.md`；Hook Schema 变更必须增加版本字段。
+
+0.2.0 的 Plugin API 为 1.2。1.0/1.1 入口只在 0.2.x 兼容窗口内保留并返回弃用 warning；最早在 0.3.0 经 ADR 移除。
 
 ## 8. DeepSeek Harness 适配边界
 

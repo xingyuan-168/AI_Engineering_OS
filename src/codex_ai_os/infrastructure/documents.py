@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import unquote
 
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.templates.project_docs import documents_for
 
 LOCAL_LINK = re.compile(r"\[[^\]]+\]\((?:<([^>]+)>|([^ )]+))")
@@ -164,7 +165,11 @@ class DocumentManager:
                 if status in STRICT_STATUSES and UNAPPROVED_PLACEHOLDER.search(text):
                     placeholders.append(relative)
                 document_version = str(metadata.get("document_version", ""))
-                if status in STRICT_STATUSES and document_version != "0.2.0":
+                schema_version = str(metadata.get("schema_version", ""))
+                if status in STRICT_STATUSES and (
+                    document_version != RUNTIME_VERSIONS.software
+                    or schema_version != RUNTIME_VERSIONS.document_schema
+                ):
                     version_mismatches.append(relative)
                 expires_at = metadata.get("expires_at")
                 if isinstance(expires_at, str) and _is_expired(expires_at):
@@ -243,8 +248,12 @@ class DocumentManager:
         missing = sorted(required - set(metadata))
         if missing:
             errors.append(f"{relative}: missing metadata fields {missing}")
-        if metadata.get("schema_version") != "1.1":
-            errors.append(f"{relative}: schema_version must be 1.1")
+        schema_version = metadata.get("schema_version")
+        if schema_version not in RUNTIME_VERSIONS.compatible_document_schemas:
+            errors.append(
+                f"{relative}: unsupported schema_version {schema_version!r}; expected one of "
+                f"{list(RUNTIME_VERSIONS.compatible_document_schemas)}"
+            )
         refs = metadata.get("requirement_refs")
         if isinstance(refs, list):
             ref_objects = cast(list[object], refs)

@@ -27,6 +27,7 @@ from codex_ai_os.domain.governance import (
     ReleaseAuthority,
     ReviewDecision,
 )
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import (
     ChangeKind,
     Gate,
@@ -43,7 +44,7 @@ from codex_ai_os.infrastructure.memory import MemoryRecord, MemoryStore, MemoryS
 
 mcp = MCPServer(
     "AI Engineering OS",
-    version="0.2.0",
+    version=RUNTIME_VERSIONS.software,
     instructions=(
         "Use these tools to run deterministic engineering workflows. Execute the returned "
         "next_action in Codex, then report repository evidence through task_complete."
@@ -130,7 +131,8 @@ def workflow_status(project_root: str, run_id: str) -> dict[str, Any]:
 
     return _invoke(
         lambda: _workflow_payload(
-            WorkflowEngine(Path(project_root)).status(run_id), Path(project_root)
+            WorkflowEngine(Path(project_root), readonly=True).status(run_id),
+            Path(project_root),
         )
     )
 
@@ -141,7 +143,8 @@ def workflow_step(project_root: str, run_id: str) -> dict[str, Any]:
 
     return _invoke(
         lambda: _workflow_payload(
-            WorkflowEngine(Path(project_root)).status(run_id), Path(project_root)
+            WorkflowEngine(Path(project_root), readonly=True).status(run_id),
+            Path(project_root),
         )
     )
 

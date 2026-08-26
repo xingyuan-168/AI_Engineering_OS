@@ -22,10 +22,10 @@
 ## 2. `project.yaml`
 
 ```yaml
-schema_version: "1.0"
+schema_version: "1.2"
 project_id: PROJECT-001
 name: example-project
-root: "C:/work/example-project"
+root: "."
 project_type: backend | frontend | fullstack | desktop | generic
 risk_level: low | medium | high | critical
 source_of_truth: docs/
@@ -40,7 +40,7 @@ default_agent_profile: standard
 | --- | --- | --- | --- |
 | `schema_version` | string | 是 | 只接受受支持的主版本 |
 | `project_id` | string | 是 | `PROJECT-` 前缀，项目内唯一 |
-| `root` | path | 是 | 必须是已存在的项目根目录 |
+| `root` | path | 是 | 1.2 固定使用相对项目根 `.`；Loader 以调用的 coordinator root 解析 |
 | `risk_level` | enum | 是 | 影响审批和执行策略 |
 | `source_of_truth` | path | 是 | 必须位于项目根目录内 |
 | `active_workflow` | string | 否 | 必须引用已注册 Workflow |
@@ -95,7 +95,7 @@ requires_review: true
 ## 6. `execution-policy.yaml`
 
 ```yaml
-schema_version: "1.0"
+schema_version: "1.2"
 sandbox: docker | podman
 network: disabled
 allowed_mounts: [worktree, artifacts, cache]
@@ -127,9 +127,9 @@ cross_project_reuse: approval_required
 ## 8. Plugin 配置 `plugin.yaml`
 
 ```yaml
-schema_version: "1.0"
+schema_version: "1.2"
 host: codex
-plugin_api: "1.0"
+plugin_api: "1.2"
 runtime_endpoint: "local-cli"
 enabled: true
 hooks:
@@ -210,6 +210,8 @@ review_required_by_default: true
 - 未知字段默认报错；只有显式声明 `extensions` 的命名空间允许扩展字段。
 - Schema 主版本不兼容时禁止启动；次版本可在兼容范围内读取。
 - 配置 hash 写入 Workflow 检查点，恢复时必须匹配或经过迁移。
+- 1.2 兼容读取 1.0/1.1 并返回弃用 warning；旧绝对根只有与显式调用根相同才可读取。
+- 从 Git 受管 Worktree 发起的公共调用必须拒绝并指向 coordinator root，不得跟随旧绝对路径静默切换 checkout。
 
 ## 14. 完成定义
 
