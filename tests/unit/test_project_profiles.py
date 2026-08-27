@@ -19,6 +19,7 @@ def test_v1_project_profiles_are_complete_additive_and_safe() -> None:
     assert all(profile.required_artifacts for profile in profiles.values())
     assert all(profile.additional_reviewers for profile in profiles.values())
     assert all(profile.min_agents >= 3 for profile in profiles.values())
+    assert "frontend-implementation" in profiles["frontend-project"].additional_skills
 
 
 def test_profile_rejects_escaping_artifact_path() -> None:

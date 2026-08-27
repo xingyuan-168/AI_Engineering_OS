@@ -12,6 +12,7 @@ def test_required_agent_profiles_are_valid_and_unique() -> None:
         "product-manager",
         "architect",
         "backend-engineer",
+        "frontend-engineer",
         "database-engineer",
         "qa",
         "security-reviewer",

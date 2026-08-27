@@ -1,6 +1,6 @@
 {
   "name": "ai-engineering-os",
-  "version": "0.1.0+codex.20260821051926",
+  "version": "0.2.0",
   "description": "Auditable local engineering workflows, approvals, Git evidence, and release gates for Codex.",
   "author": {
     "name": "xingyuan-168",
