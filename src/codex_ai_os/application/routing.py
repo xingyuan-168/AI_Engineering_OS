@@ -13,6 +13,7 @@ from codex_ai_os.domain.config import ProjectConfig, ProjectType
 from codex_ai_os.domain.coordination import TaskBlueprint
 from codex_ai_os.domain.ids import new_id
 from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.profiles import load_project_profiles
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +28,7 @@ class RoutingDecision:
 class ProfileRouter:
     """Choose the smallest built-in implementation team for an approved impact."""
 
-    ALLOWED_PROFILES: ClassVar[frozenset[str]] = frozenset(
+    DEFAULT_PROFILE_NAMES: ClassVar[frozenset[str]] = frozenset(
         {"backend-project", "frontend-project", "large-project"}
     )
     PROFILE_ALIASES: ClassVar[dict[str, str]] = {
@@ -39,6 +40,7 @@ class ProfileRouter:
     def __init__(self, database: Database, config: ProjectConfig) -> None:
         self.database = database
         self.config = config
+        self.allowed_profiles = self._load_allowed_profiles()
 
     def route(
         self,
@@ -85,7 +87,7 @@ class ProfileRouter:
     ) -> tuple[str, ...]:
         canonical_requested = tuple(self._canonical_profile(item) for item in requested)
         if requested:
-            unknown = set(canonical_requested) - self.ALLOWED_PROFILES
+            unknown = set(canonical_requested) - self.allowed_profiles
             if unknown:
                 raise ValueError(f"unknown profiles: {sorted(unknown)}")
             selected = list(dict.fromkeys(canonical_requested))
@@ -95,7 +97,11 @@ class ProfileRouter:
             selected = ["backend-project", "frontend-project"]
         else:
             selected = ["backend-project"]
-        if len(impact_paths) >= 20 and "large-project" not in selected:
+        if (
+            len(impact_paths) >= 20
+            and "large-project" in self.allowed_profiles
+            and "large-project" not in selected
+        ):
             selected.append("large-project")
         return tuple(selected[:4])
 
@@ -157,6 +163,12 @@ class ProfileRouter:
 
     def _canonical_profile(self, profile: str) -> str:
         return self.PROFILE_ALIASES.get(profile, profile)
+
+    def _load_allowed_profiles(self) -> frozenset[str]:
+        profile_dir = self.config.root / "profiles"
+        if not profile_dir.is_dir():
+            return self.DEFAULT_PROFILE_NAMES
+        return frozenset(load_project_profiles(profile_dir))
 
     def _warnings_for_aliases(self, requested: tuple[str, ...]) -> tuple[str, ...]:
         aliases = tuple(dict.fromkeys(item for item in requested if item in self.PROFILE_ALIASES))

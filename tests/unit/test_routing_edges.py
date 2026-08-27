@@ -75,6 +75,38 @@ def test_profile_router_selects_smallest_team_and_large_impact(tmp_path: Path) -
     assert row["workflow"] == "feature-development"
 
 
+def test_profile_router_uses_yaml_profile_names_as_allowed_set(tmp_path: Path) -> None:
+    initialized = ProjectInitializer().initialize(
+        tmp_path,
+        project_id="PROJECT-ROUTING-YAML",
+        name="Routing YAML",
+        project_type=ProjectType.BACKEND,
+        schema_version="1.0",
+    )
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    (profile_dir / "backend-project.yaml").write_text(
+        "schema_version: '1.2'\n"
+        "name: backend-project\n"
+        "description: Backend only fixture\n"
+        "project_types: [backend]\n"
+        "additional_skills: [backend-implementation]\n"
+        "required_artifacts: [docs/API_SPEC.md]\n"
+        "additional_reviewers: [reviewer]\n"
+        "min_agents: 1\n",
+        encoding="utf-8",
+    )
+
+    router = ProfileRouter(Database(initialized.database_path), initialized.config)
+
+    assert router.allowed_profiles == frozenset({"backend-project"})
+    assert router.select_profiles((), tuple(f"src/file-{index}.py" for index in range(20))) == (
+        "backend-project",
+    )
+    with pytest.raises(ValueError, match="unknown profiles"):
+        router.select_profiles(("large-project",), ())
+
+
 def _git(root: Path, *arguments: str) -> None:
     completed = subprocess.run(
         ["git", "-C", str(root), *arguments],

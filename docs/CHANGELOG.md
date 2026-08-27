@@ -17,6 +17,7 @@
 - Review report、Check report 与文档 Gate 校验改为从绑定 Git Commit 或受管 `.codex-os/artifacts/` 审计区复算 hash，不再信任活动 Worktree 中未提交的当前文件。
 - 非零验证检查现在生成 `failed` Check Evidence、失败报告和可恢复 blocker，不再构造 `passed + 非零 exit_code` 的无效证据。
 - Runtime Routing 改用 canonical `backend-project`、`frontend-project`、`large-project` Profile 名，短名只作为兼容 alias；`routing_decisions` 同步写入 0007 的七维评分、canonical profiles、risk、workflow 和 schema 版本字段。
+- Profile Router 从项目 `profiles/*.yaml` 读取 allowed profile 名；缺省 fixture 保留内置安全集合，large 自动扩展不再绕过 Profile 资源事实源。
 - Plugin 资源补齐 `frontend-engineer` Agent、`frontend-implementation` Skill，并将插件 manifest 版本对齐 Runtime `0.2.0`。
 - CLI/MCP 补齐 `verification_prepare`、`host_operation_reconcile` 与 `database_migrate` 公共映射；CLI 另新增 Release Candidate 与 Memory submit/review/search 映射，统一返回 API 1.2 envelope。
 - 增加 Plugin API 1.1 公共接口：`repository_check`、结构化 `task_complete`、`handoff_review`、`worktree_cleanup`、受管 `verification_run`、Release Candidate 与 Memory 审核；配置 Schema 1.1 兼容读取 1.0。
