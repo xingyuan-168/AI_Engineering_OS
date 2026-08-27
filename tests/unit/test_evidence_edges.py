@@ -192,8 +192,8 @@ def test_review_gate_bundle_and_document_revalidation_fail_closed(tmp_path: Path
     report = root / "reviews" / "report.md"
     report.parent.mkdir()
     report.write_text("# Review\n\nAccepted.\n", encoding="utf-8")
-    report_hash = hashlib.sha256(report.read_bytes()).hexdigest()
     head = _git_output(root, "rev-parse", "HEAD")
+    report_hash = hashlib.sha256(report.read_bytes()).hexdigest()
     review = ReviewEvidenceInput(
         review_type="code",
         reviewer="reviewer",
@@ -218,6 +218,26 @@ def test_review_gate_bundle_and_document_revalidation_fail_closed(tmp_path: Path
             task_id=None,
             review=missing_report,
         )
+    with pytest.raises(EvidenceError, match="missing or unsafe"):
+        store.record_review(
+            project_id=current.run.project_id,
+            run_id=current.run.id,
+            task_id=None,
+            review=review,
+        )
+    _git(root, "add", "reviews/report.md")
+    _git(root, "commit", "-m", "test: add review report")
+    head = _git_output(root, "rev-parse", "HEAD")
+    committed_report = subprocess.check_output(
+        ["git", "-C", str(root), "show", f"{head}:reviews/report.md"]
+    )
+    review = review.model_copy(
+        update={
+            "reviewed_commit": head,
+            "report_hash": hashlib.sha256(committed_report).hexdigest(),
+        }
+    )
+    report.write_text("# Review\n\nTampered current file.\n", encoding="utf-8")
     store.record_review(
         project_id=current.run.project_id,
         run_id=current.run.id,

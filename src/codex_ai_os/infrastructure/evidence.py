@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from codex_ai_os.domain.governance import (
@@ -162,7 +162,12 @@ class EvidenceStore:
                         raise EvidenceError(
                             "EVIDENCE_STALE", f"check execution is not verified: {check.name}"
                         )
-                    self._verify_report(worktree, check.report_path, check.report_hash)
+                    self._verify_report(
+                        worktree,
+                        check.report_path,
+                        check.report_hash,
+                        source_commit=check.source_commit,
+                    )
                     connection.execute(
                         """
                         INSERT OR IGNORE INTO check_evidence(
@@ -210,7 +215,12 @@ class EvidenceStore:
                     raise EvidenceError("EVIDENCE_STALE", "review task/run identity mismatch")
                 if task["worktree"]:
                     worktree = Path(str(task["worktree"])).resolve()
-            self._verify_report(worktree, review.report_ref, review.report_hash)
+            self._verify_report(
+                worktree,
+                review.report_ref,
+                review.report_hash,
+                source_commit=review.reviewed_commit,
+            )
             connection.execute(
                 """
                 INSERT INTO review_evidence(
@@ -585,11 +595,16 @@ class EvidenceStore:
         worktree = Path(str(row["worktree"])).resolve()
         findings: list[str] = []
         for relative in paths:
-            path = (worktree / relative).resolve()
-            if not path.is_relative_to(worktree) or not path.is_file():
+            try:
+                content = self._committed_file(worktree, source_commit, relative)
+            except EvidenceError:
                 findings.append(f"{relative} is missing")
                 continue
-            text = path.read_text(encoding="utf-8")
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                findings.append(f"{relative} is not valid UTF-8")
+                continue
             match = DOCUMENT_METADATA.search(text)
             if match is None:
                 findings.append(f"{relative} has no governance metadata")
@@ -672,14 +687,45 @@ class EvidenceStore:
         )
         return result.returncode == 0
 
-    def _verify_report(self, worktree: Path, relative: str, expected_hash: str) -> None:
+    def _verify_report(
+        self,
+        worktree: Path,
+        relative: str,
+        expected_hash: str,
+        *,
+        source_commit: str | None = None,
+    ) -> None:
         base = self.root if relative.startswith(".codex-os/artifacts/") else worktree
-        candidate = (base / relative).resolve()
-        if not candidate.is_relative_to(base) or not candidate.is_file():
-            raise EvidenceError("EVIDENCE_STALE", f"evidence path is missing or unsafe: {relative}")
-        actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        if source_commit is not None and base == worktree:
+            content = self._committed_file(worktree, source_commit, relative)
+        else:
+            candidate = (base / relative).resolve()
+            if not candidate.is_relative_to(base) or not candidate.is_file():
+                raise EvidenceError(
+                    "EVIDENCE_STALE", f"evidence path is missing or unsafe: {relative}"
+                )
+            content = candidate.read_bytes()
+        actual = hashlib.sha256(content).hexdigest()
         if actual.casefold() != expected_hash.casefold():
             raise EvidenceError("EVIDENCE_STALE", f"evidence hash mismatch: {relative}")
+
+    def _committed_file(self, worktree: Path, source_commit: str, relative: str) -> bytes:
+        normalized = relative.replace("\\", "/")
+        path = PurePosixPath(normalized)
+        if not normalized or path.is_absolute() or path == PurePosixPath("."):
+            raise EvidenceError("EVIDENCE_STALE", f"evidence path is missing or unsafe: {relative}")
+        if ".." in path.parts:
+            raise EvidenceError("EVIDENCE_STALE", f"evidence path is missing or unsafe: {relative}")
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "show", f"{source_commit}:{path.as_posix()}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            raise EvidenceError("EVIDENCE_STALE", f"evidence path is missing or unsafe: {relative}")
+        return result.stdout
 
 
 def _json(value: object) -> str:
