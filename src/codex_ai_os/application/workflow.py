@@ -26,6 +26,10 @@ from codex_ai_os.application.repository import (
     RepositoryGovernanceService,
 )
 from codex_ai_os.application.routing import ProfileRouter
+from codex_ai_os.application.verification_cache import (
+    VerificationCachePrepareError,
+    VerificationCachePreparer,
+)
 from codex_ai_os.application.worktree import (
     TaskWorktreeAllocator,
     WorktreeService,
@@ -95,6 +99,7 @@ class WorkflowEngine:
         git_evidence: GitEvidenceVerifier | None = None,
         worktrees: TaskWorktreeAllocator | None = None,
         g4_publisher: G4Publisher | None = None,
+        verification_cache_preparer: VerificationCachePreparer | None = None,
         readonly: bool = False,
     ) -> None:
         self.config = load_project_config(project_root.resolve())
@@ -121,6 +126,9 @@ class WorkflowEngine:
         )
         self.g4_publisher = g4_publisher or (
             None if readonly else GitHubReleaseGovernanceService(self.config.root)
+        )
+        self.verification_cache_preparer = verification_cache_preparer or (
+            None if readonly else VerificationCachePreparer(self.config.root)
         )
 
     def start(
@@ -606,45 +614,103 @@ class WorkflowEngine:
                         "RECOVERY_UNAVAILABLE", "completed operation has no Workflow run"
                     )
                 return self.status(acquired.run_id)
-            if acquired.kind is not HostOperationKind.INTEGRATION_MERGE:
-                self.operations.mark_failed(
-                    operation_id,
-                    expected_version=acquired.state_version,
-                    lease_owner=invocation.principal,
-                    error_code="OPERATION_KIND_UNSUPPORTED",
+            if acquired.kind is HostOperationKind.INTEGRATION_MERGE:
+                return self._execute_integration_merge_operation(
+                    acquired, lease_owner=invocation.principal
                 )
-                raise HostOperationError(
-                    "CONFIG_INVALID", f"unsupported Host Operation kind: {acquired.kind.value}"
+            if acquired.kind is HostOperationKind.VERIFICATION_PREPARE:
+                return self._execute_verification_prepare_operation(
+                    acquired, lease_owner=invocation.principal
                 )
-            try:
-                integration = CoordinationService(
-                    self.config.root
-                ).execute_merge_operation(acquired)
-            except CoordinationError as exc:
-                self.operations.mark_failed(
-                    operation_id,
-                    expected_version=acquired.state_version,
-                    lease_owner=invocation.principal,
-                    error_code=exc.code,
-                )
-                raise WorkflowError(exc.code, str(exc), 40) from exc
-            result = self._apply_integration_result(integration)
-            self.operations.mark_succeeded(
+            self.operations.mark_failed(
                 operation_id,
                 expected_version=acquired.state_version,
                 lease_owner=invocation.principal,
-                result={
-                    "handoff_id": integration.handoff_id,
-                    "status": integration.status,
-                    "integration_branch": integration.integration_branch,
-                    "integration_head": integration.integration_head,
-                    "merge_commit": integration.merge_commit,
-                    "conflict_paths": list(integration.conflict_paths),
-                },
+                error_code="OPERATION_KIND_UNSUPPORTED",
             )
-            return result
+            raise HostOperationError(
+                "CONFIG_INVALID", f"unsupported Host Operation kind: {acquired.kind.value}"
+            )
         except HostOperationError as exc:
             raise WorkflowError(exc.code, str(exc), 40) from exc
+
+    def _execute_integration_merge_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        try:
+            integration = CoordinationService(self.config.root).execute_merge_operation(
+                operation
+            )
+        except CoordinationError as exc:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code=exc.code,
+            )
+            raise WorkflowError(exc.code, str(exc), 40) from exc
+        result = self._apply_integration_result(integration)
+        self.operations.mark_succeeded(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            lease_owner=lease_owner,
+            result={
+                "handoff_id": integration.handoff_id,
+                "status": integration.status,
+                "integration_branch": integration.integration_branch,
+                "integration_head": integration.integration_head,
+                "merge_commit": integration.merge_commit,
+                "conflict_paths": list(integration.conflict_paths),
+            },
+        )
+        return result
+
+    def _execute_verification_prepare_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        if operation.run_id is None:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE",
+                "verification prepare operation has no Workflow run",
+                40,
+            )
+        if self.verification_cache_preparer is None:
+            raise WorkflowError(
+                "CONFIG_INVALID",
+                "verification prepare cannot run from read-only workflow access",
+                40,
+            )
+        try:
+            prepared = self.verification_cache_preparer.prepare(operation)
+        except VerificationCachePrepareError as exc:
+            if exc.outcome_unknown:
+                self.operations.mark_outcome_unknown(
+                    operation.operation_id,
+                    expected_version=operation.state_version,
+                    lease_owner=lease_owner,
+                    error_code=exc.code,
+                )
+                raise WorkflowError("RECONCILIATION_REQUIRED", str(exc), 40) from exc
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code=exc.code,
+            )
+            raise WorkflowError(exc.code, str(exc), 40) from exc
+        self.operations.mark_succeeded(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            lease_owner=lease_owner,
+            result=prepared,
+        )
+        return self.status(operation.run_id)
 
     def _apply_integration_result(self, integration: IntegrationResult) -> WorkflowResult:
         run = self._get_run(integration.task_group.run_id)
