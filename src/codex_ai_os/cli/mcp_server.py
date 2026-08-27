@@ -705,6 +705,7 @@ def memory_review(
     reviewer: str,
     decision: str,
     reason: str,
+    expected_version: int | None = None,
 ) -> dict[str, Any]:
     """Review a Memory candidate or change its governed lifecycle state."""
 
@@ -717,6 +718,7 @@ def memory_review(
             reviewer=reviewer,
             decision=decision,
             reason=reason,
+            expected_version=expected_version,
         )
         return _success(record=_memory_payload(record))
 

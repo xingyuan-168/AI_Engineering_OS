@@ -151,9 +151,24 @@ def test_mcp_memory_candidate_review_search_and_errors(tmp_path: Path) -> None:
     assert candidate["ok"] is True
     memory_id = str(cast(dict[str, Any], _data(candidate)["record"])["id"])
     activated = mcp_server.memory_review(
-        str(root), memory_id, "owner", "activate", "source verified"
+        str(root),
+        memory_id,
+        "owner",
+        "activate",
+        "source verified",
+        expected_version=0,
     )
     assert cast(dict[str, Any], _data(activated)["record"])["status"] == "active"
+    stale = mcp_server.memory_review(
+        str(root),
+        memory_id,
+        "owner",
+        "needs_review",
+        "stale version",
+        expected_version=0,
+    )
+    assert stale["ok"] is False
+    assert stale["error"]["code"] == "MEMORY_INVALID"
     searched = mcp_server.memory_search(
         str(root),
         "MCP",

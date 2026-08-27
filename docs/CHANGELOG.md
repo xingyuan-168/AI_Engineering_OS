@@ -20,6 +20,7 @@
 - Profile Router 从项目 `profiles/*.yaml` 读取 allowed profile 名；缺省 fixture 保留内置安全集合，large 自动扩展不再绕过 Profile 资源事实源。
 - Plugin 资源补齐 `frontend-engineer` Agent、`frontend-implementation` Skill，并将插件 manifest 版本对齐 Runtime `0.2.0`。
 - CLI/MCP 补齐 `verification_prepare`、`host_operation_reconcile` 与 `database_migrate` 公共映射；CLI 另新增 Release Candidate 与 Memory submit/review/search 映射，统一返回 API 1.2 envelope。
+- MCP `memory_review` 暴露 `expected_version`，Memory 生命周期变更可由公共接口执行乐观并发校验。
 - 增加 Plugin API 1.1 公共接口：`repository_check`、结构化 `task_complete`、`handoff_review`、`worktree_cleanup`、受管 `verification_run`、Release Candidate 与 Memory 审核；配置 Schema 1.1 兼容读取 1.0。
 - 增加 `0004`～`0006` 追加式迁移，覆盖仓库审计、强证据 Gate、版本/发布记录、多 Agent DAG、Handoff Review、集成合并、Worktree 清理、Memory 生命周期与 FTS5；迁移前数据库备份带 checksum、完整性及恢复校验。
 - 增加正式 GitHub 仓库预检与独立 Repository Governance Service，检查 Git 根、干净状态、remote/upstream/HEAD/目标分支、复制式版本目录、临时文件、跟踪污染、Secret、`.gitignore` 和路径逃逸。
