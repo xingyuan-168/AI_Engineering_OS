@@ -36,7 +36,11 @@ from codex_ai_os.domain.coordination import HandoffReviewInput, TaskBlueprint
 from codex_ai_os.domain.governance import G4ApprovalInput
 from codex_ai_os.domain.ids import new_id
 from codex_ai_os.domain.invocation import InvocationContext
-from codex_ai_os.domain.operations import HostOperationKind, HostOperationStatus
+from codex_ai_os.domain.operations import (
+    HostOperation,
+    HostOperationKind,
+    HostOperationStatus,
+)
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import (
     AUTOMATIC_NEXT_PHASE,
@@ -903,6 +907,29 @@ class WorkflowEngine:
         if run.run_status in {RunStatus.COMPLETED, RunStatus.CANCELLED}:
             raise WorkflowError("RECOVERY_UNAVAILABLE", "terminal workflow cannot resume", 30)
 
+        recoverable_operations = self.operations.recoverable(
+            run.id, limit=run.max_parallel_agents
+        )
+        if recoverable_operations:
+            actions = tuple(
+                self._action_for_host_operation(operation)
+                for operation in recoverable_operations
+            )
+            checkpoint = _operations_checkpoint(
+                run.checkpoint,
+                actions,
+                resumed_from=run.run_status.value,
+            )
+            try:
+                updated = self.store.resume_transition(
+                    run=run,
+                    checkpoint=checkpoint,
+                    next_task=None,
+                )
+            except WorkflowConflictError as exc:
+                raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
+            return self._result(updated)
+
         active_task = self.store.active_task(run.id)
         next_task: TaskRecord | None = None
         if active_task is not None:
@@ -984,6 +1011,35 @@ class WorkflowEngine:
             active_task=active_task,
             next_actions=next_actions,
             integration_result=integration_result,
+        )
+
+    def _action_for_host_operation(self, operation: HostOperation) -> NextAction:
+        dependencies = tuple(
+            item
+            for item in (operation.handoff_id, operation.release_id, operation.task_id)
+            if item is not None
+        )
+        verb = (
+            "Reconcile"
+            if operation.status is HostOperationStatus.RECONCILE_REQUIRED
+            else "Execute or replay"
+        )
+        return NextAction(
+            kind=ActionKind.HOST_OPERATION,
+            operation_id=operation.operation_id,
+            task_id=operation.task_id,
+            task_group_id=operation.task_group_id,
+            dependencies=dependencies,
+            prompt=f"{verb} persisted {operation.kind.value} Host Operation.",
+            risk_level=RiskLevel.HIGH,
+            requires_repository_change=operation.kind
+            in {
+                HostOperationKind.INTEGRATION_PREPARE,
+                HostOperationKind.INTEGRATION_MERGE,
+                HostOperationKind.RELEASE_PREPARE,
+                HostOperationKind.RELEASE_PUBLISH,
+                HostOperationKind.DATABASE_MIGRATE,
+            },
         )
 
     def _schedule_group(self, run: WorkflowRun, group_id: str) -> tuple[NextAction, ...]:
@@ -1251,6 +1307,23 @@ def _coordination_checkpoint(
         ),
         "blocker": blocker,
         "pending_gate": None,
+    }
+
+
+def _operations_checkpoint(
+    previous: dict[str, Any],
+    actions: tuple[NextAction, ...],
+    *,
+    resumed_from: str,
+) -> dict[str, Any]:
+    serialized = [action.model_dump(mode="json") for action in actions]
+    return {
+        **previous,
+        "next_action": serialized[0] if len(serialized) == 1 else None,
+        "next_actions": serialized,
+        "pending_gate": None,
+        "blocker": None,
+        "resumed_from": resumed_from,
     }
 
 

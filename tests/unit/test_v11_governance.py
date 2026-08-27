@@ -13,7 +13,8 @@ from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.application.verification import VerificationService
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
-from codex_ai_os.domain.workflow import PHASE_DEFINITIONS, WorkflowPhase
+from codex_ai_os.domain.operations import HostOperationKind
+from codex_ai_os.domain.workflow import PHASE_DEFINITIONS, ActionKind, WorkflowPhase
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentManager, PathDeniedError
@@ -313,6 +314,43 @@ def test_migrated_workflow_refuses_legacy_approval_without_strong_bundle(
         engine.resume(started.run.id)
     assert blocked.value.code == "MIGRATION_REVALIDATION_REQUIRED"
     assert "G0" in str(blocked.value)
+
+
+def test_resume_rebuilds_recoverable_host_operation_actions(tmp_path: Path) -> None:
+    root = _fixture_project(tmp_path / "host-operation-resume")
+    engine = WorkflowEngine(root)
+    started = engine.start("Resume recoverable host operations")
+    operations = tuple(
+        engine.operations.ensure_pending(
+            project_id=started.run.project_id,
+            run_id=started.run.id,
+            kind=HostOperationKind.INTEGRATION_MERGE,
+            idempotency_key=f"resume-operation-{index}",
+            request={"index": index},
+        )
+        for index in range(5)
+    )
+    with engine.store.database.connection() as connection:
+        connection.execute(
+            "UPDATE workflow_runs SET run_status = 'blocked' WHERE id = ?",
+            (started.run.id,),
+        )
+        connection.commit()
+
+    resumed = engine.resume(started.run.id)
+
+    assert resumed.run.run_status.value == "running"
+    assert resumed.next_action is None
+    assert [action.kind for action in resumed.next_actions] == [ActionKind.HOST_OPERATION] * 4
+    assert [action.operation_id for action in resumed.next_actions] == [
+        operation.operation_id for operation in operations[:4]
+    ]
+    assert [action.expected_operation_version for action in resumed.next_actions] == [
+        0,
+        0,
+        0,
+        0,
+    ]
 
 
 def test_verification_requires_lock_bound_offline_wheelhouse(tmp_path: Path) -> None:
