@@ -1,12 +1,14 @@
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.routing import ProfileRouter
+from codex_ai_os.application.workflow import WorkflowEngine
 from codex_ai_os.domain.config import ProjectType
 from codex_ai_os.infrastructure.database import Database
 
@@ -17,25 +19,68 @@ def test_profile_router_selects_smallest_team_and_large_impact(tmp_path: Path) -
         project_id="PROJECT-ROUTING",
         name="Routing",
         project_type=ProjectType.BACKEND,
-        schema_version="1.1",
+        schema_version="1.0",
     )
     router = ProfileRouter(Database(initialized.database_path), initialized.config)
 
-    assert router._select_profiles((), ()) == ("backend",)
-    assert router._select_profiles(("backend", "backend"), ()) == ("backend",)
+    assert router._select_profiles((), ()) == ("backend-project",)
+    assert router._select_profiles(("backend", "backend"), ()) == ("backend-project",)
     assert router._select_profiles((), tuple(f"src/file-{index}.py" for index in range(20))) == (
-        "backend",
-        "large",
+        "backend-project",
+        "large-project",
     )
     frontend = ProfileRouter(
         router.database,
         initialized.config.model_copy(update={"project_type": ProjectType.FRONTEND}),
     )
-    assert frontend._select_profiles((), ()) == ("frontend",)
+    assert frontend._select_profiles((), ()) == ("frontend-project",)
     fullstack = ProfileRouter(
         router.database,
         initialized.config.model_copy(update={"project_type": ProjectType.FULLSTACK}),
     )
-    assert fullstack._select_profiles((), ()) == ("backend", "frontend")
+    assert fullstack._select_profiles((), ()) == ("backend-project", "frontend-project")
     with pytest.raises(ValueError, match="unknown profiles"):
         router._select_profiles(("mobile",), ())
+
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.name", "Fixture")
+    _git(tmp_path, "config", "user.email", "fixture@example.invalid")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "chore: initialize routing fixture")
+    started = WorkflowEngine(tmp_path).start("Persist canonical routing")
+    decision = router.route(
+        run_id=started.run.id,
+        requested_profiles=("backend", "large-project"),
+        impact_paths=("src/app.py",),
+        source_commit="a" * 40,
+        workflow_name="feature-development",
+    )
+    assert decision.profiles == ("backend-project", "large-project")
+    assert decision.warnings == (
+        "profile alias 'backend' is deprecated; use 'backend-project'",
+    )
+    with router.database.read_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT profiles_json, canonical_profiles_json, dimension_scores_json, workflow
+            FROM routing_decisions WHERE run_id = ?
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (started.run.id,),
+        ).fetchone()
+    assert row is not None
+    assert "backend-project" in str(row["profiles_json"])
+    assert str(row["profiles_json"]) == str(row["canonical_profiles_json"])
+    assert "evidence" in str(row["dimension_scores_json"])
+    assert row["workflow"] == "feature-development"
+
+
+def _git(root: Path, *arguments: str) -> None:
+    completed = subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")

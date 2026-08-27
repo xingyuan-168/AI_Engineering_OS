@@ -149,7 +149,12 @@ class WorkflowEngine:
             return self._result(existing)
 
         selected_target = target_branch or self.config.target_branch
-        selected_profiles = profiles or _default_profiles(self.config.project_type.value)
+        requested_profile_input = profiles or _default_profiles(self.config.project_type.value)
+        router = ProfileRouter(self.store.database, self.config)
+        try:
+            selected_profiles = router.select_profiles(requested_profile_input, ())
+        except ValueError as exc:
+            raise WorkflowError("CONFIG_INVALID", str(exc), 2) from exc
         if len(selected_profiles) > self.config.max_parallel_agents:
             raise WorkflowError("CONFIG_INVALID", "profiles exceed max_parallel_agents", 2)
         if self.config.schema_version != "1.0":
@@ -187,10 +192,11 @@ class WorkflowEngine:
         )
         created = self.store.create_run(run, task)
         if self.config.schema_version != "1.0":
-            ProfileRouter(self.store.database, self.config).route(
+            router.route(
                 run_id=created.id,
-                requested_profiles=selected_profiles,
+                requested_profiles=requested_profile_input,
                 source_commit=None,
+                workflow_name=workflow_name,
             )
         self._allocate_or_block(created, task, base_ref="HEAD")
         return self._result(self.store.get_run(created.id))
@@ -732,6 +738,7 @@ class WorkflowEngine:
                 run_id=run.id,
                 requested_profiles=run.profiles,
                 source_commit=source_commit,
+                workflow_name=run.workflow_name,
             )
             group, _planned = self.coordination_store.create_group(
                 run_id=run.id,
@@ -1329,10 +1336,10 @@ def _operations_checkpoint(
 
 def _default_profiles(project_type: str) -> tuple[str, ...]:
     if project_type == "frontend":
-        return ("frontend",)
+        return ("frontend-project",)
     if project_type == "fullstack":
-        return ("backend", "frontend")
-    return ("backend",)
+        return ("backend-project", "frontend-project")
+    return ("backend-project",)
 
 
 def _input_artifacts_for(phase: WorkflowPhase) -> tuple[str, ...]:
