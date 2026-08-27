@@ -35,6 +35,8 @@ from codex_ai_os.domain.config import GitPushPolicy, RiskLevel
 from codex_ai_os.domain.coordination import HandoffReviewInput, TaskBlueprint
 from codex_ai_os.domain.governance import G4ApprovalInput
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.invocation import InvocationContext
+from codex_ai_os.domain.operations import HostOperationKind, HostOperationStatus
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import (
     AUTOMATIC_NEXT_PHASE,
@@ -56,6 +58,7 @@ from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.coordination import CoordinationError, CoordinationStore
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.evidence import EvidenceError, EvidenceStore
+from codex_ai_os.infrastructure.operations import HostOperationError, HostOperationStore
 from codex_ai_os.infrastructure.workflows import (
     WorkflowConflictError,
     WorkflowNotFoundError,
@@ -107,6 +110,7 @@ class WorkflowEngine:
         self.evidence_store = EvidenceStore(database, self.config.root)
         self.coordination_store = CoordinationStore(database)
         self.worktree_store = WorktreeStore(database)
+        self.operations = HostOperationStore(database)
         self.git_evidence = git_evidence
         self.worktrees = worktrees or (
             None if readonly else WorktreeService(self.config.root)
@@ -517,11 +521,122 @@ class WorkflowEngine:
         self, review: HandoffReviewInput
     ) -> WorkflowResult:
         handoff_task = self._task_for_handoff(review.handoff_id)
-        self._require_migration_revalidation(self._get_run(handoff_task.run_id))
+        run = self._get_run(handoff_task.run_id)
+        self._require_migration_revalidation(run)
+        service = CoordinationService(self.config.root)
         try:
-            integration = CoordinationService(self.config.root).review_and_integrate(review)
+            if self.config.schema_version == "1.2":
+                if review.expected_handoff_version is None or review.idempotency_key is None:
+                    raise WorkflowError(
+                        "CONFIG_INVALID",
+                        "API 1.2 Handoff review requires expected_handoff_version "
+                        "and idempotency_key",
+                        2,
+                    )
+                decision = service.prepare_review(review)
+                if decision.decision == "accepted":
+                    if decision.operation_id is None:
+                        raise WorkflowError(
+                            "RECOVERY_UNAVAILABLE",
+                            "accepted Handoff has no integration operation",
+                            40,
+                        )
+                    action = NextAction(
+                        kind=ActionKind.HOST_OPERATION,
+                        operation_id=decision.operation_id,
+                        task_id=decision.task_id,
+                        task_group_id=decision.task_group_id,
+                        dependencies=(decision.handoff_id,),
+                        prompt="Execute or reconcile the accepted Handoff integration merge.",
+                        risk_level=RiskLevel.HIGH,
+                        requires_repository_change=True,
+                    )
+                    checkpoint = _coordination_checkpoint(
+                        run.checkpoint,
+                        (action,),
+                        task_group_id=decision.task_group_id,
+                        waiting_handoff=decision.handoff_id,
+                    )
+                    updated = self.store.update_checkpoint(
+                        run=run,
+                        checkpoint=checkpoint,
+                        status=RunStatus.RUNNING,
+                    )
+                    return self._result(updated)
+                integration = service.decision_result(decision)
+            else:
+                integration = service.review_and_integrate(review)
         except CoordinationError as exc:
             raise WorkflowError(exc.code, str(exc), 40) from exc
+        return self._apply_integration_result(integration)
+
+    def execute_host_operation(
+        self,
+        operation_id: str,
+        *,
+        expected_operation_version: int,
+        idempotency_key: str,
+        invocation: InvocationContext,
+    ) -> WorkflowResult:
+        try:
+            operation = self.operations.get(operation_id)
+            if operation.idempotency_key != idempotency_key:
+                raise HostOperationError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "host operation idempotency key does not match persisted intent",
+                )
+            acquired = self.operations.acquire(
+                operation_id,
+                expected_version=expected_operation_version,
+                lease_owner=invocation.principal,
+            )
+            if acquired.status is HostOperationStatus.SUCCEEDED:
+                if acquired.run_id is None:
+                    raise HostOperationError(
+                        "RECOVERY_UNAVAILABLE", "completed operation has no Workflow run"
+                    )
+                return self.status(acquired.run_id)
+            if acquired.kind is not HostOperationKind.INTEGRATION_MERGE:
+                self.operations.mark_failed(
+                    operation_id,
+                    expected_version=acquired.state_version,
+                    lease_owner=invocation.principal,
+                    error_code="OPERATION_KIND_UNSUPPORTED",
+                )
+                raise HostOperationError(
+                    "CONFIG_INVALID", f"unsupported Host Operation kind: {acquired.kind.value}"
+                )
+            try:
+                integration = CoordinationService(
+                    self.config.root
+                ).execute_merge_operation(acquired)
+            except CoordinationError as exc:
+                self.operations.mark_failed(
+                    operation_id,
+                    expected_version=acquired.state_version,
+                    lease_owner=invocation.principal,
+                    error_code=exc.code,
+                )
+                raise WorkflowError(exc.code, str(exc), 40) from exc
+            result = self._apply_integration_result(integration)
+            self.operations.mark_succeeded(
+                operation_id,
+                expected_version=acquired.state_version,
+                lease_owner=invocation.principal,
+                result={
+                    "handoff_id": integration.handoff_id,
+                    "status": integration.status,
+                    "integration_branch": integration.integration_branch,
+                    "integration_head": integration.integration_head,
+                    "merge_commit": integration.merge_commit,
+                    "conflict_paths": list(integration.conflict_paths),
+                },
+            )
+            return result
+        except HostOperationError as exc:
+            raise WorkflowError(exc.code, str(exc), 40) from exc
+
+    def _apply_integration_result(self, integration: IntegrationResult) -> WorkflowResult:
         run = self._get_run(integration.task_group.run_id)
         if integration.task_group.status == "completed":
             phase = WorkflowPhase(integration.task_group.phase)
@@ -544,7 +659,7 @@ class WorkflowEngine:
         if integration.status == "rejected":
             task = self._get_task(integration.task_group.ready_task_ids[0]) if (
                 integration.task_group.ready_task_ids
-            ) else self._task_for_handoff(review.handoff_id)
+            ) else self._task_for_handoff(integration.handoff_id)
             actions = (self._action_for_coordinated_task(task),)
             status = RunStatus.RUNNING
         elif integration.status in {"blocked", "conflicted"}:
@@ -855,6 +970,9 @@ class WorkflowEngine:
                     task_group_id=task.task_group_id,
                     expected_task_version=task.state_version,
                 )
+            if action.kind is ActionKind.HOST_OPERATION and action.operation_id is not None:
+                operation = self.operations.get(action.operation_id)
+                updates["expected_operation_version"] = operation.state_version
             action = action.model_copy(update=updates)
             hydrated.append(action)
         next_actions = tuple(hydrated)

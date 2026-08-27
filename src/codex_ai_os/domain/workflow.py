@@ -91,6 +91,7 @@ class NextAction(StrictModel):
     requires_repository_change: bool = False
     expected_task_version: int | None = Field(default=None, ge=0)
     expected_state_version: int | None = Field(default=None, ge=0)
+    expected_operation_version: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def fields_match_action_kind(self) -> Self:

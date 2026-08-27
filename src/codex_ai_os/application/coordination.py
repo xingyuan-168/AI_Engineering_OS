@@ -14,6 +14,7 @@ from pathlib import Path
 from codex_ai_os.domain.config import GitPushPolicy
 from codex_ai_os.domain.coordination import HandoffReviewInput, TaskGroupView
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.operations import HostOperation, HostOperationKind
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.coordination import (
     CoordinationError,
@@ -124,25 +125,54 @@ class CoordinationService:
         return path
 
     def review_and_integrate(self, review: HandoffReviewInput) -> IntegrationResult:
-        self._verify_review_report(review)
-        decision = self.store.review_handoff(review)
+        decision = self.prepare_review(review)
         if decision.decision != "accepted":
-            group = self.store.group_view(decision.task_group_id)
-            with self.database.connection() as connection:
-                run = connection.execute(
-                    "SELECT integration_branch, integration_head FROM workflow_runs "
-                    "WHERE id = (SELECT run_id FROM tasks WHERE id = ?)",
-                    (decision.task_id,),
-                ).fetchone()
-            return IntegrationResult(
-                handoff_id=decision.handoff_id,
-                status=decision.decision,
-                integration_branch=str(run["integration_branch"] or ""),
-                integration_head=str(run["integration_head"] or ""),
-                merge_commit=None,
-                conflict_paths=(),
-                task_group=group,
+            return self.decision_result(decision)
+        return self._merge(decision)
+
+    def prepare_review(self, review: HandoffReviewInput) -> HandoffDecisionResult:
+        self._verify_review_report(review)
+        return self.store.review_handoff(review)
+
+    def decision_result(self, decision: HandoffDecisionResult) -> IntegrationResult:
+        group = self.store.group_view(decision.task_group_id)
+        with self.database.read_connection() as connection:
+            run = connection.execute(
+                "SELECT integration_branch, integration_head FROM workflow_runs "
+                "WHERE id = (SELECT run_id FROM tasks WHERE id = ?)",
+                (decision.task_id,),
+            ).fetchone()
+        if run is None:
+            raise CoordinationError("RECOVERY_UNAVAILABLE", "Handoff run not found")
+        return IntegrationResult(
+            handoff_id=decision.handoff_id,
+            status=decision.decision,
+            integration_branch=str(run["integration_branch"] or ""),
+            integration_head=str(run["integration_head"] or ""),
+            merge_commit=None,
+            conflict_paths=(),
+            task_group=group,
+        )
+
+    def execute_merge_operation(self, operation: HostOperation) -> IntegrationResult:
+        if operation.kind is not HostOperationKind.INTEGRATION_MERGE:
+            raise CoordinationError(
+                "CONFIG_INVALID", "host operation is not an integration merge"
             )
+        request = operation.request
+        required = ("handoff_id", "task_id", "task_group_id", "source_commit")
+        if not all(isinstance(request.get(key), str) for key in required):
+            raise CoordinationError(
+                "RECOVERY_UNAVAILABLE", "integration merge request is incomplete"
+            )
+        decision = HandoffDecisionResult(
+            handoff_id=str(request["handoff_id"]),
+            task_id=str(request["task_id"]),
+            task_group_id=str(request["task_group_id"]),
+            decision="accepted",
+            source_commit=str(request["source_commit"]),
+            operation_id=operation.operation_id,
+        )
         return self._merge(decision)
 
     def _merge(self, decision: HandoffDecisionResult) -> IntegrationResult:

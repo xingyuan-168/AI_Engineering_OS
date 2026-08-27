@@ -11,7 +11,9 @@ from typing import cast
 
 from codex_ai_os.domain.coordination import HandoffReviewInput, TaskBlueprint, TaskGroupView
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.operations import HostOperationKind
 from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.operations import HostOperationError, HostOperationStore
 
 
 class CoordinationError(RuntimeError):
@@ -38,11 +40,13 @@ class HandoffDecisionResult:
     task_group_id: str
     decision: str
     source_commit: str
+    operation_id: str | None = None
 
 
 class CoordinationStore:
     def __init__(self, database: Database) -> None:
         self.database = database
+        self.operations = HostOperationStore(database)
 
     def create_group(
         self,
@@ -325,16 +329,67 @@ class CoordinationStore:
                 connection.execute("BEGIN IMMEDIATE")
                 row = connection.execute(
                     """
-                    SELECT h.*, t.task_group_id, t.head_commit, t.agent
+                    SELECT h.*, t.task_group_id, t.head_commit, t.agent,
+                           t.run_id, r.project_id
                     FROM handoffs h JOIN tasks t ON t.id = h.task_id
+                    JOIN workflow_runs r ON r.id = t.run_id
                     WHERE h.id = ?
                     """,
                     (review.handoff_id,),
                 ).fetchone()
                 if row is None or row["task_group_id"] is None:
                     raise CoordinationError("RECOVERY_UNAVAILABLE", "Handoff not found")
+                expected_version = (
+                    int(row["state_version"])
+                    if review.expected_handoff_version is None
+                    else review.expected_handoff_version
+                )
+                idempotency_key = review.idempotency_key or (
+                    f"handoff:{review.handoff_id}:{expected_version}:{review.decision.value}"
+                )
+                operation_request = {
+                    "handoff_id": review.handoff_id,
+                    "task_id": str(row["task_id"]),
+                    "task_group_id": str(row["task_group_id"]),
+                    "run_id": str(row["run_id"]),
+                    "source_commit": review.reviewed_commit.casefold(),
+                    "decision": review.decision.value,
+                    "report_hash": review.report_hash.casefold(),
+                }
+                if str(row["status"]) == review.decision.value == "accepted":
+                    try:
+                        replayed = self.operations.ensure_pending_in_transaction(
+                            connection,
+                            project_id=str(row["project_id"]),
+                            run_id=str(row["run_id"]),
+                            task_id=str(row["task_id"]),
+                            task_group_id=str(row["task_group_id"]),
+                            handoff_id=review.handoff_id,
+                            kind=HostOperationKind.INTEGRATION_MERGE,
+                            idempotency_key=idempotency_key,
+                            request=operation_request,
+                            expected_state_version=expected_version,
+                            expected_task_version=int(row["state_version"]),
+                        )
+                    except HostOperationError as exc:
+                        raise CoordinationError(exc.code, str(exc)) from exc
+                    connection.commit()
+                    return HandoffDecisionResult(
+                        handoff_id=review.handoff_id,
+                        task_id=str(row["task_id"]),
+                        task_group_id=str(row["task_group_id"]),
+                        decision=review.decision.value,
+                        source_commit=review.reviewed_commit.casefold(),
+                        operation_id=replayed.operation_id,
+                    )
                 if str(row["status"]) != "ready":
                     raise CoordinationError("STATE_VERSION_CONFLICT", "Handoff is not ready")
+                if int(row["state_version"]) != expected_version:
+                    raise CoordinationError(
+                        "STATE_VERSION_CONFLICT",
+                        f"expected Handoff version {expected_version}, "
+                        f"found {row['state_version']}",
+                    )
                 if review.reviewer == str(row["producer"]):
                     raise CoordinationError("REVIEW_STALE", "producer cannot review own Handoff")
                 if review.reviewed_commit.casefold() != str(row["head_commit"]).casefold():
@@ -365,12 +420,12 @@ class CoordinationStore:
                         now,
                     ),
                 )
-                connection.execute(
+                changed = connection.execute(
                     """
                     UPDATE handoffs SET status = ?, reviewer = ?, reviewed_commit = ?,
                         decision_reason = ?, rejection_reason = ?, blocked_reason = ?,
                         accepted_at = ?, updated_at = ?, state_version = state_version + 1
-                    WHERE id = ?
+                    WHERE id = ? AND state_version = ?
                     """,
                     (
                         review.decision.value,
@@ -382,8 +437,14 @@ class CoordinationStore:
                         now if review.decision.value == "accepted" else None,
                         now,
                         review.handoff_id,
+                        expected_version,
                     ),
-                )
+                ).rowcount
+                if changed != 1:
+                    raise CoordinationError(
+                        "STATE_VERSION_CONFLICT", "Handoff changed during review"
+                    )
+                operation_id: str | None = None
                 if review.decision.value == "rejected":
                     connection.execute(
                         "UPDATE tasks SET status = 'running', review_status = 'rejected', "
@@ -407,8 +468,25 @@ class CoordinationStore:
                         "state_version = state_version + 1, updated_at = ? WHERE id = ?",
                         (now, str(row["task_id"])),
                     )
+                    try:
+                        operation = self.operations.ensure_pending_in_transaction(
+                            connection,
+                            project_id=str(row["project_id"]),
+                            run_id=str(row["run_id"]),
+                            task_id=str(row["task_id"]),
+                            task_group_id=str(row["task_group_id"]),
+                            handoff_id=review.handoff_id,
+                            kind=HostOperationKind.INTEGRATION_MERGE,
+                            idempotency_key=idempotency_key,
+                            request=operation_request,
+                            expected_state_version=expected_version,
+                            expected_task_version=int(row["state_version"]),
+                        )
+                    except HostOperationError as exc:
+                        raise CoordinationError(exc.code, str(exc)) from exc
+                    operation_id = operation.operation_id
                 connection.commit()
-            except (sqlite3.Error, CoordinationError):
+            except (sqlite3.Error, CoordinationError, HostOperationError):
                 connection.rollback()
                 raise
         return HandoffDecisionResult(
@@ -417,6 +495,7 @@ class CoordinationStore:
             task_group_id=str(row["task_group_id"]),
             decision=review.decision.value,
             source_commit=review.reviewed_commit.casefold(),
+            operation_id=operation_id,
         )
 
     def record_merge(
@@ -489,22 +568,6 @@ class CoordinationStore:
                     target_status = "completed" if bool(all_joined) else "running"
                 else:
                     target_status = "blocked"
-                    connection.execute(
-                        """
-                        UPDATE handoffs SET status = 'rejected', rejection_reason = ?,
-                            updated_at = ?, state_version = state_version + 1
-                        WHERE id = ? AND status = 'accepted'
-                        """,
-                        (error_code or status, now, decision.handoff_id),
-                    )
-                    connection.execute(
-                        """
-                        UPDATE tasks SET status = 'running', review_status = 'rejected',
-                            state_version = state_version + 1, updated_at = ?
-                        WHERE id = ?
-                        """,
-                        (now, decision.task_id),
-                    )
                 connection.execute(
                     "UPDATE task_groups SET status = ?, state_version = state_version + 1, "
                     "updated_at = ? WHERE id = ?",
@@ -517,6 +580,20 @@ class CoordinationStore:
                             state_version = state_version + 1, updated_at = ?
                         WHERE id = ?
                         """,
+                        (merge_commit, now, str(group["run_id"])),
+                    )
+                elif merge_commit is not None:
+                    connection.execute(
+                        """
+                        UPDATE workflow_worktrees
+                        SET head_commit = ?, state_version = state_version + 1
+                        WHERE run_id = ? AND kind = 'integration'
+                        """,
+                        (merge_commit, str(group["run_id"])),
+                    )
+                    connection.execute(
+                        "UPDATE workflow_runs SET integration_head = ?, run_status = 'blocked', "
+                        "updated_at = ? WHERE id = ?",
                         (merge_commit, now, str(group["run_id"])),
                     )
                 connection.commit()

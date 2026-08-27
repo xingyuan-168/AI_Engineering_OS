@@ -23,6 +23,7 @@ from codex_ai_os.domain.governance import (
     ReviewDecision,
     ReviewEvidenceInput,
 )
+from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
 from codex_ai_os.domain.workflow import (
     ChangeKind,
     Gate,
@@ -478,20 +479,25 @@ def _complete_committed_action(
 
 
 def _review_handoff(root: Path, engine: WorkflowEngine, handoff_id: str) -> WorkflowResult:
-    with engine.store.database.connection() as connection:
+    with engine.store.database.read_connection() as connection:
         row = connection.execute(
-            "SELECT task_id FROM handoffs WHERE id = ?", (handoff_id,)
+            "SELECT task_id, state_version FROM handoffs WHERE id = ?", (handoff_id,)
         ).fetchone()
+        assert row is not None
         task = connection.execute(
             "SELECT head_commit FROM tasks WHERE id = ?", (str(row["task_id"]),)
         ).fetchone()
+        assert task is not None
     relative = f".codex-os/artifacts/reviews/{handoff_id}.md"
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("# Handoff Review\n\nAccepted.\n", encoding="utf-8")
-    return engine.review_handoff(
+    idempotency_key = f"e2e:handoff:{handoff_id}:{row['state_version']}"
+    prepared = engine.review_handoff(
         HandoffReviewInput(
             handoff_id=handoff_id,
+            expected_handoff_version=int(row["state_version"]),
+            idempotency_key=idempotency_key,
             reviewer="independent-reviewer",
             reviewed_commit=str(task["head_commit"]),
             decision=ReviewDecision.ACCEPTED,
@@ -499,6 +505,15 @@ def _review_handoff(root: Path, engine: WorkflowEngine, handoff_id: str) -> Work
             report_ref=relative,
             report_hash=hashlib.sha256(path.read_bytes()).hexdigest(),
         )
+    )
+    assert prepared.next_action is not None
+    assert prepared.next_action.operation_id is not None
+    assert prepared.next_action.expected_operation_version is not None
+    return engine.execute_host_operation(
+        prepared.next_action.operation_id,
+        expected_operation_version=prepared.next_action.expected_operation_version,
+        idempotency_key=idempotency_key,
+        invocation=InvocationContext.local(InvocationSource.CLI),
     )
 
 

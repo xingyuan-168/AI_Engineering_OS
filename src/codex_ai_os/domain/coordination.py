@@ -41,6 +41,8 @@ class TaskBlueprint(StrictModel):
 
 class HandoffReviewInput(StrictModel):
     handoff_id: str
+    expected_handoff_version: int | None = Field(default=None, ge=0)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
     reviewer: str = Field(min_length=1, max_length=128)
     reviewed_commit: str = Field(pattern=r"^[0-9a-fA-F]{7,64}$")
     decision: ReviewDecision
