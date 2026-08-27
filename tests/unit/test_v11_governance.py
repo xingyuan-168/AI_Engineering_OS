@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from codex_ai_os.application.execution import ExecutionServiceError
+from codex_ai_os.adapters.docker import SandboxRequest, SandboxResult, command_hash
+from codex_ai_os.application.execution import ExecutionService, ExecutionServiceError
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.application.verification import VerificationService
@@ -371,6 +373,54 @@ def test_verification_requires_lock_bound_offline_wheelhouse(tmp_path: Path) -> 
     (wheelhouse / "fixture-1.0-py3-none-any.whl").write_bytes(b"fixture")
     (wheelhouse / "audit-snapshot.json").write_text("{}", encoding="utf-8")
     assert service._wheelhouse(root) == wheelhouse
+
+
+class _FailingSandbox:
+    def __init__(self, *, exit_code: int) -> None:
+        self.exit_code = exit_code
+
+    def run(self, request: SandboxRequest) -> SandboxResult:
+        return SandboxResult(
+            execution_id=request.execution_id,
+            command_hash=command_hash(request.command),
+            image_digest=request.image.rsplit("@", 1)[1],
+            container_name=f"codex-os-{request.execution_id.lower()}",
+            exit_code=self.exit_code,
+            stdout="",
+            stderr="tests failed\n",
+            worktree_dirty=False,
+            started_at="2026-08-27T00:00:01+00:00",
+            ended_at="2026-08-27T00:00:02+00:00",
+        )
+
+
+def test_verification_records_failed_check_evidence_for_nonzero_exit(
+    tmp_path: Path,
+) -> None:
+    root = _fixture_project(tmp_path / "verification-failed-check")
+    engine = WorkflowEngine(root)
+    started = engine.start("Record failed verification evidence")
+    assert started.active_task is not None
+    execution = ExecutionService(root, sandbox=_FailingSandbox(exit_code=7))
+    service = VerificationService(root, execution_service=execution)
+
+    result = service.run(
+        run_id=started.run.id,
+        task_id=started.active_task.id,
+        checks=(("pytest", ("python", "-m", "pytest", "-q")),),
+    )
+
+    assert result.valid is False
+    assert result.blockers == (
+        "pytest:EXECUTION_FAILED:sandbox command failed with exit code 7",
+    )
+    assert len(result.checks) == 1
+    check = result.checks[0]
+    assert check.status.value == "failed"
+    assert check.exit_code == 7
+    report = json.loads((root / check.report_path).read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["exit_code"] == 7
 
 
 def test_verification_builds_commit_bound_container_git_metadata(tmp_path: Path) -> None:

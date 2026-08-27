@@ -167,8 +167,25 @@ class VerificationService:
             try:
                 record = self.execution.execute(request)
             except ExecutionServiceError as exc:
-                blockers.append(f"{name}:{exc.code}:{exc}")
-                continue
+                if exc.record is not None:
+                    record = exc.record
+                    blockers.append(f"{name}:{exc.code}:{exc}")
+                else:
+                    blockers.append(f"{name}:{exc.code}:{exc}")
+                    continue
+            exit_code = record.exit_code if record.exit_code is not None else 1
+            status = (
+                CheckStatus.PASSED
+                if record.status == "completed" and exit_code == 0
+                else CheckStatus.FAILED
+            )
+            if status is CheckStatus.FAILED and not any(
+                blocker.startswith(f"{name}:") for blocker in blockers
+            ):
+                error_code = record.error_code or "EXECUTION_FAILED"
+                blockers.append(
+                    f"{name}:{error_code}:sandbox command failed with exit code {exit_code}"
+                )
             report = {
                 "schema_version": RUNTIME_VERSIONS.api,
                 "run_id": run_id,
@@ -177,7 +194,10 @@ class VerificationService:
                 "check": name,
                 "execution_id": record.id,
                 "command_hash": record.command_hash,
-                "exit_code": record.exit_code,
+                "exit_code": exit_code,
+                "status": status.value,
+                "execution_status": record.status,
+                "error_code": record.error_code,
                 "stdout_ref": record.stdout_ref,
                 "stderr_ref": record.stderr_ref,
                 "image_digest": record.image_digest,
@@ -196,12 +216,12 @@ class VerificationService:
                     name=name,
                     command_hash=record.command_hash,
                     execution_id=record.id,
-                    exit_code=record.exit_code or 0,
+                    exit_code=exit_code,
                     report_path=relative,
                     report_hash=report_hash,
                     source_commit=source_commit,
                     executed_at=record.ended_at or record.started_at,
-                    status=CheckStatus.PASSED,
+                    status=status,
                 )
             )
         return VerificationResult(
