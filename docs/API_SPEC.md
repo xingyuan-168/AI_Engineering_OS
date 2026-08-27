@@ -235,6 +235,7 @@ Plugin API 1.2 输入：
   "run_id":"RUN-...",
   "task_id":"TASK-...",
   "expected_handoff_version":1,
+  "idempotency_key":"caller-stable-key",
   "decision":"accepted|rejected|blocked",
   "reviewer":"reviewer-id",
   "reason":"non-empty",
@@ -242,7 +243,7 @@ Plugin API 1.2 输入：
 }
 ```
 
-约束：Reviewer 与 producer 不得相同；reviewed Commit 必须等于 Handoff source Commit；开放 high/critical finding 禁止 accepted。
+约束：Adapter 使用受信 `InvocationContext` 的 principal 作为权限事实；请求体 `reviewer` 仅为 1.0/1.1 显示兼容字段，不能提升权限。Reviewer 与 producer 不得相同；reviewed Commit 必须等于 Handoff source Commit；开放 high/critical finding 禁止 accepted。
 
 accepted 后 Runtime 在同一事务保存 Review、期望版本和 `integration_merge` Host Operation，输出包含 operation ID 的 `next_actions`。Host 执行/恢复该 operation 后才进行持锁 `--no-ff` 合并。冲突返回业务成功 `ok=true` 但 `merge.status=conflicted`、run blocked 与 `MERGE_CONFLICT` blocker，便于持久化恢复；push 失败不得把 accepted Handoff 改成 rejected。
 

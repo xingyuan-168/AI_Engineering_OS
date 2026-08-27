@@ -22,6 +22,7 @@ from codex_ai_os.domain.governance import (
     ReleaseAuthority,
     ReviewDecision,
 )
+from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
 from codex_ai_os.domain.workflow import Gate
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
@@ -35,9 +36,13 @@ app = typer.Typer(
 )
 run_app = typer.Typer(help="Start a registered workflow.", no_args_is_help=True)
 handoff_app = typer.Typer(help="Review structured Agent Handoffs.", no_args_is_help=True)
+host_operation_app = typer.Typer(
+    help="Execute persisted host-side operations.", no_args_is_help=True
+)
 worktree_app = typer.Typer(help="Manage governed Worktree lifecycle.", no_args_is_help=True)
 app.add_typer(run_app, name="run")
 app.add_typer(handoff_app, name="handoff")
+app.add_typer(host_operation_app, name="host-operation")
 app.add_typer(worktree_app, name="worktree")
 
 
@@ -483,15 +488,23 @@ def handoff_review_command(
     reason: Annotated[str, typer.Option("--reason")],
     report_ref: Annotated[str, typer.Option("--report-ref")],
     report_hash: Annotated[str, typer.Option("--report-hash")],
+    expected_handoff_version: Annotated[
+        int | None, typer.Option("--expected-handoff-version")
+    ] = None,
+    idempotency_key: Annotated[str | None, typer.Option("--idempotency-key")] = None,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """Review a ready Handoff and integrate it only when accepted."""
 
     try:
+        context = InvocationContext.local(InvocationSource.CLI)
+        warnings = _trusted_reviewer_warnings(reviewer, context)
         review = HandoffReviewInput(
             handoff_id=handoff_id,
-            reviewer=reviewer,
+            expected_handoff_version=expected_handoff_version,
+            idempotency_key=idempotency_key,
+            reviewer=context.principal,
             reviewed_commit=reviewed_commit,
             decision=ReviewDecision(decision),
             reason=reason,
@@ -502,7 +515,31 @@ def handoff_review_command(
     except (WorkflowError, ConfigError, MigrationError, ValueError, OSError) as exc:
         _fail(getattr(exc, "code", "CONFIG_INVALID"), str(exc), 40, json_output)
         return
-    _emit_workflow(result, json_output=json_output)
+    _emit_workflow(result, json_output=json_output, context=context, warnings=warnings)
+
+
+@host_operation_app.command("execute")
+def host_operation_execute_command(
+    operation_id: Annotated[str, typer.Argument()],
+    expected_operation_version: Annotated[int, typer.Option("--expected-operation-version")],
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Execute or safely replay a persisted host operation."""
+
+    context = InvocationContext.local(InvocationSource.CLI)
+    try:
+        result = WorkflowEngine(project_root).execute_host_operation(
+            operation_id,
+            expected_operation_version=expected_operation_version,
+            idempotency_key=idempotency_key,
+            invocation=context,
+        )
+    except (WorkflowError, ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail(getattr(exc, "code", "CONFIG_INVALID"), str(exc), 40, json_output)
+        return
+    _emit_workflow(result, json_output=json_output, context=context)
 
 
 @worktree_app.command("cleanup")
@@ -592,7 +629,13 @@ def _approval_command(
     _emit_workflow(result, json_output=json_output)
 
 
-def _emit_workflow(result: WorkflowResult, *, json_output: bool) -> None:
+def _emit_workflow(
+    result: WorkflowResult,
+    *,
+    json_output: bool,
+    context: InvocationContext | None = None,
+    warnings: tuple[str, ...] = (),
+) -> None:
     action = (
         result.next_action.model_dump(mode="json") if result.next_action is not None else None
     )
@@ -623,6 +666,7 @@ def _emit_workflow(result: WorkflowResult, *, json_output: bool) -> None:
     emit(
         success_envelope(
             data,
+            context=context,
             run_id=result.run.id,
             run_status=result.run.run_status.value,
             workflow_phase=result.run.workflow_phase.value,
@@ -632,6 +676,7 @@ def _emit_workflow(result: WorkflowResult, *, json_output: bool) -> None:
                 for next_action in result.next_actions
             ]
             or ([action] if action is not None else []),
+            warnings=warnings,
         ),
         json_output=json_output,
         human=(
@@ -643,6 +688,17 @@ def _emit_workflow(result: WorkflowResult, *, json_output: bool) -> None:
 
 def _workflow_fail(error: WorkflowError, json_output: bool) -> None:
     _fail(error.code, str(error), error.exit_code, json_output)
+
+
+def _trusted_reviewer_warnings(
+    requested_reviewer: str, context: InvocationContext
+) -> tuple[str, ...]:
+    if requested_reviewer.strip() == context.principal:
+        return ()
+    return (
+        "reviewer is display-only compatibility input; trusted local principal "
+        f"{context.principal} was used for authority",
+    )
 
 
 def _fail(code: str, message: str, exit_code: int, json_output: bool) -> None:

@@ -63,9 +63,16 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
         "reviewed",
         "review.md",
         "b" * 64,
+        expected_handoff_version=1,
+        idempotency_key="missing-handoff-review",
     )
     assert missing_handoff["ok"] is False
     assert missing_handoff["error"]["code"] == "RECOVERY_UNAVAILABLE"
+    missing_operation = mcp_server.host_operation_execute(
+        str(root), "OP-MISSING", 0, "missing-operation"
+    )
+    assert missing_operation["ok"] is False
+    assert missing_operation["error"]["code"] == "RECOVERY_UNAVAILABLE"
     cleanup = mcp_server.worktree_cleanup(
         str(root), "TASK-MISSING", "main", "host", "owner", "merged"
     )

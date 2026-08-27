@@ -134,6 +134,24 @@ def test_cli_wrappers_cover_verification_handoff_cleanup_and_g4(
             return current
 
         def review_handoff(self, _review: Any) -> Any:
+            assert _review.expected_handoff_version == 7
+            assert _review.idempotency_key == "handoff-review-idem"
+            assert str(_review.reviewer).startswith("os:")
+            assert _review.reviewer != "reviewer"
+            return current
+
+        def execute_host_operation(
+            self,
+            operation_id: str,
+            *,
+            expected_operation_version: int,
+            idempotency_key: str,
+            invocation: Any,
+        ) -> Any:
+            assert operation_id == "OP-1"
+            assert expected_operation_version == 3
+            assert idempotency_key == "host-op-idem"
+            assert str(invocation.principal).startswith("os:")
             return current
 
     monkeypatch.setattr(cli_app, "WorkflowEngine", _Engine)
@@ -184,12 +202,33 @@ def test_cli_wrappers_cover_verification_handoff_cleanup_and_g4(
             "review.md",
             "--report-hash",
             "b" * 64,
+            "--expected-handoff-version",
+            "7",
+            "--idempotency-key",
+            "handoff-review-idem",
             "--project-root",
             str(root),
             "--json",
         ],
     )
     assert handoff.exit_code == 0, handoff.stdout
+    assert _payload(handoff.stdout)["warnings"]
+    host_operation = runner.invoke(
+        cli_app.app,
+        [
+            "host-operation",
+            "execute",
+            "OP-1",
+            "--expected-operation-version",
+            "3",
+            "--idempotency-key",
+            "host-op-idem",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert host_operation.exit_code == 0, host_operation.stdout
     invalid_handoff = runner.invoke(
         cli_app.app,
         [

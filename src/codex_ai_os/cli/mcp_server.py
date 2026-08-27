@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -278,15 +278,21 @@ def handoff_review(
     reason: str,
     report_ref: str,
     report_hash: str,
+    expected_handoff_version: int | None = None,
+    idempotency_key: str | None = None,
     findings: list[dict[str, Any]] | None = None,
     risks: list[str] | None = None,
 ) -> dict[str, Any]:
     """Accept, reject, or block a ready Handoff and integrate only accepted evidence."""
 
     def operation() -> dict[str, Any]:
+        context = _current_context()
+        warnings = _trusted_reviewer_warnings(reviewer, context)
         review = HandoffReviewInput(
             handoff_id=handoff_id,
-            reviewer=reviewer,
+            expected_handoff_version=expected_handoff_version,
+            idempotency_key=idempotency_key,
+            reviewer=context.principal,
             reviewed_commit=reviewed_commit,
             decision=ReviewDecision(decision),
             reason=reason,
@@ -296,6 +302,28 @@ def handoff_review(
             report_hash=report_hash,
         )
         result = WorkflowEngine(Path(project_root)).review_handoff(review)
+        return _workflow_payload(result, Path(project_root), warnings=warnings)
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def host_operation_execute(
+    project_root: str,
+    operation_id: str,
+    expected_operation_version: int,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Execute or safely replay a persisted host-side operation by idempotency key."""
+
+    def operation() -> dict[str, Any]:
+        context = _current_context()
+        result = WorkflowEngine(Path(project_root)).execute_host_operation(
+            operation_id,
+            expected_operation_version=expected_operation_version,
+            idempotency_key=idempotency_key,
+            invocation=context,
+        )
         return _workflow_payload(result, Path(project_root))
 
     return _invoke(operation)
@@ -597,7 +625,9 @@ def run_server() -> None:
     mcp.run()
 
 
-def _workflow_payload(result: WorkflowResult, project_root: Path) -> dict[str, Any]:
+def _workflow_payload(
+    result: WorkflowResult, project_root: Path, *, warnings: tuple[str, ...] = ()
+) -> dict[str, Any]:
     database = Database(project_root.resolve() / ".codex-os" / "state" / "state.db")
     with database.read_connection() as connection:
         groups = [
@@ -665,6 +695,7 @@ def _workflow_payload(result: WorkflowResult, project_root: Path) -> dict[str, A
             if result.integration_result is not None
             else None
         ),
+        warnings=warnings,
     )
 
 
@@ -696,7 +727,7 @@ def _success(
     workflow_phase: str | None = None,
     state_version: int | None = None,
     next_actions: list[dict[str, Any]] | None = None,
-    warnings: list[str] | None = None,
+    warnings: Iterable[str] | None = None,
     **data: Any,
 ) -> dict[str, Any]:
     context = _INVOCATION_CONTEXT.get() or InvocationContext.local(InvocationSource.MCP)
@@ -713,6 +744,21 @@ def _success(
         state_version=state_version,
         next_actions=next_actions or (),
         warnings=compatibility_warnings,
+    )
+
+
+def _current_context() -> InvocationContext:
+    return _INVOCATION_CONTEXT.get() or InvocationContext.local(InvocationSource.MCP)
+
+
+def _trusted_reviewer_warnings(
+    requested_reviewer: str, context: InvocationContext
+) -> tuple[str, ...]:
+    if requested_reviewer.strip() == context.principal:
+        return ()
+    return (
+        "reviewer is display-only compatibility input; trusted local principal "
+        f"{context.principal} was used for authority",
     )
 
 
