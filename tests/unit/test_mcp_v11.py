@@ -36,6 +36,30 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
     assert mcp_server.workflow_step(str(root), run_id)["next_action"] is not None
     assert mcp_server.workflow_resume(str(root), run_id)["ok"] is True
 
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    prepare = mcp_server.verification_prepare(
+        str(root),
+        run_id,
+        expected_state_version=int(cast(dict[str, Any], started_data["run"])["state_version"]),
+        idempotency_key="prepare-cache",
+        network_approval_ref="APPROVED-NETWORK",
+        expires_at="2026-08-28T00:00:00+00:00",
+    )
+    assert prepare["ok"] is True
+    assert prepare["next_action"]["kind"] == "host_operation"
+    assert cast(dict[str, Any], _data(prepare)["operation"])["kind"] == "verification_prepare"
+
+    migrated = mcp_server.database_migrate(
+        str(root),
+        expected_schema_version="0007",
+        target_schema_version="0007",
+        idempotency_key="migrate-noop",
+    )
+    assert migrated["ok"] is True
+    migration_operation = cast(dict[str, Any], _data(migrated)["operation"])
+    assert migration_operation["kind"] == "database_migrate"
+    assert migration_operation["status"] == "succeeded"
+
     partial_verification = mcp_server.verification_run(str(root), run_id=run_id)
     assert partial_verification["ok"] is False
     assert partial_verification["error"]["code"] == "CONFIG_INVALID"

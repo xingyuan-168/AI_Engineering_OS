@@ -13,6 +13,11 @@ from mcp.server import MCPServer
 from pydantic import ValidationError
 
 from codex_ai_os.application.execution import ExecutionServiceError
+from codex_ai_os.application.maintenance import (
+    DatabaseMigrationService,
+    MaintenanceOperationError,
+    VerificationPrepareService,
+)
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.release import ReleaseCandidateService
 from codex_ai_os.application.repository import RepositoryGovernanceService
@@ -421,6 +426,70 @@ def verification_run(
 
 
 @mcp.tool()
+def verification_prepare(
+    project_root: str,
+    run_id: str,
+    expected_state_version: int,
+    idempotency_key: str,
+    network_approval_ref: str,
+    expires_at: str,
+    target_python: str = "3.12",
+    platform: str = "windows-amd64",
+) -> dict[str, Any]:
+    """Persist an approved network operation to prepare offline verification caches."""
+
+    def operation() -> dict[str, Any]:
+        scheduled = VerificationPrepareService(Path(project_root)).prepare(
+            run_id=run_id,
+            expected_state_version=expected_state_version,
+            idempotency_key=idempotency_key,
+            network_approval_ref=network_approval_ref,
+            expires_at=expires_at,
+            target_python=target_python,
+            platform=platform,
+        )
+        action = scheduled.next_action.model_dump(mode="json")
+        return _success(
+            run_id=scheduled.operation.run_id,
+            state_version=scheduled.operation.expected_state_version,
+            next_actions=[action],
+            operation=scheduled.operation.model_dump(mode="json"),
+        )
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def database_migrate(
+    project_root: str,
+    expected_schema_version: str,
+    target_schema_version: str = "0007",
+    idempotency_key: str = "database-migrate",
+) -> dict[str, Any]:
+    """Run explicit SQLite migration and record the operation audit entry."""
+
+    def operation() -> dict[str, Any]:
+        result = DatabaseMigrationService(Path(project_root)).migrate(
+            expected_schema_version=expected_schema_version,
+            target_schema_version=target_schema_version,
+            idempotency_key=idempotency_key,
+            invocation=_current_context(),
+        )
+        return _success(
+            applied_versions=list(result.migration.applied_versions),
+            current_version=result.migration.current_version,
+            backup_path=(
+                result.migration.backup_path.as_posix()
+                if result.migration.backup_path is not None
+                else None
+            ),
+            operation=result.operation.model_dump(mode="json"),
+        )
+
+    return _invoke(operation)
+
+
+@mcp.tool()
 def release_candidate_create(project_root: str, run_id: str) -> dict[str, Any]:
     """Build and assemble a candidate in the active Release Worktree and artifact area."""
 
@@ -782,6 +851,13 @@ def _invoke(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
             str(exc),
             context=context,
             retryable=_retryable_error(exc.code),
+        )
+    except MaintenanceOperationError as exc:
+        return error_envelope(
+            exc.code,
+            str(exc),
+            context=context,
+            retryable=exc.retryable,
         )
     except (ConfigError, MigrationError, ValidationError, ValueError, OSError) as exc:
         return error_envelope("CONFIG_INVALID", str(exc), context=context)

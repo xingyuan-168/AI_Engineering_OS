@@ -9,7 +9,13 @@ import typer
 
 from codex_ai_os.application.doctor import DoctorService
 from codex_ai_os.application.execution import ExecutionServiceError
+from codex_ai_os.application.maintenance import (
+    DatabaseMigrationService,
+    MaintenanceOperationError,
+    VerificationPrepareService,
+)
 from codex_ai_os.application.project import ProjectInitializer
+from codex_ai_os.application.release import ReleaseCandidateService
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.application.verification import VerificationService
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError, WorkflowResult
@@ -27,6 +33,7 @@ from codex_ai_os.domain.workflow import Gate
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
 from codex_ai_os.infrastructure.documents import DocumentManager
+from codex_ai_os.infrastructure.memory import MemoryRecord, MemoryStore, MemoryStoreError
 
 app = typer.Typer(
     name="codex-os",
@@ -39,10 +46,20 @@ handoff_app = typer.Typer(help="Review structured Agent Handoffs.", no_args_is_h
 host_operation_app = typer.Typer(
     help="Execute persisted host-side operations.", no_args_is_help=True
 )
+verification_app = typer.Typer(
+    help="Prepare governed verification caches.", no_args_is_help=True
+)
+database_app = typer.Typer(help="Run explicit database maintenance.", no_args_is_help=True)
+release_app = typer.Typer(help="Create governed release candidates.", no_args_is_help=True)
+memory_app = typer.Typer(help="Submit, review, and search governed Memory.", no_args_is_help=True)
 worktree_app = typer.Typer(help="Manage governed Worktree lifecycle.", no_args_is_help=True)
 app.add_typer(run_app, name="run")
 app.add_typer(handoff_app, name="handoff")
 app.add_typer(host_operation_app, name="host-operation")
+app.add_typer(verification_app, name="verification")
+app.add_typer(database_app, name="database")
+app.add_typer(release_app, name="release")
+app.add_typer(memory_app, name="memory")
 app.add_typer(worktree_app, name="worktree")
 
 
@@ -479,6 +496,49 @@ def verification_command(
     raise typer.Exit(code=50)
 
 
+@verification_app.command("prepare")
+def verification_prepare_command(
+    run_id: Annotated[str, typer.Argument()],
+    expected_state_version: Annotated[int, typer.Option("--expected-state-version")],
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
+    network_approval_ref: Annotated[str, typer.Option("--network-approval-ref")],
+    expires_at: Annotated[str, typer.Option("--expires-at")],
+    target_python: Annotated[str, typer.Option("--target-python")] = "3.12",
+    platform: Annotated[str, typer.Option("--platform")] = "windows-amd64",
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Persist an approved network verification-cache preparation operation."""
+
+    try:
+        scheduled = VerificationPrepareService(project_root).prepare(
+            run_id=run_id,
+            expected_state_version=expected_state_version,
+            idempotency_key=idempotency_key,
+            network_approval_ref=network_approval_ref,
+            expires_at=expires_at,
+            target_python=target_python,
+            platform=platform,
+        )
+    except (MaintenanceOperationError, ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail(getattr(exc, "code", "CONFIG_INVALID"), str(exc), 40, json_output)
+        return
+    action = scheduled.next_action.model_dump(mode="json")
+    emit(
+        success_envelope(
+            {
+                "operation": scheduled.operation.model_dump(mode="json"),
+                "next_actions": [action],
+            },
+            run_id=scheduled.operation.run_id,
+            state_version=scheduled.operation.expected_state_version,
+            next_actions=[action],
+        ),
+        json_output=json_output,
+        human=f"Scheduled verification prepare operation {scheduled.operation.operation_id}.",
+    )
+
+
 @handoff_app.command("review")
 def handoff_review_command(
     handoff_id: Annotated[str, typer.Argument()],
@@ -540,6 +600,200 @@ def host_operation_execute_command(
         _fail(getattr(exc, "code", "CONFIG_INVALID"), str(exc), 40, json_output)
         return
     _emit_workflow(result, json_output=json_output, context=context)
+
+
+@database_app.command("migrate")
+def database_migrate_command(
+    expected_schema_version: Annotated[str, typer.Option("--expected-schema-version")],
+    target_schema_version: Annotated[
+        str, typer.Option("--target-schema-version")
+    ] = "0007",
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")] = "database-migrate",
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Run an explicit SQLite migration and record the maintenance operation."""
+
+    context = InvocationContext.local(InvocationSource.CLI)
+    try:
+        result = DatabaseMigrationService(project_root).migrate(
+            expected_schema_version=expected_schema_version,
+            target_schema_version=target_schema_version,
+            idempotency_key=idempotency_key,
+            invocation=context,
+        )
+    except (MaintenanceOperationError, ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail(getattr(exc, "code", "CONFIG_INVALID"), str(exc), 40, json_output)
+        return
+    emit(
+        success_envelope(
+            {
+                "applied_versions": list(result.migration.applied_versions),
+                "current_version": result.migration.current_version,
+                "backup_path": (
+                    result.migration.backup_path.as_posix()
+                    if result.migration.backup_path is not None
+                    else None
+                ),
+                "operation": result.operation.model_dump(mode="json"),
+            },
+            context=context,
+        ),
+        json_output=json_output,
+        human=f"Database schema is {result.migration.current_version}.",
+    )
+
+
+@release_app.command("candidate")
+def release_candidate_command(
+    run_id: Annotated[str, typer.Argument()],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Create or return the governed release candidate for an active release task."""
+
+    try:
+        candidate = ReleaseCandidateService(project_root).create(run_id)
+    except (
+        WorkflowError,
+        ConfigError,
+        ExecutionServiceError,
+        MigrationError,
+        ValueError,
+        OSError,
+    ) as exc:
+        _fail(getattr(exc, "code", "CONFIG_INVALID"), str(exc), 40, json_output)
+        return
+    emit(
+        success_envelope(
+            {
+                "candidate_id": candidate.id,
+                "version": candidate.version,
+                "source_commit": candidate.source_commit,
+                "release_worktree": candidate.release_worktree,
+                "manifest_path": candidate.manifest_path,
+                "manifest_hash": candidate.manifest_hash,
+                "artifact_root": candidate.artifact_root,
+                "artifacts": candidate.artifacts,
+                "sbom_path": candidate.sbom_path,
+                "sbom_hash": candidate.sbom_hash,
+                "checksums_path": candidate.checksums_path,
+                "checksums_hash": candidate.checksums_hash,
+                "rollback_path": candidate.rollback_path,
+                "rollback_hash": candidate.rollback_hash,
+                "created": candidate.created,
+            }
+        ),
+        json_output=json_output,
+        human=f"Release candidate {candidate.id} is ready.",
+    )
+
+
+@memory_app.command("submit")
+def memory_submit_command(
+    record_type: Annotated[str, typer.Option("--record-type")],
+    title: Annotated[str, typer.Option("--title")],
+    content_ref: Annotated[str, typer.Option("--content-ref")],
+    source_ref: Annotated[list[str], typer.Option("--source-ref")],
+    confidence: Annotated[float, typer.Option("--confidence")],
+    tag: Annotated[list[str] | None, typer.Option("--tag")] = None,
+    run_id: Annotated[str | None, typer.Option("--run-id")] = None,
+    task_id: Annotated[str | None, typer.Option("--task-id")] = None,
+    expires_at: Annotated[str | None, typer.Option("--expires-at")] = None,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Submit a source-linked pending Memory candidate."""
+
+    try:
+        store = _memory_store(project_root)
+        record = store.create_candidate(
+            record_type=record_type,
+            title=title,
+            content_ref=content_ref,
+            source_refs=tuple(source_ref),
+            confidence=confidence,
+            tags=tuple(tag or ()),
+            run_id=run_id,
+            task_id=task_id,
+            expires_at=expires_at,
+        )
+    except (MemoryStoreError, ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail(getattr(exc, "code", "MEMORY_INVALID"), str(exc), 40, json_output)
+        return
+    emit(
+        success_envelope({"record": _memory_payload(record)}),
+        json_output=json_output,
+        human=f"Memory candidate {record.id} submitted.",
+    )
+
+
+@memory_app.command("review")
+def memory_review_command(
+    memory_id: Annotated[str, typer.Argument()],
+    reviewer: Annotated[str, typer.Option("--reviewer")],
+    decision: Annotated[str, typer.Option("--decision")],
+    reason: Annotated[str, typer.Option("--reason")],
+    expected_version: Annotated[int | None, typer.Option("--expected-version")] = None,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Review a Memory candidate or change its governed lifecycle state."""
+
+    try:
+        record = _memory_store(project_root).review(
+            memory_id,
+            reviewer=reviewer,
+            decision=decision,
+            reason=reason,
+            expected_version=expected_version,
+        )
+    except (MemoryStoreError, ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail(getattr(exc, "code", "MEMORY_INVALID"), str(exc), 40, json_output)
+        return
+    emit(
+        success_envelope({"record": _memory_payload(record)}),
+        json_output=json_output,
+        human=f"Memory {record.id} is {record.status}.",
+    )
+
+
+@memory_app.command("search")
+def memory_search_command(
+    query: Annotated[str, typer.Argument()] = "",
+    limit: Annotated[int, typer.Option("--limit")] = 20,
+    record_type: Annotated[list[str] | None, typer.Option("--record-type")] = None,
+    status: Annotated[list[str] | None, typer.Option("--status")] = None,
+    tag: Annotated[list[str] | None, typer.Option("--tag")] = None,
+    created_from: Annotated[str | None, typer.Option("--created-from")] = None,
+    created_to: Annotated[str | None, typer.Option("--created-to")] = None,
+    source_ref: Annotated[str | None, typer.Option("--source-ref")] = None,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Search project-isolated active Memory records."""
+
+    try:
+        records = _memory_store(project_root).search(
+            query,
+            record_types=tuple(record_type or ()),
+            statuses=tuple(status or ("active",)),
+            tags=tuple(tag or ()),
+            created_from=created_from,
+            created_to=created_to,
+            source_ref=source_ref,
+            limit=limit,
+        )
+    except (MemoryStoreError, ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail(getattr(exc, "code", "MEMORY_INVALID"), str(exc), 40, json_output)
+        return
+    emit(
+        success_envelope(
+            {"query": query, "results": [_memory_payload(record) for record in records]}
+        ),
+        json_output=json_output,
+        human=f"Found {len(records)} Memory record(s).",
+    )
 
 
 @worktree_app.command("cleanup")
@@ -699,6 +953,34 @@ def _trusted_reviewer_warnings(
         "reviewer is display-only compatibility input; trusted local principal "
         f"{context.principal} was used for authority",
     )
+
+
+def _memory_store(project_root: Path) -> MemoryStore:
+    config = load_project_config(project_root.resolve())
+    database = Database(config.root / ".codex-os" / "state" / "state.db")
+    database.migrate()
+    return MemoryStore(database, config.root, config.project_id)
+
+
+def _memory_payload(record: MemoryRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "run_id": record.run_id,
+        "task_id": record.task_id,
+        "record_type": record.record_type,
+        "title": record.title,
+        "content_ref": record.content_ref,
+        "source_refs": list(record.source_refs),
+        "source_hashes": record.source_hashes,
+        "confidence": record.confidence,
+        "tags": list(record.tags),
+        "scope": record.scope,
+        "status": record.status,
+        "state_version": record.state_version,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+        "expires_at": record.expires_at,
+    }
 
 
 def _fail(code: str, message: str, exit_code: int, json_output: bool) -> None:

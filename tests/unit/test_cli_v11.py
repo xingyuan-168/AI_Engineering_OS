@@ -229,6 +229,158 @@ def test_cli_wrappers_cover_verification_handoff_cleanup_and_g4(
         ],
     )
     assert host_operation.exit_code == 0, host_operation.stdout
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    prepared = runner.invoke(
+        cli_app.app,
+        [
+            "verification",
+            "prepare",
+            current.run.id,
+            "--expected-state-version",
+            str(current.run.state_version),
+            "--idempotency-key",
+            "prepare-cli",
+            "--network-approval-ref",
+            "APPROVED-NETWORK",
+            "--expires-at",
+            "2026-08-28T00:00:00+00:00",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert prepared.exit_code == 0, prepared.stdout
+    assert _payload(prepared.stdout)["next_action"]["kind"] == "host_operation"
+    migrated = runner.invoke(
+        cli_app.app,
+        [
+            "database",
+            "migrate",
+            "--expected-schema-version",
+            "0007",
+            "--target-schema-version",
+            "0007",
+            "--idempotency-key",
+            "migrate-cli",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert migrated.exit_code == 0, migrated.stdout
+    assert _payload(migrated.stdout)["data"]["operation"]["status"] == "succeeded"
+
+    class _ReleaseCandidateService:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def create(self, run_id: str) -> Any:
+            assert run_id == current.run.id
+            return SimpleNamespace(
+                id=f"RC-{run_id}",
+                version="0.2.0",
+                source_commit="a" * 40,
+                release_worktree=str(root / ".worktrees" / "release"),
+                manifest_path="release/manifest.json",
+                manifest_hash="b" * 64,
+                artifact_root=str(root / ".codex-os" / "artifacts" / run_id),
+                artifacts={"dist.whl": "c" * 64},
+                sbom_path=".codex-os/artifacts/sbom.cdx.json",
+                sbom_hash="d" * 64,
+                checksums_path=".codex-os/artifacts/checksums.sha256",
+                checksums_hash="e" * 64,
+                rollback_path="release/rollback.md",
+                rollback_hash="f" * 64,
+                created=True,
+            )
+
+    monkeypatch.setattr(cli_app, "ReleaseCandidateService", _ReleaseCandidateService)
+    release = runner.invoke(
+        cli_app.app,
+        [
+            "release",
+            "candidate",
+            current.run.id,
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert release.exit_code == 0, release.stdout
+    assert _payload(release.stdout)["data"]["candidate_id"] == f"RC-{current.run.id}"
+
+    memory_content = root / "docs" / "CLI_MEMORY.md"
+    memory_source = root / "docs" / "ADR" / "0098-cli-source.md"
+    memory_content.write_text(
+        "# Durable CLI decision\n\nUse source-linked evidence.\n",
+        encoding="utf-8",
+    )
+    memory_source.write_text("# Source\n\nAccepted decision.\n", encoding="utf-8")
+    submitted = runner.invoke(
+        cli_app.app,
+        [
+            "memory",
+            "submit",
+            "--record-type",
+            "decision",
+            "--title",
+            "CLI source-linked decision",
+            "--content-ref",
+            "docs/CLI_MEMORY.md",
+            "--source-ref",
+            "docs/ADR/0098-cli-source.md",
+            "--confidence",
+            "0.95",
+            "--tag",
+            "cli",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert submitted.exit_code == 0, submitted.stdout
+    memory_id = str(_payload(submitted.stdout)["data"]["record"]["id"])
+    reviewed = runner.invoke(
+        cli_app.app,
+        [
+            "memory",
+            "review",
+            memory_id,
+            "--reviewer",
+            "owner",
+            "--decision",
+            "activate",
+            "--reason",
+            "source verified",
+            "--expected-version",
+            "0",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert reviewed.exit_code == 0, reviewed.stdout
+    searched = runner.invoke(
+        cli_app.app,
+        [
+            "memory",
+            "search",
+            "CLI",
+            "--record-type",
+            "decision",
+            "--status",
+            "active",
+            "--tag",
+            "cli",
+            "--source-ref",
+            "docs/CLI_MEMORY.md",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert searched.exit_code == 0, searched.stdout
+    assert _payload(searched.stdout)["data"]["results"][0]["id"] == memory_id
     invalid_handoff = runner.invoke(
         cli_app.app,
         [
