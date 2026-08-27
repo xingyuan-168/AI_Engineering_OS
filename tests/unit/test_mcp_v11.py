@@ -7,6 +7,8 @@ from typing import Any, cast
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.cli import mcp_server
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
+from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.operations import HostOperationStore
 
 
 def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) -> None:
@@ -47,7 +49,30 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
     )
     assert prepare["ok"] is True
     assert prepare["next_action"]["kind"] == "host_operation"
-    assert cast(dict[str, Any], _data(prepare)["operation"])["kind"] == "verification_prepare"
+    prepare_operation = cast(dict[str, Any], _data(prepare)["operation"])
+    assert prepare_operation["kind"] == "verification_prepare"
+
+    operation_store = HostOperationStore(Database(root / ".codex-os" / "state" / "state.db"))
+    running_operation = operation_store.acquire(
+        str(prepare_operation["operation_id"]),
+        expected_version=int(prepare_operation["state_version"]),
+        lease_owner="test",
+    )
+    unknown_operation = operation_store.mark_outcome_unknown(
+        running_operation.operation_id,
+        expected_version=running_operation.state_version,
+        lease_owner="test",
+    )
+    reconciled = mcp_server.host_operation_reconcile(
+        str(root),
+        unknown_operation.operation_id,
+        unknown_operation.state_version,
+        "prepare-cache",
+        "not_applied",
+    )
+    assert reconciled["ok"] is True
+    assert reconciled["next_action"]["kind"] == "host_operation"
+    assert cast(dict[str, Any], _data(reconciled)["operation"])["status"] == "pending"
 
     migrated = mcp_server.database_migrate(
         str(root),

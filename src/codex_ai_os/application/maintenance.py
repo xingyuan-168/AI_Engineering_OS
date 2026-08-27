@@ -12,6 +12,7 @@ from codex_ai_os.domain.operations import (
     HostOperation,
     HostOperationKind,
     HostOperationStatus,
+    ReconciliationOutcome,
 )
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import ActionKind, NextAction
@@ -41,6 +42,17 @@ class ScheduledOperation:
 class DatabaseMigrationCommandResult:
     migration: MigrationResult
     operation: HostOperation
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciledOperation:
+    operation: HostOperation
+
+    @property
+    def next_action(self) -> NextAction | None:
+        if self.operation.status is HostOperationStatus.PENDING:
+            return host_operation_action(self.operation)
+        return None
 
 
 class VerificationPrepareService:
@@ -185,6 +197,49 @@ class DatabaseMigrationService:
         return DatabaseMigrationCommandResult(migration, operation)
 
 
+class HostOperationMaintenanceService:
+    """Expose explicit reconciliation without replaying unknown side effects."""
+
+    def __init__(self, project_root: Path) -> None:
+        self.config = load_project_config(project_root.resolve())
+        self.database = Database(self.config.root / ".codex-os" / "state" / "state.db")
+        self.database.migrate()
+        self.operations = HostOperationStore(self.database)
+
+    def reconcile(
+        self,
+        *,
+        operation_id: str,
+        expected_operation_version: int,
+        idempotency_key: str,
+        outcome: ReconciliationOutcome,
+        error_code: str | None = None,
+    ) -> ReconciledOperation:
+        try:
+            operation = self.operations.get(operation_id)
+            if operation.project_id != self.config.project_id:
+                raise HostOperationError(
+                    "RECOVERY_UNAVAILABLE",
+                    "host operation belongs to a different project",
+                )
+            if operation.idempotency_key != idempotency_key:
+                raise HostOperationError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "host operation idempotency key does not match persisted intent",
+                )
+            reconciled = self.operations.reconcile(
+                operation_id,
+                expected_version=expected_operation_version,
+                outcome=outcome,
+                error_code=error_code,
+            )
+        except HostOperationError as exc:
+            raise MaintenanceOperationError(
+                exc.code, str(exc), retryable=exc.retryable
+            ) from exc
+        return ReconciledOperation(reconciled)
+
+
 def host_operation_action(operation: HostOperation) -> NextAction:
     dependencies = tuple(
         item
@@ -212,7 +267,9 @@ def _sha256(path: Path) -> str:
 __all__ = [
     "DatabaseMigrationCommandResult",
     "DatabaseMigrationService",
+    "HostOperationMaintenanceService",
     "MaintenanceOperationError",
+    "ReconciledOperation",
     "ScheduledOperation",
     "VerificationPrepareService",
     "host_operation_action",

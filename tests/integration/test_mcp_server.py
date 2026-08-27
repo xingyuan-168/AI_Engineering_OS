@@ -33,6 +33,7 @@ def test_mcp_lists_the_public_runtime_tools() -> None:
         "task_complete",
         "handoff_review",
         "host_operation_execute",
+        "host_operation_reconcile",
         "worktree_cleanup",
         "docs_check",
         "verification_prepare",

@@ -14,6 +14,8 @@ from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
+from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.operations import HostOperationStore
 
 runner = CliRunner()
 
@@ -250,7 +252,39 @@ def test_cli_wrappers_cover_verification_handoff_cleanup_and_g4(
         ],
     )
     assert prepared.exit_code == 0, prepared.stdout
-    assert _payload(prepared.stdout)["next_action"]["kind"] == "host_operation"
+    prepared_payload = _payload(prepared.stdout)
+    assert prepared_payload["next_action"]["kind"] == "host_operation"
+    prepared_operation = prepared_payload["data"]["operation"]
+    operation_store = HostOperationStore(Database(root / ".codex-os" / "state" / "state.db"))
+    running_operation = operation_store.acquire(
+        str(prepared_operation["operation_id"]),
+        expected_version=int(prepared_operation["state_version"]),
+        lease_owner="test",
+    )
+    unknown_operation = operation_store.mark_outcome_unknown(
+        running_operation.operation_id,
+        expected_version=running_operation.state_version,
+        lease_owner="test",
+    )
+    reconciled = runner.invoke(
+        cli_app.app,
+        [
+            "host-operation",
+            "reconcile",
+            unknown_operation.operation_id,
+            "--expected-operation-version",
+            str(unknown_operation.state_version),
+            "--idempotency-key",
+            "prepare-cli",
+            "--outcome",
+            "not_applied",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert reconciled.exit_code == 0, reconciled.stdout
+    assert _payload(reconciled.stdout)["next_action"]["kind"] == "host_operation"
     migrated = runner.invoke(
         cli_app.app,
         [

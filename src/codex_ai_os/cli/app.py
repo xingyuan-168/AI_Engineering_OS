@@ -11,6 +11,7 @@ from codex_ai_os.application.doctor import DoctorService
 from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.maintenance import (
     DatabaseMigrationService,
+    HostOperationMaintenanceService,
     MaintenanceOperationError,
     VerificationPrepareService,
 )
@@ -29,6 +30,7 @@ from codex_ai_os.domain.governance import (
     ReviewDecision,
 )
 from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
+from codex_ai_os.domain.operations import ReconciliationOutcome
 from codex_ai_os.domain.workflow import Gate
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
@@ -600,6 +602,45 @@ def host_operation_execute_command(
         _fail(getattr(exc, "code", "CONFIG_INVALID"), str(exc), 40, json_output)
         return
     _emit_workflow(result, json_output=json_output, context=context)
+
+
+@host_operation_app.command("reconcile")
+def host_operation_reconcile_command(
+    operation_id: Annotated[str, typer.Argument()],
+    expected_operation_version: Annotated[int, typer.Option("--expected-operation-version")],
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
+    outcome: Annotated[ReconciliationOutcome, typer.Option("--outcome")],
+    error_code: Annotated[str | None, typer.Option("--error-code")] = None,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Reconcile an unknown host operation outcome before any retry."""
+
+    try:
+        reconciled = HostOperationMaintenanceService(project_root).reconcile(
+            operation_id=operation_id,
+            expected_operation_version=expected_operation_version,
+            idempotency_key=idempotency_key,
+            outcome=outcome,
+            error_code=error_code,
+        )
+    except (MaintenanceOperationError, ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail(getattr(exc, "code", "CONFIG_INVALID"), str(exc), 40, json_output)
+        return
+    action = (
+        reconciled.next_action.model_dump(mode="json")
+        if reconciled.next_action is not None
+        else None
+    )
+    emit(
+        success_envelope(
+            {"operation": reconciled.operation.model_dump(mode="json")},
+            run_id=reconciled.operation.run_id,
+            next_actions=[action] if action is not None else [],
+        ),
+        json_output=json_output,
+        human=f"Host operation {operation_id} reconciled as {outcome.value}.",
+    )
 
 
 @database_app.command("migrate")

@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.maintenance import (
     DatabaseMigrationService,
+    HostOperationMaintenanceService,
     MaintenanceOperationError,
     VerificationPrepareService,
 )
@@ -36,6 +37,7 @@ from codex_ai_os.domain.governance import (
     ReviewFinding,
 )
 from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
+from codex_ai_os.domain.operations import ReconciliationOutcome
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import (
     ChangeKind,
@@ -330,6 +332,39 @@ def host_operation_execute(
             invocation=context,
         )
         return _workflow_payload(result, Path(project_root))
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def host_operation_reconcile(
+    project_root: str,
+    operation_id: str,
+    expected_operation_version: int,
+    idempotency_key: str,
+    outcome: str,
+    error_code: str | None = None,
+) -> dict[str, Any]:
+    """Reconcile an unknown host-operation outcome before retrying side effects."""
+
+    def operation() -> dict[str, Any]:
+        reconciled = HostOperationMaintenanceService(Path(project_root)).reconcile(
+            operation_id=operation_id,
+            expected_operation_version=expected_operation_version,
+            idempotency_key=idempotency_key,
+            outcome=ReconciliationOutcome(outcome),
+            error_code=error_code,
+        )
+        action = (
+            reconciled.next_action.model_dump(mode="json")
+            if reconciled.next_action is not None
+            else None
+        )
+        return _success(
+            run_id=reconciled.operation.run_id,
+            next_actions=[action] if action is not None else [],
+            operation=reconciled.operation.model_dump(mode="json"),
+        )
 
     return _invoke(operation)
 
