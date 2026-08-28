@@ -24,6 +24,7 @@ from codex_ai_os.domain.governance import (
     ReviewEvidenceInput,
 )
 from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
+from codex_ai_os.domain.operations import HostOperationStatus
 from codex_ai_os.domain.workflow import (
     ActionKind,
     ChangeKind,
@@ -44,6 +45,12 @@ class _SuccessfulSandbox:
                 mount.source.mkdir(parents=True, exist_ok=True)
                 (mount.source / "codex_ai_engineering_os-0.2.0-py3-none-any.whl").write_bytes(
                     b"governed-wheel"
+                )
+                (mount.source / "codex_ai_engineering_os-0.2.0.tar.gz").write_bytes(
+                    b"governed-sdist"
+                )
+                (mount.source / "ai-engineering-os-plugin-0.2.0.zip").write_bytes(
+                    b"governed-plugin"
                 )
         now = datetime.now(UTC).isoformat()
         return SandboxResult(
@@ -146,6 +153,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     engine = WorkflowEngine(
         root,
         g4_publisher=GitHubReleaseGovernanceService(root, runner=_GitHubRunner(root)),
+        release_execution_service=execution,
     )
     current = engine.start(
         "Deliver the governed 0.2.0 runtime",
@@ -314,9 +322,48 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         current.run.id, gate=Gate.G3, approved=True, reviewer="owner", reason="G3 verified"
     )
 
+    assert current.next_action is not None
+    assert current.next_action.kind is ActionKind.HOST_OPERATION
+    release_prepare = engine.operations.get(str(current.next_action.operation_id))
+    current = engine.execute_host_operation(
+        release_prepare.operation_id,
+        expected_operation_version=int(current.next_action.expected_operation_version or 0),
+        idempotency_key=release_prepare.idempotency_key,
+        invocation=InvocationContext.local(InvocationSource.CLI),
+    )
+    succeeded_prepare = engine.operations.get(release_prepare.operation_id)
+    assert succeeded_prepare.status.value == "succeeded"
+
+    with engine.store.database.connection() as connection:
+        connection.execute("DELETE FROM release_records WHERE run_id = ?", (current.run.id,))
+        connection.commit()
+    recovered_candidate = ReleaseCandidateService(
+        root, execution_service=execution
+    ).create(
+        current.run.id,
+        operation=succeeded_prepare.model_copy(
+            update={"status": HostOperationStatus.RUNNING, "attempt_count": 2}
+        ),
+    )
+    assert recovered_candidate.created is False
+
     release_action = current.next_actions[0]
     candidate = ReleaseCandidateService(root, execution_service=execution).create(current.run.id)
     release_worktree = Path(str(release_action.worktree))
+    assert candidate.created is False
+    assert Path(candidate.artifact_root).name == "candidate"
+    assert any(name.endswith(".whl") for name in candidate.artifacts)
+    assert any(name.endswith(".tar.gz") for name in candidate.artifacts)
+    assert any(name.endswith("plugin-0.2.0.zip") for name in candidate.artifacts)
+    candidate_manifest = json.loads(
+        (release_worktree / candidate.manifest_path).read_text(encoding="utf-8")
+    )
+    assert candidate_manifest["integration_source_commit"] == candidate.source_commit
+    assert candidate_manifest["candidate_commit"] is None
+    assert isinstance(candidate_manifest["source_date_epoch"], int)
+    assert candidate_manifest["verification_cache_manifest_hash"] is None
+    sbom = json.loads((root / candidate.sbom_path).read_text(encoding="utf-8"))
+    assert str(sbom["serialNumber"]).startswith("urn:uuid:")
     (release_worktree / "docs" / "CHANGELOG.md").write_text(
         _doc("Changelog", ("0.2.0", "Governance")), encoding="utf-8"
     )
@@ -343,6 +390,15 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         },
         checks=release_checks,
     )
+    with engine.store.database.read_connection() as connection:
+        bound_candidate = connection.execute(
+            "SELECT integration_source_commit, candidate_commit "
+            "FROM release_records WHERE run_id = ?",
+            (current.run.id,),
+        ).fetchone()
+    assert bound_candidate is not None
+    assert bound_candidate[0] == candidate.source_commit
+    assert bound_candidate[1] == release_commit
     current = _review_handoff(root, engine, _only_ready_handoff(engine, current.run.id))
     assert current.run.workflow_phase.value == "memory"
 

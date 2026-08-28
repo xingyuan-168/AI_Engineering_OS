@@ -7,7 +7,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
 
@@ -79,6 +79,9 @@ from codex_ai_os.infrastructure.workflows import (
 )
 from codex_ai_os.infrastructure.worktrees import WorktreeStore
 
+if TYPE_CHECKING:
+    from codex_ai_os.application.execution import ExecutionService
+
 
 class WorkflowError(RuntimeError):
     def __init__(self, code: str, message: str, exit_code: int = 30) -> None:
@@ -105,6 +108,7 @@ class WorkflowEngine:
         worktrees: TaskWorktreeAllocator | None = None,
         g4_publisher: G4Publisher | None = None,
         verification_cache_preparer: VerificationCachePreparer | None = None,
+        release_execution_service: ExecutionService | None = None,
         readonly: bool = False,
     ) -> None:
         self.config = load_project_config(project_root.resolve())
@@ -135,6 +139,7 @@ class WorkflowEngine:
         self.verification_cache_preparer = verification_cache_preparer or (
             None if readonly else VerificationCachePreparer(self.config.root)
         )
+        self.release_execution_service = release_execution_service
 
     def start(
         self,
@@ -333,6 +338,12 @@ class WorkflowEngine:
         if task.task_group_id is not None:
             if completion.commit_sha is None:
                 raise WorkflowError("GIT_EVIDENCE_REQUIRED", "task Commit is required", 40)
+            if run.workflow_phase is WorkflowPhase.RELEASE:
+                from codex_ai_os.application.release import ReleaseCandidateService
+
+                ReleaseCandidateService(self.config.root).bind_candidate_commit(
+                    run.id, task.id, completion.commit_sha
+                )
             try:
                 handoff_id = self.coordination_store.submit_handoff(
                     task_id=task.id,
@@ -645,6 +656,10 @@ class WorkflowEngine:
                 return self._execute_integration_merge_operation(
                     acquired, lease_owner=invocation.principal
                 )
+            if acquired.kind is HostOperationKind.RELEASE_PREPARE:
+                return self._execute_release_prepare_operation(
+                    acquired, lease_owner=invocation.principal
+                )
             if acquired.kind is HostOperationKind.VERIFICATION_PREPARE:
                 return self._execute_verification_prepare_operation(
                     acquired, lease_owner=invocation.principal
@@ -782,6 +797,102 @@ class WorkflowEngine:
             },
         )
         return result
+
+    def _execute_release_prepare_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        from codex_ai_os.application.release import ReleaseCandidateService
+
+        if operation.run_id is None:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE", "release prepare has no Workflow run", 40
+            )
+        source_commit = operation.request.get("integration_source_commit")
+        if not isinstance(source_commit, str) or not source_commit:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE", "release prepare request is incomplete", 40
+            )
+        definition = PHASE_DEFINITIONS[WorkflowPhase.RELEASE]
+        blueprint = TaskBlueprint(
+            key="release-governed",
+            agent=definition.agent,
+            skill=definition.skill,
+            prompt=definition.prompt,
+            allowed_paths=definition.allowed_paths,
+        )
+        try:
+            group = self._ensure_task_group(
+                run_id=operation.run_id,
+                name=WorkflowPhase.RELEASE.value,
+                phase=WorkflowPhase.RELEASE,
+                base_commit=source_commit,
+                blueprints=(blueprint,),
+            )
+            current = self._get_run(operation.run_id)
+            actions = self._schedule_group(current, group.id)
+            candidate = ReleaseCandidateService(
+                self.config.root,
+                execution_service=self.release_execution_service,
+            ).create(operation.run_id, operation=operation)
+            checkpoint = _coordination_checkpoint(
+                current.checkpoint,
+                actions,
+                task_group_id=group.id,
+                waiting_handoff=None,
+            )
+            checkpoint["release_candidate_id"] = candidate.id
+            checkpoint["release_manifest_path"] = candidate.manifest_path
+            checkpoint["release_manifest_hash"] = candidate.manifest_hash
+            checkpoint.pop("pending_host_operation_id", None)
+            updated = self.store.update_checkpoint(run=current, checkpoint=checkpoint)
+        except (CoordinationError, WorkflowConflictError, WorkflowError) as exc:
+            code = (
+                exc.code
+                if isinstance(exc, (CoordinationError, WorkflowError))
+                else "STATE_CONFLICT"
+            )
+            if code in {"OPERATION_RECONCILE_REQUIRED", "RECONCILIATION_REQUIRED"}:
+                self.operations.mark_outcome_unknown(
+                    operation.operation_id,
+                    expected_version=operation.state_version,
+                    lease_owner=lease_owner,
+                    error_code=code,
+                )
+                raise WorkflowError("RECONCILIATION_REQUIRED", str(exc), 40) from exc
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code=code,
+            )
+            raise WorkflowError(code, str(exc), 40) from exc
+        self.operations.mark_succeeded(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            lease_owner=lease_owner,
+            result={
+                "candidate_id": candidate.id,
+                "integration_source_commit": candidate.source_commit,
+                "candidate_commit": candidate.candidate_commit,
+                "manifest_path": candidate.manifest_path,
+                "manifest_hash": candidate.manifest_hash,
+                "artifact_root": candidate.artifact_root,
+                "artifacts": candidate.artifacts,
+            },
+        )
+        return self._result(updated)
 
     def _execute_verification_prepare_operation(
         self, operation: HostOperation, *, lease_owner: str
@@ -970,6 +1081,7 @@ class WorkflowEngine:
             "last_commit_sha": run.integration_head,
         }
         try:
+            cache_binding = self._release_cache_binding(run.id)
             approved = self.store.approval_transition(
                 run=run,
                 gate=Gate.G3,
@@ -982,13 +1094,73 @@ class WorkflowEngine:
                 next_task=None,
                 evidence_bundle_id=evidence_bundle_id,
                 evidence_bundle_hash=evidence_bundle_hash,
+                host_operation_kind=HostOperationKind.RELEASE_PREPARE,
+                host_operation_idempotency_key=(
+                    f"{run.id}:{run.state_version}:release_prepare"
+                ),
+                host_operation_request={
+                    "schema_version": RUNTIME_VERSIONS.api,
+                    "run_id": run.id,
+                    "integration_source_commit": run.integration_head,
+                    "evidence_bundle_hash": evidence_bundle_hash,
+                    "verification_cache": cache_binding,
+                    "execution_image": RUNTIME_VERSIONS.execution_image,
+                    "software_version": RUNTIME_VERSIONS.software,
+                },
             )
-            return self._start_coordinated_phase(
-                approved, WorkflowPhase.RELEASE, approved.integration_head or ""
-            )
+            return self._result(approved)
         except (WorkflowConflictError, CoordinationError) as exc:
             code = exc.code if isinstance(exc, CoordinationError) else "STATE_CONFLICT"
             raise WorkflowError(code, str(exc), 40) from exc
+
+    def _release_cache_binding(self, run_id: str) -> dict[str, object] | None:
+        with self.store.database.read_connection() as connection:
+            row = connection.execute(
+                "SELECT operation_id, request_hash, result_json "
+                "FROM host_operations WHERE run_id = ? "
+                "AND kind = 'verification_prepare' AND status = 'succeeded' "
+                "ORDER BY ended_at DESC, operation_id DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            if self.config.git_push_policy is GitPushPolicy.FIXTURE_LOCAL_ONLY:
+                return None
+            raise WorkflowError(
+                "SANDBOX_DEPENDENCIES_UNAVAILABLE",
+                "G3 release preparation requires a succeeded verification cache operation",
+                40,
+            )
+        result_value: object = json.loads(str(row["result_json"]))
+        if not isinstance(result_value, dict):
+            raise WorkflowError(
+                "DEPENDENCY_UNVERIFIED", "verification cache result is invalid", 40
+            )
+        result = cast(dict[str, object], result_value)
+        lock_hash = result.get("uv_lock_hash")
+        if not isinstance(lock_hash, str):
+            raise WorkflowError(
+                "DEPENDENCY_UNVERIFIED", "verification cache has no lock binding", 40
+            )
+        cache = (
+            self.config.root
+            / ".codex-os"
+            / "cache"
+            / "verification"
+            / lock_hash
+            / "verification-cache-manifest.json"
+        )
+        if not cache.is_file():
+            raise WorkflowError(
+                "SANDBOX_DEPENDENCIES_UNAVAILABLE",
+                "verification cache manifest is missing",
+                40,
+            )
+        return {
+            "operation_id": str(row["operation_id"]),
+            "operation_request_hash": str(row["request_hash"]),
+            "uv_lock_hash": lock_hash,
+            "manifest_hash": hashlib.sha256(cache.read_bytes()).hexdigest(),
+        }
 
     def _advance_to_coordinated_phase(
         self,

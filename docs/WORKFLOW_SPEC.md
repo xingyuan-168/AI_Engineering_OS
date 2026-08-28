@@ -68,6 +68,8 @@ Profile Schema 1.2 声明任务模板、影响路径模式、增量 Gate 证据�
 
 G2 批准事务只写入审批、绑定的 evidence/policy/routing hash 与 `integration_prepare` Host Operation；创建集成 Worktree、任务组和 Agent Worktree 由后续 executor 完成。executor 重试会复用登记 Worktree/任务组，未登记但与 base Commit/分支完全一致的受管 Worktree 可重新登记；Git 结果不确定时进入 `reconcile_required`。
 
+G3 批准同样只在事务中写入审批、验证缓存绑定和 `release_prepare` Host Operation。executor 幂等建立 Release task/Worktree，在断网 OCI 中挂载已批准 wheelhouse，使用 integration Commit 时间作为 `SOURCE_DATE_EPOCH` 构建 wheel、sdist 和 Plugin 包；制品先进入 operation 专属 staging，完整复算 hash 后原子提升为 candidate。staging 残留必须人工保留并对账；已提升但未入库的 candidate 仅在重试且 manifest/source/lock/全部文件 hash 一致时恢复索引。
+
 ## 5. 四条 V1 Workflow
 
 ### `new-project`

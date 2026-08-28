@@ -176,6 +176,8 @@ INSERT/UPDATE/DELETE triggers 保持 external-content FTS 同步。只有 `activ
 
 `host_operations`：`operation_id` 主键、project/run/task/group/handoff/release 外键、`kind=integration_prepare|integration_merge|release_prepare|release_publish|verification_prepare|database_migrate`、`idempotency_key`、`request_hash`、`status=pending|running|succeeded|failed|reconcile_required`、`expected_state_version`、`expected_task_version`、`expected_operation_version`、`lease_owner`、`lease_expires_at`、`attempt_count`、`request_json`、`result_json`、`error_code`、`created_at`、`started_at`、`ended_at`、`updated_at`。`(project_id,kind,idempotency_key)` 唯一；同一幂等键的 request hash 不同必须冲突。
 
+`release_prepare` 的 request 固定 integration source Commit、G3 bundle hash、执行镜像与 verification cache manifest/hash；result 固定 candidate manifest/hash、候选目录和逐资产 hash。Release task 首次提交候选 manifest 后，Runtime 从 Git object 复算 manifest hash并写入 `candidate_commit`，不得以活动 Worktree 的未提交文件替代。
+
 `api_call_audits`：`call_id` 主键、request/correlation ID、principal、operation、project/run/task/operation ID、status/error code、state version、duration、脱敏 request/response 摘要、`created_at`。表和日志均不得保存 token、Authorization header、Secret 参数或完整带凭据 URL。
 
 ### 6.2 既有表的 1.2 扩展

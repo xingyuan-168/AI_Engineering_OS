@@ -738,6 +738,8 @@ def release_candidate_command(
                 "candidate_id": candidate.id,
                 "version": candidate.version,
                 "source_commit": candidate.source_commit,
+                "integration_source_commit": candidate.source_commit,
+                "candidate_commit": candidate.candidate_commit,
                 "release_worktree": candidate.release_worktree,
                 "manifest_path": candidate.manifest_path,
                 "manifest_hash": candidate.manifest_hash,

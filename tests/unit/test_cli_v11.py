@@ -314,6 +314,7 @@ def test_cli_wrappers_cover_verification_handoff_cleanup_and_g4(
                 id=f"RC-{run_id}",
                 version="0.2.0",
                 source_commit="a" * 40,
+                candidate_commit=None,
                 release_worktree=str(root / ".worktrees" / "release"),
                 manifest_path="release/manifest.json",
                 manifest_hash="b" * 64,

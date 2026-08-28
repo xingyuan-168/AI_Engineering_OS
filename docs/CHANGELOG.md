@@ -13,6 +13,7 @@
 - 增加 Host Operation 持久化内核：稳定幂等键与请求 hash、脱敏请求、租约/尝试次数、未知结果强制对账及最多 4 个恢复动作。
 - Handoff accepted 审批改为先在 SQLite 同一事务中持久化 `integration_merge` Host Operation；API 1.2 返回待执行操作，merge 后 push 失败时保持 Handoff accepted 并保存待补推送的 merge commit。
 - G2 批准改为同事务持久化 `integration_prepare`，executor 再幂等创建/登记 integration Worktree、任务组和最多 4 个任务；数据库维护也先创建/租赁 `database_migrate` intent 再执行迁移，远端 push 结果未知进入 reconcile 而非盲目重试。
+- G3 批准改为持久化 `release_prepare`；executor 使用已批准 wheelhouse 在离线 OCI 中按 Commit 时间可复现构建 wheel/sdist/Plugin 包，经 operation staging 全量复算 hash 后原子提升 candidate，并支持已提升未入库结果的安全对账。
 - CLI/MCP 增加 `host_operation_execute` 公共入口；Handoff review 接受 `expected_handoff_version` 与 `idempotency_key`，自报 `reviewer` 仅作兼容显示并返回 warning。
 - `resume` 会从持久化 Host Operation、租约和失败状态重建最多 4 个可执行 `host_operation` actions，避免进程中断后丢失外部副作用恢复入口。
 - Review report、Check report 与文档 Gate 校验改为从绑定 Git Commit 或受管 `.codex-os/artifacts/` 审计区复算 hash，不再信任活动 Worktree 中未提交的当前文件。
