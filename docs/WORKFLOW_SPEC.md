@@ -66,6 +66,8 @@ failed -> running | cancelled
 
 Profile Schema 1.2 声明任务模板、影响路径模式、增量 Gate 证据和 Reviewer。Runtime 将核心 Gate 与所选 Profile 编译为不可放宽的 `EffectiveGovernancePolicy` 并保存 policy hash；任务允许路径从已批准 impact paths 匹配产生，重叠路径按稳定顺序建立依赖，未映射路径阻塞。G0 bundle 必须绑定 Routing Decision，G2 bundle 必须包含 Migration Spec 与适用 ADR 索引。
 
+G2 批准事务只写入审批、绑定的 evidence/policy/routing hash 与 `integration_prepare` Host Operation；创建集成 Worktree、任务组和 Agent Worktree 由后续 executor 完成。executor 重试会复用登记 Worktree/任务组，未登记但与 base Commit/分支完全一致的受管 Worktree 可重新登记；Git 结果不确定时进入 `reconcile_required`。
+
 ## 5. 四条 V1 Workflow
 
 ### `new-project`

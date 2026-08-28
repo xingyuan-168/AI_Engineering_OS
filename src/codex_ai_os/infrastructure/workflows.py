@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from codex_ai_os.domain.config import RiskLevel
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.operations import HostOperationKind
 from codex_ai_os.domain.workflow import (
     Gate,
     RunStatus,
@@ -19,6 +20,7 @@ from codex_ai_os.domain.workflow import (
     WorkflowRun,
 )
 from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.operations import HostOperationStore
 
 
 class WorkflowNotFoundError(LookupError):
@@ -487,14 +489,58 @@ class WorkflowStore:
         evidence_bundle_id: str | None = None,
         evidence_bundle_hash: str | None = None,
         release_authority: dict[str, Any] | None = None,
+        host_operation_kind: HostOperationKind | None = None,
+        host_operation_idempotency_key: str | None = None,
+        host_operation_request: dict[str, Any] | None = None,
     ) -> WorkflowRun:
         now = _utc_now()
         new_version = run.state_version + 1
         decision = "approved" if approved else "rejected"
+        operation_values = (
+            host_operation_kind,
+            host_operation_idempotency_key,
+            host_operation_request,
+        )
+        if any(value is not None for value in operation_values) and not all(
+            value is not None for value in operation_values
+        ):
+            raise WorkflowConflictError("host operation intent is incomplete")
+        effective_checkpoint = dict(checkpoint)
         with self.database.connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 _assert_run_version(connection, run.id, run.state_version)
+                operation_id: str | None = None
+                if host_operation_kind is not None:
+                    assert host_operation_idempotency_key is not None
+                    assert host_operation_request is not None
+                    operation = HostOperationStore(
+                        self.database
+                    ).ensure_pending_in_transaction(
+                        connection,
+                        project_id=run.project_id,
+                        run_id=run.id,
+                        kind=host_operation_kind,
+                        idempotency_key=host_operation_idempotency_key,
+                        request=host_operation_request,
+                        expected_state_version=new_version,
+                    )
+                    operation_id = operation.operation_id
+                    action = {
+                        "kind": "host_operation",
+                        "operation_id": operation.operation_id,
+                        "prompt": (
+                            f"Execute or reconcile persisted {operation.kind.value} "
+                            "Host Operation."
+                        ),
+                        "risk_level": "high",
+                        "requires_repository_change": True,
+                        "expected_state_version": new_version,
+                        "expected_operation_version": operation.state_version,
+                    }
+                    effective_checkpoint["next_action"] = action
+                    effective_checkpoint["next_actions"] = [action]
+                    effective_checkpoint["pending_host_operation_id"] = operation_id
                 connection.execute(
                     """
                     INSERT INTO approvals(
@@ -510,7 +556,7 @@ class WorkflowStore:
                         decision,
                         reviewer,
                         reason,
-                        _json(checkpoint.get("evidence_refs", [])),
+                        _json(effective_checkpoint.get("evidence_refs", [])),
                         new_version,
                         now,
                         evidence_bundle_id,
@@ -545,7 +591,7 @@ class WorkflowStore:
                     run,
                     target_phase=target_phase,
                     target_status=target_status,
-                    checkpoint=checkpoint,
+                    checkpoint=effective_checkpoint,
                     now=now,
                 )
                 if next_task is not None:
@@ -558,7 +604,12 @@ class WorkflowStore:
                     task_id=next_task.id if next_task is not None else None,
                     event_type=f"approval.{decision}",
                     idempotency_key=f"{run.id}:{new_version}:approval:{gate.value}",
-                    payload={"gate": gate.value, "reviewer": reviewer, "reason": reason},
+                    payload={
+                        "gate": gate.value,
+                        "reviewer": reviewer,
+                        "reason": reason,
+                        "operation_id": operation_id,
+                    },
                 )
                 connection.commit()
             except (sqlite3.Error, WorkflowConflictError):

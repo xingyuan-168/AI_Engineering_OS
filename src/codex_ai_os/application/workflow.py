@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -36,7 +37,11 @@ from codex_ai_os.application.worktree import (
     WorktreeServiceError,
 )
 from codex_ai_os.domain.config import GitPushPolicy, RiskLevel
-from codex_ai_os.domain.coordination import HandoffReviewInput, TaskBlueprint
+from codex_ai_os.domain.coordination import (
+    HandoffReviewInput,
+    TaskBlueprint,
+    TaskGroupView,
+)
 from codex_ai_os.domain.governance import G4ApprovalInput
 from codex_ai_os.domain.ids import new_id
 from codex_ai_os.domain.invocation import InvocationContext
@@ -632,6 +637,10 @@ class WorkflowEngine:
                         "RECOVERY_UNAVAILABLE", "completed operation has no Workflow run"
                     )
                 return self.status(acquired.run_id)
+            if acquired.kind is HostOperationKind.INTEGRATION_PREPARE:
+                return self._execute_integration_prepare_operation(
+                    acquired, lease_owner=invocation.principal
+                )
             if acquired.kind is HostOperationKind.INTEGRATION_MERGE:
                 return self._execute_integration_merge_operation(
                     acquired, lease_owner=invocation.principal
@@ -652,6 +661,89 @@ class WorkflowEngine:
         except HostOperationError as exc:
             raise WorkflowError(exc.code, str(exc), 40) from exc
 
+    def _execute_integration_prepare_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        if operation.run_id is None:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE", "integration prepare has no Workflow run", 40
+            )
+        request = operation.request
+        source_commit = request.get("source_commit")
+        tasks_value = request.get("tasks")
+        if not isinstance(source_commit, str) or not isinstance(tasks_value, list):
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE", "integration prepare request is incomplete", 40
+            )
+        try:
+            tasks = tuple(
+                TaskBlueprint.model_validate(item)
+                for item in cast(list[object], tasks_value)
+            )
+            integration_path = CoordinationService(
+                self.config.root
+            ).ensure_integration_worktree(operation.run_id, base_commit=source_commit)
+            group = self._ensure_task_group(
+                run_id=operation.run_id,
+                name="implementation",
+                phase=WorkflowPhase.IMPLEMENTATION,
+                base_commit=source_commit,
+                blueprints=tasks,
+            )
+            current = self._get_run(operation.run_id)
+            actions = self._schedule_group(current, group.id)
+            checkpoint = _coordination_checkpoint(
+                current.checkpoint,
+                actions,
+                task_group_id=group.id,
+                waiting_handoff=None,
+                integration_worktree=integration_path.as_posix(),
+            )
+            checkpoint.pop("pending_host_operation_id", None)
+            updated = self.store.update_checkpoint(run=current, checkpoint=checkpoint)
+        except (CoordinationError, WorkflowConflictError, ValidationError) as exc:
+            code = exc.code if isinstance(exc, CoordinationError) else "STATE_CONFLICT"
+            if code == "WORKTREE_BLOCKED":
+                self.operations.mark_outcome_unknown(
+                    operation.operation_id,
+                    expected_version=operation.state_version,
+                    lease_owner=lease_owner,
+                    error_code=code,
+                )
+                raise WorkflowError("RECONCILIATION_REQUIRED", str(exc), 40) from exc
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code=code,
+            )
+            raise WorkflowError(code, str(exc), 40) from exc
+        self.operations.mark_succeeded(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            lease_owner=lease_owner,
+            result={
+                "integration_worktree": integration_path.as_posix(),
+                "integration_branch": updated.integration_branch,
+                "integration_head": updated.integration_head,
+                "task_group_id": group.id,
+                "task_ids": list(self._task_ids_for_group(group.id)),
+            },
+        )
+        return self._result(updated)
+
     def _execute_integration_merge_operation(
         self, operation: HostOperation, *, lease_owner: str
     ) -> WorkflowResult:
@@ -660,6 +752,14 @@ class WorkflowEngine:
                 operation
             )
         except CoordinationError as exc:
+            if exc.code == "REMOTE_UNREACHABLE":
+                self.operations.mark_outcome_unknown(
+                    operation.operation_id,
+                    expected_version=operation.state_version,
+                    lease_owner=lease_owner,
+                    error_code=exc.code,
+                )
+                raise WorkflowError("RECONCILIATION_REQUIRED", str(exc), 40) from exc
             self.operations.mark_failed(
                 operation.operation_id,
                 expected_version=operation.state_version,
@@ -826,28 +926,20 @@ class WorkflowEngine:
                 next_task=None,
                 evidence_bundle_id=evidence_bundle_id,
                 evidence_bundle_hash=evidence_bundle_hash,
+                host_operation_kind=HostOperationKind.INTEGRATION_PREPARE,
+                host_operation_idempotency_key=(
+                    f"{run.id}:{run.state_version}:integration_prepare"
+                ),
+                host_operation_request={
+                    "schema_version": RUNTIME_VERSIONS.api,
+                    "run_id": run.id,
+                    "source_commit": source_commit,
+                    "routing_decision_hash": routing.decision_hash,
+                    "policy_hash": routing.policy_hash,
+                    "tasks": [task.model_dump(mode="json") for task in routing.tasks],
+                    "evidence_bundle_hash": evidence_bundle_hash,
+                },
             )
-            integration_path = CoordinationService(
-                self.config.root
-            ).ensure_integration_worktree(run.id, base_commit=source_commit)
-            current = self._get_run(approved.id)
-            group, _planned = self.coordination_store.create_group(
-                run_id=run.id,
-                name="implementation",
-                phase=WorkflowPhase.IMPLEMENTATION.value,
-                base_commit=source_commit,
-                blueprints=routing.tasks,
-            )
-            current = self._get_run(current.id)
-            actions = self._schedule_group(current, group.id)
-            checkpoint = _coordination_checkpoint(
-                current.checkpoint,
-                actions,
-                task_group_id=group.id,
-                waiting_handoff=None,
-                integration_worktree=integration_path.as_posix(),
-            )
-            updated = self.store.update_checkpoint(run=current, checkpoint=checkpoint)
         except (WorkflowConflictError, CoordinationError, ValueError) as exc:
             code = (
                 exc.code
@@ -859,7 +951,7 @@ class WorkflowEngine:
                 )
             )
             raise WorkflowError(code, str(exc), 40) from exc
-        return self._result(updated)
+        return self._result(approved)
 
     def _approve_g3_coordination(
         self,
@@ -1146,6 +1238,9 @@ class WorkflowEngine:
                 HostOperationKind.RELEASE_PUBLISH,
                 HostOperationKind.DATABASE_MIGRATE,
             },
+            expected_state_version=operation.expected_state_version,
+            expected_task_version=operation.expected_task_version,
+            expected_operation_version=operation.state_version,
         )
 
     def _schedule_group(self, run: WorkflowRun, group_id: str) -> tuple[NextAction, ...]:
@@ -1187,6 +1282,69 @@ class WorkflowEngine:
                 )
             )
         return tuple(actions)
+
+    def _ensure_task_group(
+        self,
+        *,
+        run_id: str,
+        name: str,
+        phase: WorkflowPhase,
+        base_commit: str,
+        blueprints: tuple[TaskBlueprint, ...],
+    ) -> TaskGroupView:
+        rows: list[Any] = []
+        with self.store.database.read_connection() as connection:
+            group = connection.execute(
+                "SELECT id, base_commit FROM task_groups "
+                "WHERE run_id = ? AND name = ? AND phase = ?",
+                (run_id, name, phase.value),
+            ).fetchone()
+            if group is not None:
+                rows = connection.execute(
+                    "SELECT task_key, agent, skill, prompt, allowed_paths_json "
+                    "FROM tasks WHERE task_group_id = ? ORDER BY task_key",
+                    (str(group["id"]),),
+                ).fetchall()
+        if group is None:
+            created, _planned = self.coordination_store.create_group(
+                run_id=run_id,
+                name=name,
+                phase=phase.value,
+                base_commit=base_commit,
+                blueprints=blueprints,
+            )
+            return created
+        expected = {
+            item.key: (
+                item.agent,
+                item.skill,
+                item.prompt,
+                tuple(item.allowed_paths),
+            )
+            for item in blueprints
+        }
+        actual = {
+            str(row["task_key"]): (
+                str(row["agent"]),
+                str(row["skill"]),
+                str(row["prompt"]),
+                tuple(cast(list[str], json.loads(str(row["allowed_paths_json"])))),
+            )
+            for row in rows
+        }
+        if str(group["base_commit"]) != base_commit or actual != expected:
+            raise CoordinationError(
+                "STATE_VERSION_CONFLICT", "persisted task group differs from operation intent"
+            )
+        return self.coordination_store.group_view(str(group["id"]))
+
+    def _task_ids_for_group(self, group_id: str) -> tuple[str, ...]:
+        with self.store.database.read_connection() as connection:
+            rows = connection.execute(
+                "SELECT id FROM tasks WHERE task_group_id = ? ORDER BY created_at, id",
+                (group_id,),
+            ).fetchall()
+        return tuple(str(row["id"]) for row in rows)
 
     def _action_for_coordinated_task(self, task: TaskRecord) -> NextAction:
         if task.skill is None or task.prompt is None:

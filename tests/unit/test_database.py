@@ -121,6 +121,69 @@ def test_0006_to_0007_preserves_active_workflow_and_requires_revalidation(
     assert group_count == 0
 
 
+def test_0006_bootstrap_intent_table_is_preserved_by_0007(tmp_path: Path) -> None:
+    packaged = Database(tmp_path / "unused.db").migrations_dir
+    migration_dir = tmp_path / "migrations"
+    migration_dir.mkdir()
+    for source in sorted(packaged.glob("000[1-6]_*.sql")):
+        shutil.copy2(source, migration_dir / source.name)
+    database = Database(tmp_path / "state" / "state.db", migrations_dir=migration_dir)
+    assert database.migrate().current_version == "0006"
+    _register_project(database)
+    shutil.copy2(
+        packaged / "0007_release_closure.sql",
+        migration_dir / "0007_release_closure.sql",
+    )
+
+    database.bootstrap_host_operation_intents()
+    with database.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO host_operations(
+                operation_id, project_id, kind, idempotency_key, request_hash,
+                status, state_version, attempt_count, request_json, result_json,
+                created_at, updated_at
+            ) VALUES (
+                'OP-MIGRATE', 'PROJECT-TEST', 'database_migrate', 'migrate-0007',
+                ?, 'running', 1, 1, '{}', '{}', 'now', 'now'
+            )
+            """,
+            ("a" * 64,),
+        )
+        connection.commit()
+
+    result = database.migrate()
+
+    assert result.applied_versions == ("0007",)
+    with database.read_connection() as connection:
+        operation = connection.execute(
+            "SELECT status, state_version FROM host_operations "
+            "WHERE operation_id = 'OP-MIGRATE'"
+        ).fetchone()
+    assert operation is not None
+    assert tuple(operation) == ("running", 1)
+
+
+def test_bootstrap_intent_table_rejects_schema_drift(tmp_path: Path) -> None:
+    packaged = Database(tmp_path / "unused.db").migrations_dir
+    migration_dir = tmp_path / "migrations"
+    migration_dir.mkdir()
+    for source in sorted(packaged.glob("000[1-6]_*.sql")):
+        shutil.copy2(source, migration_dir / source.name)
+    database = Database(tmp_path / "state.db", migrations_dir=migration_dir)
+    assert database.migrate().current_version == "0006"
+    shutil.copy2(
+        packaged / "0007_release_closure.sql",
+        migration_dir / "0007_release_closure.sql",
+    )
+    with database.connection() as connection:
+        connection.execute("CREATE TABLE host_operations(operation_id TEXT PRIMARY KEY)")
+        connection.commit()
+
+    with pytest.raises(MigrationError, match="definition does not match"):
+        database.bootstrap_host_operation_intents()
+
+
 def test_0007_adds_release_closure_columns_and_irreversible_acceptance(
     tmp_path: Path,
 ) -> None:

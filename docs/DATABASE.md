@@ -235,6 +235,8 @@ INSERT/UPDATE/DELETE triggers 保持 external-content FTS 同步。只有 `activ
 5. 执行 post-migration integrity/foreign-key/FTS rebuild test；失败时先把备份恢复到同目录临时数据库，完成 integrity/FK/FTS/关键查询校验，再原子替换活动库；保留失败库供审计。
 6. 重复运行时已记录相同 checksum 的迁移跳过；同版本不同 checksum 返回 `MIGRATION_CHECKSUM_MISMATCH`。
 
+显式 `0006 -> 0007` 升级先从 `0007` 迁移 SQL 预建并严格校验同构的 `host_operations` 表，使 `database_migrate` intent 在备份和迁移副作用之前持久化。0007 正常执行时仅跳过该已验证的重复建表语句；其余语句、迁移 checksum 和历史文件保持不变。迁移后若进程在完成 Operation 前退出，恢复器在 integrity/FK/FTS 校验通过后将同一 Operation 置为 `reconcile_required` 并完成对账。
+
 回滚不执行反向 DROP/ALTER。发布前失败恢复备份；发布后 Schema 回滚需要新 forward migration 或恢复整个版本备份并进入只读维护模式。
 
 ## 9. 数据保留与隐私

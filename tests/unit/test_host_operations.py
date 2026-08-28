@@ -129,6 +129,23 @@ def test_unknown_outcome_requires_reconciliation_before_retry(tmp_path: Path) ->
     ).attempt_count == 2
 
 
+def test_unfinished_operation_can_be_marked_for_external_reconciliation(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    operation = _operation(store, "external-inspection")
+
+    unknown = store.require_reconciliation(
+        operation.operation_id,
+        expected_version=operation.state_version,
+        error_code="REMOTE_RESULT_UNKNOWN",
+    )
+
+    assert unknown.status is HostOperationStatus.RECONCILE_REQUIRED
+    assert unknown.state_version == operation.state_version + 1
+    assert unknown.error_code == "REMOTE_RESULT_UNKNOWN"
+
+
 def test_recovery_is_ordered_and_bounded_to_four(tmp_path: Path) -> None:
     store = _store(tmp_path)
     operations = [_operation(store, f"operation-{index}") for index in range(5)]

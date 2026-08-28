@@ -98,6 +98,13 @@ class Database:
                 try:
                     connection.execute("BEGIN IMMEDIATE")
                     for statement in _split_sql(migration.sql):
+                        if _creates_table(statement, "host_operations") and self._table_exists(
+                            connection, "host_operations"
+                        ):
+                            self._validate_bootstrap_table(
+                                connection, "host_operations", statement
+                            )
+                            continue
                         connection.execute(statement)
                     connection.execute(
                         """
@@ -139,6 +146,63 @@ class Database:
         current = migrations[-1].version if migrations else None
         return MigrationResult(tuple(applied_now), current, backup_path)
 
+    def bootstrap_host_operation_intents(self) -> None:
+        """Pre-create the 0007 intent table so migration authorization is durable.
+
+        The table definition is read from the immutable numbered migration rather
+        than duplicated in Python.  Only the immediate predecessor schema may use
+        this bridge; the normal migration still owns indexes and all other 0007
+        changes.
+        """
+
+        migrations = self._discover_migrations()
+        target = next(
+            (
+                migration
+                for migration in migrations
+                if migration.version == RUNTIME_VERSIONS.sqlite_schema
+            ),
+            None,
+        )
+        if target is None:
+            raise MigrationError(
+                f"migration {RUNTIME_VERSIONS.sqlite_schema} is missing from the package"
+            )
+        versions = [migration.version for migration in migrations]
+        target_index = versions.index(target.version)
+        predecessor = versions[target_index - 1] if target_index > 0 else None
+        current = self.current_version()
+        if current == target.version:
+            return
+        if predecessor is None or current != predecessor:
+            raise MigrationError(
+                "host operation intent bootstrap requires the immediate predecessor "
+                f"schema {predecessor or 'none'}, found {current or 'none'}"
+            )
+        statements = [
+            statement
+            for statement in _split_sql(target.sql)
+            if _creates_table(statement, "host_operations")
+        ]
+        if len(statements) != 1:
+            raise MigrationError(
+                "0007 must contain exactly one host_operations table definition"
+            )
+        statement = statements[0]
+        with self.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                if self._table_exists(connection, "host_operations"):
+                    self._validate_bootstrap_table(
+                        connection, "host_operations", statement
+                    )
+                else:
+                    connection.execute(statement)
+                connection.commit()
+            except (sqlite3.Error, MigrationError):
+                connection.rollback()
+                raise
+
     def integrity_check(self) -> None:
         with self.connection() as connection:
             self._integrity_check_connection(connection)
@@ -158,6 +222,29 @@ class Database:
                 "ORDER BY applied_at DESC, version DESC LIMIT 1"
             ).fetchone()
             return str(row[0]) if row is not None else None
+
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _validate_bootstrap_table(
+        connection: sqlite3.Connection, table: str, expected_statement: str
+    ) -> None:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        if row is None or not isinstance(row[0], str):
+            raise MigrationError(f"bootstrap table is missing: {table}")
+        if _normalized_sql(str(row[0])) != _normalized_sql(expected_statement):
+            raise MigrationError(
+                f"bootstrap table definition does not match migration: {table}"
+            )
 
     def _discover_migrations(self) -> list[Migration]:
         if not self.migrations_dir.is_dir():
@@ -338,6 +425,15 @@ def _split_sql(script: str) -> list[str]:
     if buffer.strip():
         raise MigrationError("migration SQL ends with an incomplete statement")
     return statements
+
+
+def _creates_table(statement: str, table: str) -> bool:
+    prefix = f"create table {table}".casefold()
+    return " ".join(statement.split()).casefold().startswith(prefix)
+
+
+def _normalized_sql(statement: str) -> str:
+    return " ".join(statement.strip().removesuffix(";").split()).casefold()
 
 
 def _utc_now() -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -7,6 +8,8 @@ from typing import Any, cast
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.cli import mcp_server
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
+from codex_ai_os.domain.operations import HostOperationKind
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.operations import HostOperationStore
 
@@ -84,6 +87,15 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
     migration_operation = cast(dict[str, Any], _data(migrated)["operation"])
     assert migration_operation["kind"] == "database_migrate"
     assert migration_operation["status"] == "succeeded"
+    replayed_migration = mcp_server.database_migrate(
+        str(root),
+        expected_schema_version="0007",
+        target_schema_version="0007",
+        idempotency_key="migrate-noop",
+    )
+    assert cast(dict[str, Any], _data(replayed_migration)["operation"])[
+        "operation_id"
+    ] == migration_operation["operation_id"]
 
     partial_verification = mcp_server.verification_run(str(root), run_id=run_id)
     assert partial_verification["ok"] is False
@@ -190,6 +202,79 @@ def test_mcp_memory_candidate_review_search_and_errors(tmp_path: Path) -> None:
     assert invalid_limit["error"]["code"] == "MEMORY_INVALID"
 
 
+def test_mcp_database_migrate_persists_intent_before_0006_to_0007(
+    tmp_path: Path,
+) -> None:
+    root, _ = _legacy_project(tmp_path / "legacy-migration", tmp_path)
+
+    migrated = mcp_server.database_migrate(
+        str(root),
+        expected_schema_version="0006",
+        target_schema_version="0007",
+        idempotency_key="upgrade-0007",
+    )
+
+    assert migrated["ok"] is True
+    data = _data(migrated)
+    assert data["applied_versions"] == ["0007"]
+    assert data["current_version"] == "0007"
+    assert data["backup_path"] is not None
+    operation = cast(dict[str, Any], data["operation"])
+    assert operation["status"] == "succeeded"
+    assert operation["attempt_count"] == 1
+    replayed = mcp_server.database_migrate(
+        str(root),
+        expected_schema_version="0006",
+        target_schema_version="0007",
+        idempotency_key="upgrade-0007",
+    )
+    assert cast(dict[str, Any], _data(replayed)["operation"])[
+        "operation_id"
+    ] == operation["operation_id"]
+
+
+def test_mcp_database_migrate_reconciles_crash_after_0007_applied(
+    tmp_path: Path,
+) -> None:
+    root, legacy = _legacy_project(tmp_path / "legacy-crash", tmp_path)
+    legacy.bootstrap_host_operation_intents()
+    store = HostOperationStore(legacy)
+    request = {
+        "schema_version": RUNTIME_VERSIONS.api,
+        "expected_schema_version": "0006",
+        "target_schema_version": "0007",
+    }
+    pending = store.ensure_pending(
+        project_id=f"PROJECT-{root.name.upper()}",
+        kind=HostOperationKind.DATABASE_MIGRATE,
+        idempotency_key="upgrade-crashed",
+        request=request,
+    )
+    running = store.acquire(
+        pending.operation_id,
+        expected_version=pending.state_version,
+        lease_owner="crashed-process",
+    )
+    assert legacy.migrate().current_version == "0007"
+
+    recovered = mcp_server.database_migrate(
+        str(root),
+        expected_schema_version="0006",
+        target_schema_version="0007",
+        idempotency_key="upgrade-crashed",
+    )
+
+    assert recovered["ok"] is True
+    data = _data(recovered)
+    assert data["applied_versions"] == ["0007"]
+    operation = cast(dict[str, Any], data["operation"])
+    assert operation["operation_id"] == running.operation_id
+    assert operation["status"] == "succeeded"
+    assert cast(dict[str, Any], operation["result"])[
+        "recovered_after_outcome_unknown"
+    ] is True
+
+
 def _project(root: Path) -> Path:
     root.mkdir()
     _git(root, "init", "-b", "main")
@@ -206,6 +291,34 @@ def _project(root: Path) -> Path:
     _git(root, "add", ".")
     _git(root, "commit", "-m", "chore: initialize MCP fixture")
     return root
+
+
+def _legacy_project(root: Path, temporary_root: Path) -> tuple[Path, Database]:
+    project_root = _project(root)
+    database_path = project_root / ".codex-os" / "state" / "state.db"
+    for path in (
+        database_path,
+        Path(f"{database_path}-wal"),
+        Path(f"{database_path}-shm"),
+    ):
+        path.unlink(missing_ok=True)
+    packaged = Database(temporary_root / "unused.db").migrations_dir
+    migration_dir = temporary_root / f"{root.name}-migrations"
+    migration_dir.mkdir()
+    for source in sorted(packaged.glob("000[1-6]_*.sql")):
+        shutil.copy2(source, migration_dir / source.name)
+    legacy = Database(database_path, migrations_dir=migration_dir)
+    assert legacy.migrate().current_version == "0006"
+    with legacy.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO projects(id, name, root, config_hash, created_at, updated_at)
+            VALUES (?, 'Legacy migration', ?, 'hash', 'now', 'now')
+            """,
+            (f"PROJECT-{project_root.name.upper()}", project_root.as_posix()),
+        )
+        connection.commit()
+    return project_root, Database(database_path)
 
 
 def _data(payload: dict[str, Any]) -> dict[str, Any]:

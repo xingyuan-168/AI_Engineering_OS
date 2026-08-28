@@ -154,6 +154,21 @@ class HostOperationStore:
             )
         return _from_row(row)
 
+    def find_by_idempotency(
+        self,
+        *,
+        project_id: str,
+        kind: HostOperationKind,
+        idempotency_key: str,
+    ) -> HostOperation | None:
+        with self.database.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM host_operations WHERE project_id = ? AND kind = ? "
+                "AND idempotency_key = ?",
+                (project_id, kind.value, idempotency_key.strip()),
+            ).fetchone()
+        return _from_row(row) if row is not None else None
+
     def acquire(
         self,
         operation_id: str,
@@ -290,6 +305,59 @@ class HostOperationStore:
             result={},
             error_code=error_code,
         )
+
+    def require_reconciliation(
+        self,
+        operation_id: str,
+        *,
+        expected_version: int,
+        error_code: str = "OUTCOME_UNKNOWN",
+    ) -> HostOperation:
+        """Move an unfinished operation to reconciliation after external inspection."""
+
+        if not error_code.strip():
+            raise HostOperationError("CONFIG_INVALID", "error_code is required")
+        now = _utc_now()
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = self._required_row(connection, operation_id)
+                self._require_version(row, expected_version)
+                status = HostOperationStatus(str(row["status"]))
+                if status is HostOperationStatus.RECONCILE_REQUIRED:
+                    connection.commit()
+                    return _from_row(row)
+                if status not in {
+                    HostOperationStatus.PENDING,
+                    HostOperationStatus.RUNNING,
+                    HostOperationStatus.FAILED,
+                }:
+                    raise HostOperationError(
+                        "STATE_VERSION_CONFLICT",
+                        "completed operation cannot require reconciliation",
+                    )
+                changed = connection.execute(
+                    """
+                    UPDATE host_operations
+                    SET status = 'reconcile_required',
+                        state_version = state_version + 1,
+                        lease_owner = NULL, lease_expires_at = NULL,
+                        error_code = ?, updated_at = ?
+                    WHERE operation_id = ? AND state_version = ?
+                      AND status IN ('pending', 'running', 'failed')
+                    """,
+                    (error_code, now, operation_id, expected_version),
+                ).rowcount
+                if changed != 1:
+                    raise HostOperationError(
+                        "STATE_VERSION_CONFLICT",
+                        "operation changed while requiring reconciliation",
+                    )
+                connection.commit()
+            except (sqlite3.Error, HostOperationError):
+                connection.rollback()
+                raise
+        return self.get(operation_id)
 
     def reconcile(
         self,

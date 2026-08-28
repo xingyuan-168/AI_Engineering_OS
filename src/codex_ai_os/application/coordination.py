@@ -69,6 +69,24 @@ class CoordinationService:
         path = (self.root / ".worktrees" / run_id / "coordinator" / "integration").resolve()
         if not path.is_relative_to((self.root / ".worktrees").resolve()):
             raise CoordinationError("PATH_ESCAPE", "integration path escapes managed root")
+        if path.exists():
+            top = self._require_git(path, "rev-parse", "--show-toplevel")
+            actual_branch = self._require_git(path, "branch", "--show-current")
+            head = self._require_git(path, "rev-parse", "HEAD")
+            if Path(top).resolve() != path or actual_branch != branch or head != base_commit:
+                raise CoordinationError(
+                    "WORKTREE_BLOCKED",
+                    "unregistered integration Worktree differs from persisted intent",
+                )
+            self._register_integration_worktree(
+                run_id=run_id,
+                project_id=str(run["project_id"]),
+                path=path,
+                branch=branch,
+                base_commit=base_commit,
+                head=head,
+            )
+            return path
         path.parent.mkdir(parents=True, exist_ok=True)
         branch_exists = self._git(
             self.root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"
@@ -87,6 +105,26 @@ class CoordinationService:
                 "WORKTREE_BLOCKED", f"cannot create integration Worktree: {_stderr(created)}"
             )
         head = self._require_git(path, "rev-parse", "HEAD")
+        self._register_integration_worktree(
+            run_id=run_id,
+            project_id=str(run["project_id"]),
+            path=path,
+            branch=branch,
+            base_commit=base_commit,
+            head=head,
+        )
+        return path
+
+    def _register_integration_worktree(
+        self,
+        *,
+        run_id: str,
+        project_id: str,
+        path: Path,
+        branch: str,
+        base_commit: str,
+        head: str,
+    ) -> None:
         now = _utc_now()
         with self.database.connection() as connection:
             try:
@@ -100,7 +138,7 @@ class CoordinationService:
                     """,
                     (
                         new_id("WORKFLOWWORKTREE"),
-                        str(run["project_id"]),
+                        project_id,
                         run_id,
                         path.as_posix(),
                         branch,
@@ -118,11 +156,12 @@ class CoordinationService:
                     (branch, base_commit, head, now, run_id),
                 )
                 connection.commit()
-            except sqlite3.Error:
+            except sqlite3.Error as exc:
                 connection.rollback()
-                self._git(self.root, "worktree", "remove", str(path))
-                raise
-        return path
+                raise CoordinationError(
+                    "WORKTREE_BLOCKED",
+                    f"integration Worktree exists but registration failed: {exc}",
+                ) from exc
 
     def review_and_integrate(self, review: HandoffReviewInput) -> IntegrationResult:
         decision = self.prepare_review(review)

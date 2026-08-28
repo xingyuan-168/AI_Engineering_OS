@@ -25,6 +25,7 @@ from codex_ai_os.domain.governance import (
 )
 from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
 from codex_ai_os.domain.workflow import (
+    ActionKind,
     ChangeKind,
     Gate,
     NextAction,
@@ -224,6 +225,20 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     )
     current = engine.submit_approval(
         current.run.id, gate=Gate.G2, approved=True, reviewer="owner", reason="G2 verified"
+    )
+    assert current.next_action is not None
+    assert current.next_action.kind is ActionKind.HOST_OPERATION
+    assert current.run.integration_head is None
+    assert engine.operations.get(str(current.next_action.operation_id)).status.value == (
+        "pending"
+    )
+    current = engine.execute_host_operation(
+        str(current.next_action.operation_id),
+        expected_operation_version=int(current.next_action.expected_operation_version or 0),
+        idempotency_key=engine.operations.get(
+            str(current.next_action.operation_id)
+        ).idempotency_key,
+        invocation=InvocationContext.local(InvocationSource.CLI),
     )
     assert current.run.integration_head == design_commit
     assert len(current.next_actions) == 3
