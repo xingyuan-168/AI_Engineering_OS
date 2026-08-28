@@ -51,11 +51,20 @@ def test_profile_router_selects_smallest_team_and_large_impact(tmp_path: Path) -
     decision = router.route(
         run_id=started.run.id,
         requested_profiles=("backend", "large-project"),
-        impact_paths=("src/app.py",),
+        impact_paths=("src/codex_ai_os/infrastructure/migrations/0008.sql",),
         source_commit="a" * 40,
         workflow_name="feature-development",
+        dependency_count=1,
+        release_required=True,
+        override_reason="approved fixture override",
+        require_task_mapping=True,
     )
     assert decision.profiles == ("backend-project", "large-project")
+    assert decision.requested_profiles == ("backend", "large-project")
+    assert decision.override
+    assert decision.policy_hash
+    assert decision.dimension_scores["release"] == 10
+    assert decision.dependencies == (("backend-implementation", "database-migrations"),)
     assert decision.warnings == (
         "profile alias 'backend' is deprecated; use 'backend-project'",
     )
@@ -73,6 +82,17 @@ def test_profile_router_selects_smallest_team_and_large_impact(tmp_path: Path) -
     assert str(row["profiles_json"]) == str(row["canonical_profiles_json"])
     assert "evidence" in str(row["dimension_scores_json"])
     assert row["workflow"] == "feature-development"
+    persisted = router.input_for_run(started.run.id)
+    assert persisted.release_required
+    assert persisted.dependency_count == 1
+
+    with pytest.raises(ValueError, match="ROUTING_PATH_UNMAPPED"):
+        router.route(
+            run_id=started.run.id,
+            requested_profiles=("backend-project",),
+            impact_paths=("docs/unmapped.md",),
+            require_task_mapping=True,
+        )
 
 
 def test_profile_router_uses_yaml_profile_names_as_allowed_set(tmp_path: Path) -> None:
@@ -86,7 +106,7 @@ def test_profile_router_uses_yaml_profile_names_as_allowed_set(tmp_path: Path) -
     profile_dir = tmp_path / "profiles"
     profile_dir.mkdir()
     (profile_dir / "backend-project.yaml").write_text(
-        "schema_version: '1.2'\n"
+        "schema_version: '1.1'\n"
         "name: backend-project\n"
         "description: Backend only fixture\n"
         "project_types: [backend]\n"

@@ -280,6 +280,10 @@ def run_new_project_command(
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
     profile: Annotated[list[str] | None, typer.Option("--profile")] = None,
     target_branch: Annotated[str | None, typer.Option("--target-branch")] = None,
+    impact_path: Annotated[list[str] | None, typer.Option("--impact-path")] = None,
+    dependency_count: Annotated[int, typer.Option("--dependency-count")] = 0,
+    release_required: Annotated[bool, typer.Option("--release-required")] = False,
+    override_reason: Annotated[str | None, typer.Option("--override-reason")] = None,
 ) -> None:
     """Start or return the active idempotent new-project run for a goal."""
 
@@ -289,6 +293,10 @@ def run_new_project_command(
             workflow_name="new-project",
             profiles=tuple(profile or ()),
             target_branch=target_branch,
+            impact_paths=tuple(impact_path or ()),
+            dependency_count=dependency_count,
+            release_required=release_required,
+            override_reason=override_reason,
         )
     except WorkflowError as exc:
         _workflow_fail(exc, json_output)
@@ -306,6 +314,7 @@ def _run_named_workflow(
     json_output: bool,
     profiles: tuple[str, ...] = (),
     target_branch: str | None = None,
+    impact_paths: tuple[str, ...] = (),
 ) -> None:
     try:
         result = WorkflowEngine(project_root).start(
@@ -313,6 +322,7 @@ def _run_named_workflow(
             workflow_name=workflow_name,
             profiles=profiles,
             target_branch=target_branch,
+            impact_paths=impact_paths,
         )
     except WorkflowError as exc:
         _workflow_fail(exc, json_output)
@@ -330,6 +340,7 @@ def run_feature_development_command(
     json_output: Annotated[bool, typer.Option("--json")] = False,
     profile: Annotated[list[str] | None, typer.Option("--profile")] = None,
     target_branch: Annotated[str | None, typer.Option("--target-branch")] = None,
+    impact_path: Annotated[list[str] | None, typer.Option("--impact-path")] = None,
 ) -> None:
     """Start a feature-development workflow at detailed requirements."""
 
@@ -340,6 +351,7 @@ def run_feature_development_command(
         json_output,
         tuple(profile or ()),
         target_branch,
+        tuple(impact_path or ()),
     )
 
 
@@ -350,11 +362,18 @@ def run_bug_fix_command(
     json_output: Annotated[bool, typer.Option("--json")] = False,
     profile: Annotated[list[str] | None, typer.Option("--profile")] = None,
     target_branch: Annotated[str | None, typer.Option("--target-branch")] = None,
+    impact_path: Annotated[list[str] | None, typer.Option("--impact-path")] = None,
 ) -> None:
     """Start a bug-fix workflow at isolated implementation."""
 
     _run_named_workflow(
-        "bug-fix", goal, project_root, json_output, tuple(profile or ()), target_branch
+        "bug-fix",
+        goal,
+        project_root,
+        json_output,
+        tuple(profile or ()),
+        target_branch,
+        tuple(impact_path or ()),
     )
 
 
@@ -884,6 +903,8 @@ def _approval_command(
     release_authorized: bool = False,
     release_authorized_by: str | None = None,
 ) -> None:
+    context = InvocationContext.local(InvocationSource.CLI)
+    warnings = _trusted_reviewer_warnings(reviewer, context)
     try:
         complete_g4 = all(
             value is not None
@@ -914,6 +935,7 @@ def _approval_command(
             reviewer=reviewer,
             reason=reason,
             g4_evidence=g4_evidence,
+            invocation=context,
         )
     except WorkflowError as exc:
         _workflow_fail(exc, json_output)
@@ -921,7 +943,7 @@ def _approval_command(
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
         return
-    _emit_workflow(result, json_output=json_output)
+    _emit_workflow(result, json_output=json_output, context=context, warnings=warnings)
 
 
 def _emit_workflow(

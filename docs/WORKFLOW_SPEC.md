@@ -64,6 +64,8 @@ failed -> running | cancelled
 
 基础 Workflow 与 Profile 独立组合：`large-project` 提供多 Agent、Worktree 和额外 Review 门禁；`frontend-project` 启用 UX Research 到 UI Spec 的设计链路；`backend-project` 启用 API、数据库、迁移和服务测试链路。Profile 只能增加步骤和证据，不能跳过 G0-G4 或降低执行安全等级。
 
+Profile Schema 1.2 声明任务模板、影响路径模式、增量 Gate 证据和 Reviewer。Runtime 将核心 Gate 与所选 Profile 编译为不可放宽的 `EffectiveGovernancePolicy` 并保存 policy hash；任务允许路径从已批准 impact paths 匹配产生，重叠路径按稳定顺序建立依赖，未映射路径阻塞。G0 bundle 必须绑定 Routing Decision，G2 bundle 必须包含 Migration Spec 与适用 ADR 索引。
+
 ## 5. 四条 V1 Workflow
 
 ### `new-project`

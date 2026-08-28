@@ -124,6 +124,10 @@ def workflow_start(
     workflow_name: str = "new-project",
     profiles: list[str] | None = None,
     target_branch: str | None = None,
+    impact_paths: list[str] | None = None,
+    dependency_count: int = 0,
+    release_required: bool = False,
+    override_reason: str | None = None,
 ) -> dict[str, Any]:
     """Start, or idempotently return, a supported governed workflow for a goal."""
 
@@ -134,6 +138,10 @@ def workflow_start(
                 workflow_name=workflow_name,
                 profiles=tuple(profiles or ()),
                 target_branch=target_branch,
+                impact_paths=tuple(impact_paths or ()),
+                dependency_count=dependency_count,
+                release_required=release_required,
+                override_reason=override_reason,
             ),
             Path(project_root),
         )
@@ -193,6 +201,8 @@ def approval_submit(
     """Approve or reject exactly the gate currently requested by a workflow."""
 
     def operation() -> dict[str, Any]:
+        context = _current_context()
+        warnings = _trusted_reviewer_warnings(reviewer, context)
         complete_g4 = all(
             value is not None
             for value in (pr_number, pr_url, merge_commit, version, release_authorized_by)
@@ -223,8 +233,10 @@ def approval_submit(
                 reviewer=reviewer,
                 reason=reason,
                 g4_evidence=g4_evidence,
+                invocation=context,
             ),
             Path(project_root),
+            warnings=warnings,
         )
 
     return _invoke(operation)

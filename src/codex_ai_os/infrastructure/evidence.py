@@ -11,6 +11,11 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import cast
 
+from codex_ai_os.application.governance_policy import (
+    EffectiveGovernancePolicy,
+    GovernancePolicyCompiler,
+    GovernancePolicyError,
+)
 from codex_ai_os.domain.governance import (
     ArtifactEvidenceInput,
     CheckEvidenceInput,
@@ -42,63 +47,6 @@ class GateBundle:
     review_types: tuple[str, ...]
     missing: tuple[str, ...]
     bundle_hash: str
-
-
-_REQUIRED_ARTIFACTS: dict[Gate, frozenset[str]] = {
-    Gate.G0: frozenset({"docs/PROJECT_MASTER.md", "docs/SCOPE.md"}),
-    Gate.G1: frozenset(
-        {
-            "docs/PRODUCT_REQUIREMENTS.md",
-            "docs/USER_STORY.md",
-            "docs/BUSINESS_RULES.md",
-            "docs/SCOPE.md",
-        }
-    ),
-    Gate.G2: frozenset(
-        {
-            "docs/OPEN_SOURCE_RESEARCH.md",
-            "docs/TECH_STACK.md",
-            "docs/ARCHITECTURE.md",
-            "docs/API_SPEC.md",
-            "docs/DATABASE.md",
-            "docs/SECURITY.md",
-        }
-    ),
-    Gate.G3: frozenset(),
-    Gate.G4: frozenset(),
-}
-_REQUIRED_ARTIFACT_TYPES: dict[Gate, frozenset[str]] = {
-    Gate.G0: frozenset(),
-    Gate.G1: frozenset(),
-    Gate.G2: frozenset(),
-    Gate.G3: frozenset(),
-    Gate.G4: frozenset(
-        {"changelog", "release-manifest", "rollback", "sbom", "checksums", "memory"}
-    ),
-}
-_REQUIRED_CHECKS: dict[Gate, frozenset[str]] = {
-    Gate.G0: frozenset(),
-    Gate.G1: frozenset(),
-    Gate.G2: frozenset(),
-    Gate.G3: frozenset(
-        {
-            "pytest",
-            "ruff",
-            "pyright",
-            "secret-scan",
-            "dependency-audit",
-            "security-scan",
-        }
-    ),
-    Gate.G4: frozenset({"release-manifest", "sbom", "checksums", "rollback"}),
-}
-_REQUIRED_REVIEWS: dict[Gate, frozenset[str]] = {
-    Gate.G0: frozenset(),
-    Gate.G1: frozenset(),
-    Gate.G2: frozenset(),
-    Gate.G3: frozenset({"code", "security"}),
-    Gate.G4: frozenset({"release"}),
-}
 
 
 class EvidenceStore:
@@ -401,6 +349,11 @@ class EvidenceStore:
         state_version: int,
         source_commit: str,
     ) -> GateBundle:
+        try:
+            policy = self._policy_for_run(run_id)
+        except GovernancePolicyError as exc:
+            raise EvidenceError(exc.code, str(exc)) from exc
+        requirements = policy.requirements_for(gate)
         with self.database.connection() as connection:
             artifacts = connection.execute(
                 """
@@ -445,15 +398,28 @@ class EvidenceStore:
             artifact_types = tuple(str(row["artifact_type"]) for row in artifacts)
             check_names = tuple(str(row["check_name"]) for row in checks)
             review_types = tuple(str(row["review_type"]) for row in reviews)
-            document_findings = self._document_findings(run_id, gate, source_commit)
+            routing = connection.execute(
+                """
+                SELECT decision_hash, source_commit FROM routing_decisions
+                WHERE run_id = ? ORDER BY created_at DESC LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            record_hashes: dict[str, str] = {}
+            if routing is not None:
+                record_hashes["routing-decision"] = str(routing["decision_hash"])
+            document_findings = self._document_findings(
+                run_id, source_commit, requirements.artifacts
+            )
             missing = sorted(
-                {f"artifact:{name}" for name in _REQUIRED_ARTIFACTS[gate] - set(artifact_paths)}
+                {f"artifact:{name}" for name in requirements.artifacts - set(artifact_paths)}
                 | {
                     f"artifact_type:{name}"
-                    for name in _REQUIRED_ARTIFACT_TYPES[gate] - set(artifact_types)
+                    for name in requirements.artifact_types - set(artifact_types)
                 }
-                | {f"check:{name}" for name in _REQUIRED_CHECKS[gate] - set(check_names)}
-                | {f"review:{name}" for name in _REQUIRED_REVIEWS[gate] - set(review_types)}
+                | {f"check:{name}" for name in requirements.checks - set(check_names)}
+                | {f"review:{name}" for name in requirements.reviews - set(review_types)}
+                | {f"record:{name}" for name in requirements.records - set(record_hashes)}
                 | {f"document:{finding}" for finding in document_findings}
             )
             payload = {
@@ -466,6 +432,8 @@ class EvidenceStore:
                 "reviews": [
                     (str(row["review_type"]), str(row["report_hash"])) for row in reviews
                 ],
+                "records": sorted(record_hashes.items()),
+                "policy_hash": policy.policy_hash,
                 "missing": missing,
             }
             bundle_hash = hashlib.sha256(
@@ -494,7 +462,7 @@ class EvidenceStore:
                         state_version,
                         source_commit.casefold(),
                         status,
-                        _json(sorted(_REQUIRED_ARTIFACTS[gate])),
+                        _json(requirements.payload()),
                         bundle_hash,
                         _utc_now(),
                         _utc_now() if status == "complete" else None,
@@ -530,6 +498,23 @@ class EvidenceStore:
             review_types=review_types,
             missing=tuple(missing),
             bundle_hash=bundle_hash,
+        )
+
+    def _policy_for_run(self, run_id: str) -> EffectiveGovernancePolicy:
+        with self.database.read_connection() as connection:
+            row = connection.execute(
+                "SELECT profiles_json FROM workflow_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        if row is None:
+            raise GovernancePolicyError("RECOVERY_UNAVAILABLE", "Workflow run not found")
+        parsed: object = json.loads(str(row["profiles_json"]))
+        if not isinstance(parsed, list):
+            raise GovernancePolicyError("CONFIG_INVALID", "Workflow profiles are invalid")
+        items = cast(list[object], parsed)
+        if not all(isinstance(item, str) for item in items):
+            raise GovernancePolicyError("CONFIG_INVALID", "Workflow profiles are invalid")
+        return GovernancePolicyCompiler(self.root).compile(
+            tuple(cast(str, item) for item in items)
         )
 
     @staticmethod
@@ -569,11 +554,9 @@ class EvidenceStore:
             raise EvidenceError("EVIDENCE_STALE", f"evidence hash mismatch: {artifact.path}")
 
     def _document_findings(
-        self, run_id: str, gate: Gate, source_commit: str
+        self, run_id: str, source_commit: str, required_artifacts: frozenset[str]
     ) -> tuple[str, ...]:
-        paths = tuple(
-            path for path in _REQUIRED_ARTIFACTS[gate] if path.casefold().endswith(".md")
-        )
+        paths = tuple(path for path in required_artifacts if path.casefold().endswith(".md"))
         if not paths:
             return ()
         with self.database.connection() as connection:

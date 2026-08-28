@@ -11,3 +11,17 @@ required_artifacts:
 additional_reviewers: [qa, reviewer]
 min_agents: 3
 approval_required: false
+task_templates:
+  - key: frontend-implementation
+    agent: frontend-engineer
+    skill: frontend-implementation
+    prompt: Implement the approved accessible frontend slice.
+    impact_patterns:
+      - src/codex_ai_os/frontend/**
+      - tests/frontend/**
+gate_requirements:
+  - gate: G2
+    artifacts:
+      - docs/PRODUCT_DESIGN.md
+      - docs/INTERACTION_DESIGN.md
+      - docs/UI_DESIGN.md

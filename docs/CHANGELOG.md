@@ -18,6 +18,7 @@
 - 非零验证检查现在生成 `failed` Check Evidence、失败报告和可恢复 blocker，不再构造 `passed + 非零 exit_code` 的无效证据。
 - Runtime Routing 改用 canonical `backend-project`、`frontend-project`、`large-project` Profile 名，短名只作为兼容 alias；`routing_decisions` 同步写入 0007 的七维评分、canonical profiles、risk、workflow 和 schema 版本字段。
 - Profile Router 从项目 `profiles/*.yaml` 读取 allowed profile 名；缺省 fixture 保留内置安全集合，large 自动扩展不再绕过 Profile 资源事实源。
+- 以 CQ-OS `400a930` 为研究基线，移植其 MIT `@cq/governance` 包的 Baseline + Project 单调策略、默认拒绝、角色/路径负向测试向量并保留 attribution；新增带 hash 的 `EffectiveGovernancePolicy`，Profile Schema 1.2 声明任务模板、影响路径、增量 Gate 证据与 Reviewer，Routing 保存七维输入、override、依赖和 policy hash，审批适配器忽略自报身份的提权语义。
 - Plugin 资源补齐 `frontend-engineer` Agent、`frontend-implementation` Skill，并将插件 manifest 版本对齐 Runtime `0.2.0`。
 - CLI/MCP 补齐 `verification_prepare`、`host_operation_reconcile` 与 `database_migrate` 公共映射；CLI 另新增 Release Candidate 与 Memory submit/review/search 映射，统一返回 API 1.2 envelope。
 - MCP `memory_review` 暴露 `expected_version`，Memory 生命周期变更可由公共接口执行乐观并发校验。

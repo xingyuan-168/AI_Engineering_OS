@@ -160,16 +160,21 @@ Reviewer/Security Reviewer 只能通过该接口写 Review 元数据，不拥有
   "workflow_name":"new-project|feature-development|bug-fix|release",
   "goal":"non-empty",
   "profiles":["backend-project","large-project"],
-  "target_branch":"main"
+  "target_branch":"main",
+  "impact_paths":["src/codex_ai_os/application/workflow.py","tests/unit/test_workflow.py"],
+  "dependency_count":1,
+  "release_required":false,
+  "override_reason":null
 }
 ```
 
 规则：
 
-1. 标准化目标、Profile 和目标分支，计算 start idempotency key。
+1. 标准化目标、Profile、目标分支和七维 Routing Input，计算 start idempotency key。
 2. 在首个 `requires_repository_change=true` action 分配前验证与当前 HEAD/config hash 绑定的 passing repository audit。
 3. 建立 `workflow/<run-id>/integration` 分支与 Worktree，保存 base/integration head。
 4. 返回一个或多个 `next_actions`；最多 4 个写任务，且必须通过路径冲突检查。
+5. API 1.2 的实现任务允许路径只来自批准的 `impact_paths`；未映射路径返回 `ROUTING_PATH_UNMAPPED`。Profile alias 仅兼容读取并返回弃用 warning。
 
 ### 4.2 `workflow_status`
 
@@ -180,7 +185,7 @@ Reviewer/Security Reviewer 只能通过该接口写 Review 元数据，不拥有
 ```json
 {
   "profiles": [],
-  "routing_decision": {},
+  "routing_decision": {"requested_profiles":[],"effective_profiles":[],"dimension_scores":{},"override":false,"dependencies":[],"policy_hash":"64-hex"},
   "target_branch": "main",
   "integration_branch": "workflow/RUN-.../integration",
   "base_commit": "...",

@@ -150,6 +150,16 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         "Deliver the governed 0.2.0 runtime",
         profiles=("backend", "frontend", "large"),
         target_branch="main",
+        impact_paths=(
+            "src/codex_ai_os/application/generated_backend.py",
+            "src/codex_ai_os/frontend/generated_frontend.py",
+            "src/codex_ai_os/infrastructure/migrations/9999_fixture.sql",
+            "tests/integration/test_generated_governance.py",
+            "pyproject.toml",
+            "uv.lock",
+        ),
+        dependency_count=1,
+        release_required=True,
     )
 
     current, _ = _complete(
@@ -200,7 +210,16 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
             ),
             "docs/API_SPEC.md": _doc("API", ("接口", "错误", "兼容")),
             "docs/DATABASE.md": _doc("Database", ("迁移", "事务", "恢复")),
+            "docs/MIGRATION_SPEC.md": _doc("Migration", ("迁移", "回滚", "校验")),
             "docs/SECURITY.md": _doc("Security", ("信任", "威胁", "风险")),
+            "docs/ADR/README.md": _doc("ADR Index", ("Decision", "Status", "Owner")),
+            "docs/PRODUCT_DESIGN.md": _doc("Product Design", ("用户", "范围", "验收")),
+            "docs/INTERACTION_DESIGN.md": _doc(
+                "Interaction Design", ("流程", "状态", "错误")
+            ),
+            "docs/UI_DESIGN.md": _doc("UI Design", ("布局", "组件", "无障碍")),
+            "docs/RISK_REGISTER.md": _doc("Risk Register", ("风险", "影响", "处置")),
+            "docs/AGENT_HANDOFF.md": _doc("Agent Handoff", ("任务", "证据", "审核")),
         },
     )
     current = engine.submit_approval(

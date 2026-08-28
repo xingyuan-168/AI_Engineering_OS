@@ -73,6 +73,7 @@
 | Zep | [getzep/zep](https://github.com/getzep/zep) | `main` | `zep-ingest-v0.2.1` | Apache-2.0 | 提取记忆生命周期，0.2.0 不引入服务依赖 |
 | Penpot | [penpot/penpot](https://github.com/penpot/penpot) | `develop` | `2.17.1` | MPL-2.0 | 作为外部设计工具候选，不进入 OS 核心运行时 |
 | Excalidraw | [excalidraw/excalidraw](https://github.com/excalidraw/excalidraw) | `master` | `v0.18.1` | MIT | 作为原型工具候选，不进入 OS 核心运行时 |
+| CQ-OS | [xingyuan-168/CQ-OS](https://github.com/xingyuan-168/CQ-OS) | `master` | `400a930`；`v0.3.0-beta` | 仓库未声明 License；`@cq/governance` 0.1.0 manifest 声明 MIT | 仅移植 MIT 治理包的纯策略算法与测试向量；其他源码只作设计参考 |
 
 核验范围：GitHub 官方仓库元数据、默认分支、当时 release/tag 和仓库级 SPDX 标识。核验日期：2026-08-20。上述 release/tag 是历史研究快照，不代表 `0.2.0` 依赖版本，也不会被自动升级为依赖。
 
@@ -117,6 +118,12 @@
 ### Penpot / Excalidraw
 
 重点研究 User Flow、线框、组件、设计 Token 和设计资产如何进入前端实现。落地时将设计文档作为前端编码前的门禁输入，并保留链接、导出文件和版本信息。
+
+### CQ-OS
+
+固定研究 Commit 为 `400a93088e34f3221d7b95eba7edd7685df8e7cf`。其中 `preset/plugins/cq-governance/package.json` 将 `@cq/governance` 0.1.0 声明为 MIT；0.2.0 据此移植其纯策略层的 Baseline + Project 单调合并、`failClosed/defaultDeny`、保护路径匹配和负向测试向量，并在 `THIRD_PARTY_NOTICES.md` 保留来源。AI-OS 使用自身路径、角色、受信 `InvocationContext`、SQLite 和 Gate 契约，不复制 DSH/Cordis 集成、会话 FIFO 角色关联、`.cq/` Memory 或 CQ Plugin Schema。
+
+该快照的 P4 验证仍记录 Windows 工具名误判、maintenance 保护路径未正确放行、shell 字符串过度阻塞及 preflight drift 假阳性。因此这些运行时实现不直接复用：AI-OS 只对结构化写操作执行路径策略，read-only 操作不按命令字符串阻塞；maintenance 仅将治理资源改为显式审批，Secret、Git 元数据和运行状态仍硬拒绝；正式检查缺少扫描器时保持 blocked。
 
 ## 4. 复用决策矩阵
 

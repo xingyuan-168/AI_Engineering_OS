@@ -79,6 +79,8 @@ python:3.12.14-bookworm@sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60
 - `status`、`step` 的只读计算路径不得迁移、分配任务或推进状态。
 - 候选 Manifest 同时记录 integration source Commit 与提交候选文件的 candidate Commit；final manifest 在 G4 对账阶段产生。
 - 旧活动 Workflow 保留原审计记录。证据不足时进入 `MIGRATION_REVALIDATION_REQUIRED`，不得伪造新 Task Group 或新 Gate 证据。
+- Profile Schema 1.2 是任务模板、影响路径模式、增量 Gate 证据和 Reviewer 的声明式事实源；Runtime 将核心规则与所选 Profile 编译为带 hash 的 `EffectiveGovernancePolicy`。缺失、未知或试图放宽核心规则的策略必须 fail closed。
+- CQ-OS `400a930` 是治理机制研究基线；仅将明确声明 MIT 的 `@cq/governance` 0.1.0 包中的单调 Baseline + Project 合并、默认拒绝、保护路径匹配及测试向量移植为独立 Python 实现并保留 attribution。其余源码只作单一调度、角色边界、路由审计和契约自检参考，不引入 Node.js/DSH/Cordis 或 `.cq/` 第二事实源。
 - 0.2.0 不包含 Web 控制台、DeepSeek Harness、公共插件市场、远程多租户或生产部署。
 
 ## 5. 验证

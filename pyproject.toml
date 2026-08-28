@@ -36,6 +36,10 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/codex_ai_os"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"profiles" = "codex_ai_os/resources/profiles"
+"THIRD_PARTY_NOTICES.md" = "codex_ai_os/resources/THIRD_PARTY_NOTICES.md"
+
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]

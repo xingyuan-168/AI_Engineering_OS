@@ -261,7 +261,11 @@ def test_review_gate_bundle_and_document_revalidation_fail_closed(tmp_path: Path
             (head, current.active_task.id),
         )
         connection.commit()
-    findings = store._document_findings(current.run.id, Gate.G0, head)
+    findings = store._document_findings(
+        current.run.id,
+        head,
+        frozenset({"docs/PROJECT_MASTER.md", "docs/SCOPE.md"}),
+    )
     assert findings
     assert store._is_ancestor(head, head) is True
     assert store._is_ancestor("f" * 40, head) is False

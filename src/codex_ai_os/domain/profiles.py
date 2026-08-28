@@ -4,11 +4,69 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
 from codex_ai_os.domain.config import ProjectType, StrictModel
+
+
+class ProfileTaskTemplate(StrictModel):
+    key: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
+    agent: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
+    skill: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
+    prompt: str = Field(min_length=1, max_length=2000)
+    impact_patterns: tuple[str, ...]
+    depends_on: tuple[str, ...] = ()
+
+    @field_validator("impact_patterns")
+    @classmethod
+    def impact_patterns_are_safe(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if not values or len(values) != len(set(values)):
+            raise ValueError("impact patterns must be non-empty and unique")
+        for value in values:
+            normalized = value.replace("\\", "/")
+            path = Path(normalized)
+            if path.is_absolute() or ".." in path.parts or normalized.startswith("/"):
+                raise ValueError(f"profile impact pattern is unsafe: {value}")
+        return values
+
+    @field_validator("depends_on")
+    @classmethod
+    def dependencies_are_safe(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(values) != len(set(values)) or not all(
+            re.fullmatch(r"[a-z][a-z0-9-]{1,63}", value) for value in values
+        ):
+            raise ValueError("task dependencies must be unique kebab-case identifiers")
+        return values
+
+
+class ProfileGateRequirement(StrictModel):
+    gate: Literal["G0", "G1", "G2", "G3", "G4"]
+    artifacts: tuple[str, ...] = ()
+    artifact_types: tuple[str, ...] = ()
+    checks: tuple[str, ...] = ()
+    reviews: tuple[str, ...] = ()
+
+    @field_validator("artifacts")
+    @classmethod
+    def artifact_paths_are_safe(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        for value in values:
+            path = Path(value.replace("\\", "/"))
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(f"profile Gate artifact path is unsafe: {value}")
+        if len(values) != len(set(values)):
+            raise ValueError("profile Gate artifacts must be unique")
+        return values
+
+    @field_validator("artifact_types", "checks", "reviews")
+    @classmethod
+    def evidence_names_are_safe(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(values) != len(set(values)) or not all(
+            re.fullmatch(r"[a-z][a-z0-9-]{1,63}", value) for value in values
+        ):
+            raise ValueError("profile Gate evidence names must be unique kebab-case identifiers")
+        return values
 
 
 class ProjectProfile(StrictModel):
@@ -21,6 +79,8 @@ class ProjectProfile(StrictModel):
     additional_reviewers: tuple[str, ...]
     min_agents: int = Field(ge=1, le=20)
     approval_required: bool = False
+    task_templates: tuple[ProfileTaskTemplate, ...] = ()
+    gate_requirements: tuple[ProfileGateRequirement, ...] = ()
 
     @field_validator("additional_skills", "additional_reviewers")
     @classmethod
@@ -46,4 +106,23 @@ class ProjectProfile(StrictModel):
     def project_types_are_unique(self) -> Self:
         if not self.project_types or len(self.project_types) != len(set(self.project_types)):
             raise ValueError("project_types must be non-empty and unique")
+        task_keys = tuple(task.key for task in self.task_templates)
+        if len(task_keys) != len(set(task_keys)):
+            raise ValueError("profile task keys must be unique")
+        known_tasks = set(task_keys)
+        for task in self.task_templates:
+            unknown = set(task.depends_on) - known_tasks
+            if unknown:
+                raise ValueError(
+                    f"profile task {task.key} has unknown dependencies: {sorted(unknown)}"
+                )
+        gates = tuple(requirement.gate for requirement in self.gate_requirements)
+        if len(gates) != len(set(gates)):
+            raise ValueError("profile Gate requirements must have unique gates")
+        if self.schema_version == "1.2" and (
+            not self.task_templates or not self.gate_requirements
+        ):
+            raise ValueError(
+                "Profile Schema 1.2 requires task_templates and gate_requirements"
+            )
         return self

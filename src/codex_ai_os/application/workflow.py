@@ -138,6 +138,10 @@ class WorkflowEngine:
         workflow_name: str = "new-project",
         profiles: tuple[str, ...] = (),
         target_branch: str | None = None,
+        impact_paths: tuple[str, ...] = (),
+        dependency_count: int = 0,
+        release_required: bool = False,
+        override_reason: str | None = None,
     ) -> WorkflowResult:
         normalized_goal = goal.strip()
         if not normalized_goal:
@@ -160,7 +164,7 @@ class WorkflowEngine:
         requested_profile_input = profiles or _default_profiles(self.config.project_type.value)
         router = ProfileRouter(self.store.database, self.config)
         try:
-            selected_profiles = router.select_profiles(requested_profile_input, ())
+            selected_profiles = router.select_profiles(requested_profile_input, impact_paths)
         except ValueError as exc:
             raise WorkflowError("CONFIG_INVALID", str(exc), 2) from exc
         if len(selected_profiles) > self.config.max_parallel_agents:
@@ -203,8 +207,12 @@ class WorkflowEngine:
             router.route(
                 run_id=created.id,
                 requested_profiles=requested_profile_input,
+                impact_paths=impact_paths,
                 source_commit=None,
                 workflow_name=workflow_name,
+                dependency_count=dependency_count,
+                release_required=release_required,
+                override_reason=override_reason,
             )
         self._allocate_or_block(created, task, base_ref="HEAD")
         return self._result(self.store.get_run(created.id))
@@ -407,6 +415,7 @@ class WorkflowEngine:
         reviewer: str,
         reason: str,
         g4_evidence: G4ApprovalInput | None = None,
+        invocation: InvocationContext | None = None,
     ) -> WorkflowResult:
         run = self._get_run(run_id)
         self._require_migration_revalidation(run)
@@ -421,6 +430,15 @@ class WorkflowEngine:
             )
         if not reviewer.strip() or not reason.strip():
             raise WorkflowError("CONFIG_INVALID", "reviewer and reason are required", 2)
+        trusted_reviewer = invocation.principal if invocation is not None else reviewer.strip()
+        if g4_evidence is not None and invocation is not None:
+            g4_evidence = g4_evidence.model_copy(
+                update={
+                    "release_authority": g4_evidence.release_authority.model_copy(
+                        update={"authorized_by": trusted_reviewer}
+                    )
+                }
+            )
 
         bundle = None
         if approved and self.config.schema_version != "1.0":
@@ -465,7 +483,7 @@ class WorkflowEngine:
             assert bundle is not None
             return self._approve_g2_coordination(
                 run,
-                reviewer=reviewer,
+                reviewer=trusted_reviewer,
                 reason=reason,
                 evidence_bundle_id=bundle.id,
                 evidence_bundle_hash=bundle.bundle_hash,
@@ -475,7 +493,7 @@ class WorkflowEngine:
             assert bundle is not None
             return self._approve_g3_coordination(
                 run,
-                reviewer=reviewer,
+                reviewer=trusted_reviewer,
                 reason=reason,
                 evidence_bundle_id=bundle.id,
                 evidence_bundle_hash=bundle.bundle_hash,
@@ -516,7 +534,7 @@ class WorkflowEngine:
                 run=run,
                 gate=gate,
                 approved=approved,
-                reviewer=reviewer,
+                reviewer=trusted_reviewer,
                 reason=reason,
                 target_phase=target_phase,
                 target_status=target_status,
@@ -783,6 +801,19 @@ class WorkflowEngine:
             "last_commit_sha": source_commit,
         }
         try:
+            router = ProfileRouter(self.store.database, self.config)
+            routing_input = router.input_for_run(run.id)
+            routing = router.route(
+                run_id=run.id,
+                requested_profiles=run.profiles,
+                impact_paths=routing_input.impact_paths,
+                source_commit=source_commit,
+                workflow_name=run.workflow_name,
+                dependency_count=routing_input.dependency_count,
+                release_required=routing_input.release_required,
+                override_reason=routing_input.override_reason,
+                require_task_mapping=True,
+            )
             approved = self.store.approval_transition(
                 run=run,
                 gate=Gate.G2,
@@ -800,12 +831,6 @@ class WorkflowEngine:
                 self.config.root
             ).ensure_integration_worktree(run.id, base_commit=source_commit)
             current = self._get_run(approved.id)
-            routing = ProfileRouter(self.store.database, self.config).route(
-                run_id=run.id,
-                requested_profiles=run.profiles,
-                source_commit=source_commit,
-                workflow_name=run.workflow_name,
-            )
             group, _planned = self.coordination_store.create_group(
                 run_id=run.id,
                 name="implementation",
@@ -823,8 +848,16 @@ class WorkflowEngine:
                 integration_worktree=integration_path.as_posix(),
             )
             updated = self.store.update_checkpoint(run=current, checkpoint=checkpoint)
-        except (WorkflowConflictError, CoordinationError) as exc:
-            code = exc.code if isinstance(exc, CoordinationError) else "STATE_CONFLICT"
+        except (WorkflowConflictError, CoordinationError, ValueError) as exc:
+            code = (
+                exc.code
+                if isinstance(exc, CoordinationError)
+                else (
+                    "ROUTING_PATH_UNMAPPED"
+                    if "ROUTING_PATH_UNMAPPED" in str(exc)
+                    else "STATE_CONFLICT"
+                )
+            )
             raise WorkflowError(code, str(exc), 40) from exc
         return self._result(updated)
 
