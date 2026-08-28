@@ -6,6 +6,7 @@ import json
 import stat
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -14,11 +15,16 @@ from codex_ai_os.application.execution import ExecutionService, ExecutionService
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.application.verification import VerificationService
-from codex_ai_os.application.verification_cache import VerificationCachePreparer
+from codex_ai_os.application.verification_cache import (
+    VerificationCachePrepareError,
+    VerificationCachePreparer,
+    validate_verification_target,
+)
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
 from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
 from codex_ai_os.domain.operations import HostOperationKind
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import PHASE_DEFINITIONS, ActionKind, WorkflowPhase
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
@@ -375,7 +381,23 @@ def test_verification_requires_lock_bound_offline_wheelhouse(tmp_path: Path) -> 
     )
     (wheelhouse / "fixture-1.0-py3-none-any.whl").write_bytes(b"fixture")
     (wheelhouse / "audit-snapshot.json").write_text("{}", encoding="utf-8")
-    assert service._wheelhouse(root) == wheelhouse
+    with pytest.raises(ExecutionServiceError) as legacy:
+        service._wheelhouse(root)
+    assert legacy.value.code == "SANDBOX_DEPENDENCIES_UNAVAILABLE"
+
+
+def test_verification_target_rejects_expired_or_host_platform_cache() -> None:
+    with pytest.raises(VerificationCachePrepareError) as expired:
+        validate_verification_target(
+            "linux-amd64", "3.12", "2020-01-01T00:00:00+00:00"
+        )
+    assert expired.value.code == "VERIFICATION_CACHE_EXPIRED"
+
+    with pytest.raises(VerificationCachePrepareError) as platform_error:
+        validate_verification_target(
+            "windows-amd64", "3.12", "2099-01-01T00:00:00+00:00"
+        )
+    assert platform_error.value.code == "PLATFORM_MISMATCH"
 
 
 class _FailingSandbox:
@@ -426,6 +448,37 @@ def test_verification_records_failed_check_evidence_for_nonzero_exit(
     assert report["exit_code"] == 7
 
 
+class _UnavailableExecution:
+    def execute(self, _request: SandboxRequest) -> object:
+        raise ExecutionServiceError("SANDBOX_UNAVAILABLE", "Podman is unavailable")
+
+
+def test_missing_sandbox_records_failed_evidence(tmp_path: Path) -> None:
+    root = _fixture_project(tmp_path / "x")
+    engine = WorkflowEngine(root)
+    started = engine.start("Record a missing sandbox as failed evidence")
+    assert started.active_task is not None
+    service = VerificationService(
+        root,
+        execution_service=cast(ExecutionService, _UnavailableExecution()),
+        bootstrap_dependencies=False,
+    )
+
+    result = service.run(
+        run_id=started.run.id,
+        task_id=started.active_task.id,
+        checks=(("real-oci", ("python", "-c", "print('never runs')")),),
+    )
+
+    assert result.valid is False
+    assert result.blockers == (
+        "real-oci:SANDBOX_UNAVAILABLE:Podman is unavailable",
+    )
+    assert len(result.checks) == 1
+    assert result.checks[0].status.value == "failed"
+    assert result.checks[0].exit_code == 1
+
+
 def test_verification_builds_commit_bound_container_git_metadata(tmp_path: Path) -> None:
     root = _fixture_project(tmp_path / "verification-git")
     service = VerificationService(root, bootstrap_dependencies=True)
@@ -462,11 +515,11 @@ def test_host_operation_executes_verification_prepare_cache(
             "run_id": started.run.id,
             "expected_state_version": started.run.state_version,
             "network_approval_ref": "APPROVED-NETWORK",
-            "expires_at": "2026-08-28T00:00:00+00:00",
+            "expires_at": "2099-01-01T00:00:00+00:00",
             "target_python": "3.12",
-            "platform": "windows-amd64",
+            "platform": "linux-amd64",
             "uv_lock_hash": lock_hash,
-            "execution_image": "python:3.12.14-bookworm@sha256:" + "a" * 64,
+            "execution_image": RUNTIME_VERSIONS.execution_image,
         },
         expected_state_version=started.run.state_version,
     )
@@ -494,7 +547,12 @@ def test_host_operation_executes_verification_prepare_cache(
     assert (cache / "audit-snapshot.json").is_file()
     assert (cache / "trivy" / "db.json").is_file()
     assert succeeded.result["files"]["requirements.txt"]
+    assert VerificationService(root, bootstrap_dependencies=True)._wheelhouse(root) == cache
     _make_writable(cache)
+    (cache / "fixture-1.0-py3-none-any.whl").write_bytes(b"tampered")
+    with pytest.raises(ExecutionServiceError) as drifted:
+        VerificationService(root, bootstrap_dependencies=True)._wheelhouse(root)
+    assert drifted.value.code == "DEPENDENCY_UNVERIFIED"
 
 
 class _GitRunner:

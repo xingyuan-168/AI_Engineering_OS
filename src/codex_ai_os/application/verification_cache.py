@@ -18,6 +18,8 @@ from codex_ai_os.domain.operations import HostOperation, HostOperationKind
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 
 CommandRunner = Callable[[list[str], Path, float], subprocess.CompletedProcess[bytes]]
+DEFAULT_VERIFICATION_PLATFORM = "linux-amd64"
+DEFAULT_VERIFICATION_PYTHON = "3.12"
 
 
 class VerificationCachePrepareError(RuntimeError):
@@ -57,6 +59,15 @@ class VerificationCachePreparer:
         target_python = _required_text(request, "target_python")
         target_platform = _required_text(request, "platform")
         approval_ref = _required_text(request, "network_approval_ref")
+        requested_image = _required_text(request, "execution_image")
+        platform_payload = validate_verification_target(
+            target_platform, target_python, expires_at
+        )
+        if requested_image != RUNTIME_VERSIONS.execution_image:
+            raise VerificationCachePrepareError(
+                "EXECUTION_IMAGE_MISMATCH",
+                "verification prepare authorization does not match the runtime image",
+            )
         lock_path = self.root / "uv.lock"
         if not lock_path.is_file():
             raise VerificationCachePrepareError(
@@ -73,14 +84,18 @@ class VerificationCachePreparer:
         target = cache_root / lock_hash
         manifest_path = target / "verification-cache-manifest.json"
         if manifest_path.is_file():
-            cached = _load_json(manifest_path)
-            if (
-                cached.get("operation_request_hash") == operation.request_hash
-                and cached.get("uv_lock_hash") == lock_hash
-                and cached.get("expires_at") == expires_at
-                and _manifest_files_exist(target, cached)
-            ):
-                return cached
+            try:
+                cached = validate_verification_cache(
+                    target,
+                    lock_path=lock_path,
+                    expected_platform=target_platform,
+                    expected_python=target_python,
+                    expected_request_hash=operation.request_hash,
+                )
+                if cached.get("expires_at") == expires_at:
+                    return cached
+            except (VerificationCachePrepareError, OSError, json.JSONDecodeError):
+                pass
             self._retain_existing_cache(target)
 
         staging = cache_root / f".staging-{operation.operation_id}-{operation.attempt_count}"
@@ -105,7 +120,6 @@ class VerificationCachePreparer:
                     "--locked",
                     "--format",
                     "requirements-txt",
-                    "--no-dev",
                     "--no-emit-project",
                     "--output-file",
                     str(requirements),
@@ -120,6 +134,14 @@ class VerificationCachePreparer:
                     "download",
                     "--require-hashes",
                     "--only-binary=:all:",
+                    "--platform",
+                    _pip_platform(target_platform),
+                    "--python-version",
+                    target_python,
+                    "--implementation",
+                    "cp",
+                    "--abi",
+                    "cp312",
                     "--dest",
                     str(staging),
                     "-r",
@@ -145,6 +167,7 @@ class VerificationCachePreparer:
                 requirements_content=requirements.read_bytes(),
                 audit_report=cast(Mapping[str, Any], audit_payload),
                 tool_version="pip-audit",
+                target_platform=platform_payload,
             )
             audit_snapshot.write_text(
                 json.dumps(snapshot_payload, ensure_ascii=False, indent=2, sort_keys=True)
@@ -161,6 +184,10 @@ class VerificationCachePreparer:
                 ],
                 "DEPENDENCY_UNVERIFIED",
             )
+            if not any(path.is_file() for path in trivy_cache.rglob("*")):
+                raise VerificationCachePrepareError(
+                    "DEPENDENCY_UNVERIFIED", "verification prepare produced no Trivy DB files"
+                )
             wheel_files = sorted(path.name for path in staging.glob("*.whl"))
             if not wheel_files:
                 raise VerificationCachePrepareError(
@@ -175,7 +202,7 @@ class VerificationCachePreparer:
                 "uv_lock_hash": lock_hash,
                 "target_python": target_python,
                 "platform": target_platform,
-                "execution_image": RUNTIME_VERSIONS.execution_image,
+                "execution_image": requested_image,
                 "expires_at": expires_at,
                 "prepared_at": datetime.now(UTC).isoformat(),
                 "requirements": {
@@ -251,22 +278,165 @@ def _required_text(request: dict[str, Any], key: str) -> str:
     return value
 
 
-def _manifest_files_exist(root: Path, manifest: Mapping[str, object]) -> bool:
-    files = manifest.get("files")
-    if not isinstance(files, dict):
-        return False
-    paths: list[str] = []
-    raw_files = cast(dict[object, object], files)
-    for raw_path in raw_files:
-        if not isinstance(raw_path, str):
-            return False
-        paths.append(raw_path)
-    return all((root / path).is_file() for path in paths)
+def validate_verification_cache(
+    root: Path,
+    *,
+    lock_path: Path,
+    expected_platform: str = DEFAULT_VERIFICATION_PLATFORM,
+    expected_python: str = DEFAULT_VERIFICATION_PYTHON,
+    expected_request_hash: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Fail closed unless every approved cache input and file is reproducible."""
+
+    if _is_link_like(root):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification cache root cannot be a link or junction"
+        )
+    cache = root.resolve()
+    manifest_path = cache / "verification-cache-manifest.json"
+    if not manifest_path.is_file():
+        raise VerificationCachePrepareError(
+            "SANDBOX_DEPENDENCIES_UNAVAILABLE",
+            "verification cache manifest is missing",
+        )
+    manifest = _load_json(manifest_path)
+    if manifest.get("schema_version") != RUNTIME_VERSIONS.api:
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "unsupported verification cache schema"
+        )
+    if manifest.get("kind") != HostOperationKind.VERIFICATION_PREPARE.value:
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "invalid verification cache kind"
+        )
+    if not isinstance(manifest.get("network_approval_ref"), str) or not str(
+        manifest["network_approval_ref"]
+    ).strip():
+        raise VerificationCachePrepareError(
+            "APPROVAL_REQUIRED", "verification cache has no network approval reference"
+        )
+    if expected_request_hash is not None and (
+        manifest.get("operation_request_hash") != expected_request_hash
+    ):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification cache request hash drifted"
+        )
+    if not lock_path.is_file():
+        raise VerificationCachePrepareError(
+            "SANDBOX_DEPENDENCIES_UNAVAILABLE", "uv.lock is required for verification"
+        )
+    lock_hash = _sha256(lock_path)
+    if manifest.get("uv_lock_hash") != lock_hash:
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification cache does not match uv.lock"
+        )
+    if manifest.get("target_python") != expected_python:
+        raise VerificationCachePrepareError(
+            "PLATFORM_MISMATCH", "verification cache Python target does not match"
+        )
+    if manifest.get("platform") != expected_platform:
+        raise VerificationCachePrepareError(
+            "PLATFORM_MISMATCH", "verification cache platform does not match"
+        )
+    _target_platform(expected_platform, expected_python)
+    if manifest.get("execution_image") != RUNTIME_VERSIONS.execution_image:
+        raise VerificationCachePrepareError(
+            "EXECUTION_IMAGE_MISMATCH", "verification cache execution image drifted"
+        )
+    _require_fresh_manifest(manifest, now=now)
+    if manifest.get("read_only") is not True:
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification cache is not declared read-only"
+        )
+
+    files_value = manifest.get("files")
+    if not isinstance(files_value, dict):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification cache file hashes are missing"
+        )
+    expected_files: dict[str, str] = {}
+    for raw_path, raw_hash in cast(dict[object, object], files_value).items():
+        if not isinstance(raw_path, str) or not isinstance(raw_hash, str):
+            raise VerificationCachePrepareError(
+                "DEPENDENCY_UNVERIFIED", "verification cache file hash entry is invalid"
+            )
+        safe_path = _safe_relative(raw_path)
+        if safe_path != raw_path or not _is_sha256(raw_hash):
+            raise VerificationCachePrepareError(
+                "DEPENDENCY_UNVERIFIED", "verification cache file hash entry is invalid"
+            )
+        expected_files[raw_path] = raw_hash
+    actual_files = _file_hashes(cache)
+    if actual_files != expected_files:
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification cache file hashes drifted"
+        )
+
+    _require_file_descriptor(
+        cache, manifest.get("requirements"), expected_path="requirements.txt"
+    )
+    _require_file_descriptor(
+        cache, manifest.get("pip_audit_snapshot"), expected_path="audit-snapshot.json"
+    )
+    trivy = _as_mapping(manifest.get("trivy_cache"), "trivy_cache")
+    trivy_root = cache / "trivy"
+    if (
+        trivy.get("path") != "trivy"
+        or not trivy_root.is_dir()
+        or not any(path.is_file() for path in trivy_root.rglob("*"))
+        or trivy.get("sha256") != _tree_hash(trivy_root)
+    ):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "Trivy cache hash drifted"
+        )
+    wheelhouse = _as_mapping(manifest.get("wheelhouse"), "wheelhouse")
+    wheels_value = wheelhouse.get("wheels")
+    if wheelhouse.get("path") != "." or not isinstance(wheels_value, list):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification wheelhouse manifest is invalid"
+        )
+    wheels = tuple(cast(list[object], wheels_value))
+    if not wheels or not all(
+        isinstance(item, str)
+        and item == Path(item).name
+        and item.casefold().endswith(".whl")
+        for item in wheels
+    ):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification wheel list is invalid"
+        )
+    actual_wheels = tuple(sorted(path.name for path in cache.glob("*.whl")))
+    if tuple(sorted(cast(tuple[str, ...], wheels))) != actual_wheels:
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification wheelhouse contents drifted"
+        )
+    if not _tree_is_read_only(cache):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification cache permissions are writable"
+        )
+    return manifest
+
+
+def validate_verification_target(
+    target_platform: str,
+    target_python: str,
+    expires_at: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, str]:
+    platform_payload = _target_platform(target_platform, target_python)
+    _require_future_expiry(expires_at, now=now)
+    return platform_payload
 
 
 def _file_hashes(root: Path) -> dict[str, str]:
     hashes: dict[str, str] = {}
     for path in sorted(root.rglob("*")):
+        if _is_link_like(path):
+            raise VerificationCachePrepareError(
+                "DEPENDENCY_UNVERIFIED",
+                f"verification cache contains a link or junction: {path}",
+            )
         if path.is_file() and path.name != "verification-cache-manifest.json":
             hashes[path.relative_to(root).as_posix()] = _sha256(path)
     return hashes
@@ -275,6 +445,132 @@ def _file_hashes(root: Path) -> dict[str, str]:
 def _tree_hash(root: Path) -> str:
     payload = json.dumps(_file_hashes(root), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _target_platform(name: str, python_version: str) -> dict[str, str]:
+    if python_version != "3.12":
+        raise VerificationCachePrepareError(
+            "PLATFORM_MISMATCH", "0.2.0 verification requires Python 3.12"
+        )
+    platforms = {
+        "linux-amd64": {"system": "linux", "machine": "x86_64"},
+        "linux-arm64": {"system": "linux", "machine": "aarch64"},
+    }
+    try:
+        selected = platforms[name]
+    except KeyError as exc:
+        raise VerificationCachePrepareError(
+            "PLATFORM_MISMATCH", f"unsupported verification platform: {name}"
+        ) from exc
+    return {**selected, "python": python_version}
+
+
+def _pip_platform(name: str) -> str:
+    return {
+        "linux-amd64": "manylinux2014_x86_64",
+        "linux-arm64": "manylinux2014_aarch64",
+    }[name]
+
+
+def _require_future_expiry(value: str, *, now: datetime | None = None) -> None:
+    expiry = _parse_timestamp(value, "expires_at")
+    current = (now or datetime.now(UTC)).astimezone(UTC)
+    if expiry <= current:
+        raise VerificationCachePrepareError(
+            "VERIFICATION_CACHE_EXPIRED", "verification cache expiry must be in the future"
+        )
+
+
+def _require_fresh_manifest(
+    manifest: Mapping[str, object], *, now: datetime | None = None
+) -> None:
+    prepared = _parse_timestamp(manifest.get("prepared_at"), "prepared_at")
+    expiry = _parse_timestamp(manifest.get("expires_at"), "expires_at")
+    current = (now or datetime.now(UTC)).astimezone(UTC)
+    if prepared > current or expiry <= prepared:
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "verification cache timestamps are invalid"
+        )
+    if expiry <= current:
+        raise VerificationCachePrepareError(
+            "VERIFICATION_CACHE_EXPIRED", "verification cache approval expired"
+        )
+
+
+def _parse_timestamp(value: object, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", f"verification cache {field} is missing"
+        )
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", f"verification cache {field} is invalid"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", f"verification cache {field} has no timezone"
+        )
+    return parsed.astimezone(UTC)
+
+
+def _safe_relative(value: str) -> str:
+    normalized = value.replace("\\", "/")
+    path = Path(normalized)
+    if (
+        not normalized
+        or path.is_absolute()
+        or normalized.startswith("/")
+        or ".." in normalized.split("/")
+    ):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", f"unsafe verification cache path: {value}"
+        )
+    return normalized
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _as_mapping(value: object, field: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", f"verification cache {field} is invalid"
+        )
+    return cast(dict[str, object], value)
+
+
+def _require_file_descriptor(
+    root: Path, value: object, *, expected_path: str
+) -> None:
+    descriptor = _as_mapping(value, expected_path)
+    path_value = descriptor.get("path")
+    hash_value = descriptor.get("sha256")
+    if path_value != expected_path or not isinstance(hash_value, str):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", f"verification cache {expected_path} is invalid"
+        )
+    path = root / expected_path
+    if not path.is_file() or hash_value != _sha256(path):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", f"verification cache {expected_path} hash drifted"
+        )
+
+
+def _tree_is_read_only(root: Path) -> bool:
+    write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+    paths = (root, *root.rglob("*"))
+    return all(
+        not _is_link_like(path) and path.stat().st_mode & write_bits == 0
+        for path in paths
+    )
+
+
+def _is_link_like(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or bool(is_junction is not None and is_junction())
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -322,7 +618,11 @@ def _run_command(
 
 
 __all__ = [
+    "DEFAULT_VERIFICATION_PLATFORM",
+    "DEFAULT_VERIFICATION_PYTHON",
     "CommandRunner",
     "VerificationCachePrepareError",
     "VerificationCachePreparer",
+    "validate_verification_cache",
+    "validate_verification_target",
 ]

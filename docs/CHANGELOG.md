@@ -16,6 +16,7 @@
 - `resume` 会从持久化 Host Operation、租约和失败状态重建最多 4 个可执行 `host_operation` actions，避免进程中断后丢失外部副作用恢复入口。
 - Review report、Check report 与文档 Gate 校验改为从绑定 Git Commit 或受管 `.codex-os/artifacts/` 审计区复算 hash，不再信任活动 Worktree 中未提交的当前文件。
 - 非零验证检查现在生成 `failed` Check Evidence、失败报告和可恢复 blocker，不再构造 `passed + 非零 exit_code` 的无效证据。
+- verification prepare 默认目标修正为 Bookworm `linux-amd64` / Python 3.12，下载对应 manylinux wheels；正式消费端复核审批、期限、镜像、平台、完整 manifest/hash、Trivy tree、只读权限与 link/junction，沙箱未启动也会生成 failed Check Evidence。
 - Runtime Routing 改用 canonical `backend-project`、`frontend-project`、`large-project` Profile 名，短名只作为兼容 alias；`routing_decisions` 同步写入 0007 的七维评分、canonical profiles、risk、workflow 和 schema 版本字段。
 - Profile Router 从项目 `profiles/*.yaml` 读取 allowed profile 名；缺省 fixture 保留内置安全集合，large 自动扩展不再绕过 Profile 资源事实源。
 - 以 CQ-OS `400a930` 为研究基线，移植其 MIT `@cq/governance` 包的 Baseline + Project 单调策略、默认拒绝、角色/路径负向测试向量并保留 attribution；新增带 hash 的 `EffectiveGovernancePolicy`，Profile Schema 1.2 声明任务模板、影响路径、增量 Gate 证据与 Reviewer，Routing 保存七维输入、override、依赖和 policy hash，审批适配器忽略自报身份的提权语义。

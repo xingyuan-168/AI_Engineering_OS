@@ -297,7 +297,7 @@ Runtime 从 task 找 Worktree，通过 ExecutionService 建立一个或多个锁
 
 ### 7.2 `verification_prepare`
 
-输入：`project_root`、`run_id`、`expected_state_version`、`idempotency_key`、`network_approval_ref`、`expires_at`、目标 Python/平台。输出与 `uv.lock` hash 绑定的 wheelhouse manifest、pip-audit snapshot 和 Trivy DB snapshot。prepare 是显式联网 Host Operation；正式 `verification_run` 只读消费已批准、未过期且 hash/平台匹配的缓存。
+输入：`project_root`、`run_id`、`expected_state_version`、`idempotency_key`、`network_approval_ref`、`expires_at`、目标 Python/平台；0.2.0 默认且正式支持 `3.12` / `linux-amd64`，对应 Bookworm OCI 而非 Windows Host。输出与 `uv.lock` hash 绑定的 wheelhouse manifest、pip-audit snapshot 和 Trivy DB snapshot。prepare 是显式联网 Host Operation；正式 `verification_run` 会复核审批引用、有效期、执行镜像、目标平台、manifest 全量文件 hash、wheel 清单、Trivy tree hash、只读权限以及 symlink/junction，任一漂移均阻塞。
 
 ### 7.3 `host_operation_execute` / `host_operation_reconcile`
 

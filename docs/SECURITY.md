@@ -102,7 +102,7 @@ ExecutionService 检查 task lease、Commit 和 clean baseline，写 execution i
 - 依赖只从 `uv.lock` 安装，使用 `uv lock --check`；变更更新 License、SBOM、审计和 ADR（重大变化）。
 - `pip-audit` 报告与来源 Commit 绑定；无法查询 advisory 源时状态是 unavailable，不是假定通过。
 - Plugin validator 校验 manifest、MCP Schema、Skill frontmatter、Agent Profile 和 Hook fixture；Plugin 版本与核心 0.2.0/Plugin API 1.2 一致。
-- 依赖与扫描缓存只能由经网络审批的 verification prepare 生成，分别绑定 `uv.lock` hash、平台、时间和来源；正式 Gate 只离线消费只读 wheelhouse、pip-audit snapshot 和 Trivy DB snapshot。
+- 依赖与扫描缓存只能由经网络审批的 verification prepare 生成，分别绑定 `uv.lock` hash、Linux OCI 平台、Python 版本、执行镜像、时间和来源；正式 Gate 只离线消费逐文件 hash 校验且无 symlink/junction 的只读 wheelhouse、pip-audit snapshot 和非空 Trivy DB snapshot。
 - `.codex/` Hook 必须由人复核信任；Hook 只能调用受限入口，不携带 Secret，不把内部 Workflow 事件冒充 Host 生命周期事件。
 - 项目 `.agents/skills/` 不得创建 Plugin 同名 override；Runtime 拒绝歧义 Skill resolution。
 

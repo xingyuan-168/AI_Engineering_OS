@@ -19,6 +19,10 @@ from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.release import ReleaseCandidateService
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.application.verification import VerificationService
+from codex_ai_os.application.verification_cache import (
+    DEFAULT_VERIFICATION_PLATFORM,
+    DEFAULT_VERIFICATION_PYTHON,
+)
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError, WorkflowResult
 from codex_ai_os.application.worktree import WorktreeService, WorktreeServiceError
 from codex_ai_os.cli.output import emit, error_envelope, success_envelope
@@ -524,8 +528,12 @@ def verification_prepare_command(
     idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
     network_approval_ref: Annotated[str, typer.Option("--network-approval-ref")],
     expires_at: Annotated[str, typer.Option("--expires-at")],
-    target_python: Annotated[str, typer.Option("--target-python")] = "3.12",
-    platform: Annotated[str, typer.Option("--platform")] = "windows-amd64",
+    target_python: Annotated[
+        str, typer.Option("--target-python")
+    ] = DEFAULT_VERIFICATION_PYTHON,
+    platform: Annotated[
+        str, typer.Option("--platform")
+    ] = DEFAULT_VERIFICATION_PLATFORM,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:

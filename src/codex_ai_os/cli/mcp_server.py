@@ -24,6 +24,10 @@ from codex_ai_os.application.release import ReleaseCandidateService
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.application.responses import error_envelope, success_envelope
 from codex_ai_os.application.verification import VerificationService
+from codex_ai_os.application.verification_cache import (
+    DEFAULT_VERIFICATION_PLATFORM,
+    DEFAULT_VERIFICATION_PYTHON,
+)
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError, WorkflowResult
 from codex_ai_os.application.worktree import WorktreeService, WorktreeServiceError
 from codex_ai_os.domain.config import ProjectType, RiskLevel
@@ -480,8 +484,8 @@ def verification_prepare(
     idempotency_key: str,
     network_approval_ref: str,
     expires_at: str,
-    target_python: str = "3.12",
-    platform: str = "windows-amd64",
+    target_python: str = DEFAULT_VERIFICATION_PYTHON,
+    platform: str = DEFAULT_VERIFICATION_PLATFORM,
 ) -> dict[str, Any]:
     """Persist an approved network operation to prepare offline verification caches."""
 

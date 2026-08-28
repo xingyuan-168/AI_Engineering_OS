@@ -245,7 +245,7 @@ def test_cli_wrappers_cover_verification_handoff_cleanup_and_g4(
             "--network-approval-ref",
             "APPROVED-NETWORK",
             "--expires-at",
-            "2026-08-28T00:00:00+00:00",
+            "2099-01-01T00:00:00+00:00",
             "--project-root",
             str(root),
             "--json",

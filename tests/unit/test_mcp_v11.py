@@ -45,7 +45,7 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
         expected_state_version=int(cast(dict[str, Any], started_data["run"])["state_version"]),
         idempotency_key="prepare-cache",
         network_approval_ref="APPROVED-NETWORK",
-        expires_at="2026-08-28T00:00:00+00:00",
+        expires_at="2099-01-01T00:00:00+00:00",
     )
     assert prepare["ok"] is True
     assert prepare["next_action"]["kind"] == "host_operation"

@@ -6,6 +6,12 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from codex_ai_os.application.verification_cache import (
+    DEFAULT_VERIFICATION_PLATFORM,
+    DEFAULT_VERIFICATION_PYTHON,
+    VerificationCachePrepareError,
+    validate_verification_target,
+)
 from codex_ai_os.domain.config import RiskLevel
 from codex_ai_os.domain.invocation import InvocationContext
 from codex_ai_os.domain.operations import (
@@ -72,8 +78,8 @@ class VerificationPrepareService:
         idempotency_key: str,
         network_approval_ref: str,
         expires_at: str,
-        target_python: str = "3.12",
-        platform: str = "windows-amd64",
+        target_python: str = DEFAULT_VERIFICATION_PYTHON,
+        platform: str = DEFAULT_VERIFICATION_PLATFORM,
     ) -> ScheduledOperation:
         if not network_approval_ref.strip():
             raise MaintenanceOperationError(
@@ -81,6 +87,10 @@ class VerificationPrepareService:
             )
         if not expires_at.strip():
             raise MaintenanceOperationError("CONFIG_INVALID", "expires_at is required")
+        try:
+            validate_verification_target(platform, target_python, expires_at)
+        except VerificationCachePrepareError as exc:
+            raise MaintenanceOperationError(exc.code, str(exc)) from exc
         lock_path = self.config.root / "uv.lock"
         if not lock_path.is_file():
             raise MaintenanceOperationError(
