@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
@@ -474,7 +474,7 @@ class WorkflowEngine:
             except EvidenceError as exc:
                 raise WorkflowError(exc.code, str(exc), 40) from exc
 
-        publication: dict[str, Any] | None = None
+        publication_intent: dict[str, object] | None = None
         if approved and gate is Gate.G4 and self.config.schema_version != "1.0":
             if g4_evidence is None:
                 raise WorkflowError(
@@ -489,8 +489,8 @@ class WorkflowEngine:
                     40,
                 )
             try:
-                publication = asdict(
-                    self.g4_publisher.authorize_and_publish(run, g4_evidence)
+                publication_intent = self.g4_publisher.verify_publication_intent(
+                    run, g4_evidence
                 )
             except ReleaseGovernanceError as exc:
                 raise WorkflowError(exc.code, str(exc), 50) from exc
@@ -515,6 +515,45 @@ class WorkflowEngine:
                 evidence_bundle_hash=bundle.bundle_hash,
             )
 
+        if approved and gate is Gate.G4 and self.config.schema_version != "1.0":
+            assert bundle is not None
+            assert g4_evidence is not None
+            assert publication_intent is not None
+            initial_checkpoint: dict[str, Any] = {
+                "next_action": None,
+                "next_actions": [],
+                "approved_gate": Gate.G4.value,
+                "pending_gate": None,
+                "last_commit_sha": run.integration_head,
+            }
+            try:
+                authorized = self.store.approval_transition(
+                    run=run,
+                    gate=Gate.G4,
+                    approved=True,
+                    reviewer=trusted_reviewer,
+                    reason=reason,
+                    target_phase=run.workflow_phase,
+                    target_status=RunStatus.RUNNING,
+                    checkpoint=initial_checkpoint,
+                    next_task=None,
+                    evidence_bundle_id=bundle.id,
+                    evidence_bundle_hash=bundle.bundle_hash,
+                    release_authority=g4_evidence.model_dump(mode="json"),
+                    host_operation_kind=HostOperationKind.RELEASE_PUBLISH,
+                    host_operation_idempotency_key=(
+                        f"{run.id}:{run.state_version}:release_publish"
+                    ),
+                    host_operation_request={
+                        "schema_version": RUNTIME_VERSIONS.api,
+                        **publication_intent,
+                    },
+                    host_operation_release_id=str(publication_intent["release_id"]),
+                )
+            except WorkflowConflictError as exc:
+                raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
+            return self._result(authorized)
+
         next_version = run.state_version + 1
         next_task: TaskRecord | None = None
         if approved:
@@ -525,7 +564,6 @@ class WorkflowEngine:
                 checkpoint = _checkpoint(
                     next_action,
                     approved_gate=gate,
-                    release_publication=publication,
                 )
             else:
                 target_status = RunStatus.RUNNING
@@ -658,6 +696,10 @@ class WorkflowEngine:
                 )
             if acquired.kind is HostOperationKind.RELEASE_PREPARE:
                 return self._execute_release_prepare_operation(
+                    acquired, lease_owner=invocation.principal
+                )
+            if acquired.kind is HostOperationKind.RELEASE_PUBLISH:
+                return self._execute_release_publish_operation(
                     acquired, lease_owner=invocation.principal
                 )
             if acquired.kind is HostOperationKind.VERIFICATION_PREPARE:
@@ -893,6 +935,80 @@ class WorkflowEngine:
             },
         )
         return self._result(updated)
+
+    def _execute_release_publish_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        if operation.run_id is None or self.g4_publisher is None:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE", "release publish context is unavailable", 40
+            )
+        approval_value = operation.request.get("approval")
+        if not isinstance(approval_value, dict):
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE", "release publish approval is missing", 40
+            )
+        try:
+            approval = G4ApprovalInput.model_validate(approval_value)
+            run = self._get_run(operation.run_id)
+            publication = self.g4_publisher.authorize_and_publish(run, approval)
+        except (ReleaseGovernanceError, ValidationError) as exc:
+            code = (
+                exc.code if isinstance(exc, ReleaseGovernanceError) else "CONFIG_INVALID"
+            )
+            if code in {"GITHUB_RELEASE_BLOCKED", "REMOTE_UNREACHABLE"}:
+                self.operations.mark_outcome_unknown(
+                    operation.operation_id,
+                    expected_version=operation.state_version,
+                    lease_owner=lease_owner,
+                    error_code=code,
+                )
+                raise WorkflowError("RECONCILIATION_REQUIRED", str(exc), 50) from exc
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code=code,
+            )
+            raise WorkflowError(code, str(exc), 50) from exc
+        result = {
+            "pr_number": publication.pr_number,
+            "pr_url": publication.pr_url,
+            "pr_head_commit": publication.pr_head_commit,
+            "merge_commit": publication.merge_commit,
+            "tag": publication.tag,
+            "github_release_id": publication.github_release_id,
+            "github_release_url": publication.github_release_url,
+            "final_manifest_path": publication.final_manifest_path,
+            "final_manifest_hash": publication.final_manifest_hash,
+        }
+        succeeded = self.operations.mark_succeeded(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            lease_owner=lease_owner,
+            result=result,
+        )
+        try:
+            completed = self.store.complete_release_publish(
+                run=run,
+                operation_id=succeeded.operation_id,
+                publication=result,
+            )
+        except WorkflowConflictError as exc:
+            raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
+        return self._result(completed)
 
     def _execute_verification_prepare_operation(
         self, operation: HostOperation, *, lease_owner: str

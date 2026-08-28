@@ -444,7 +444,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         "release",
     )
     merge_commit = "e" * 40
-    completed = engine.submit_approval(
+    authorized = engine.submit_approval(
         current.run.id,
         gate=Gate.G4,
         approved=True,
@@ -461,6 +461,19 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
                 authorized_by="release-owner",
             ),
         ),
+    )
+    assert authorized.run.run_status.value == "running"
+    assert authorized.next_action is not None
+    assert authorized.next_action.kind is ActionKind.HOST_OPERATION
+    publish_operation = engine.operations.get(str(authorized.next_action.operation_id))
+    assert publish_operation.kind.value == "release_publish"
+    completed = engine.execute_host_operation(
+        publish_operation.operation_id,
+        expected_operation_version=int(
+            authorized.next_action.expected_operation_version or 0
+        ),
+        idempotency_key=publish_operation.idempotency_key,
+        invocation=InvocationContext.local(InvocationSource.CLI),
     )
     assert completed.run.run_status.value == "completed"
     assert completed.run.checkpoint["release_publication"]["tag"] == "v0.2.0"

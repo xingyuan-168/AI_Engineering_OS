@@ -43,6 +43,10 @@ class G4PublicationResult:
 
 
 class G4Publisher(Protocol):
+    def verify_publication_intent(
+        self, run: WorkflowRun, approval: G4ApprovalInput
+    ) -> dict[str, object]: ...
+
     def authorize_and_publish(
         self, run: WorkflowRun, approval: G4ApprovalInput
     ) -> G4PublicationResult: ...
@@ -61,6 +65,87 @@ class GitHubReleaseGovernanceService:
     def authorize_and_publish(
         self, run: WorkflowRun, approval: G4ApprovalInput
     ) -> G4PublicationResult:
+        self.verify_publication_intent(run, approval)
+        assert run.integration_head is not None
+        release = self._release_record(run.id)
+        tag = f"v{approval.version}"
+        self._ensure_tag(tag, approval.merge_commit, approval.release_authority.authorized_by)
+        release_data = self._ensure_github_release(tag, Path(str(release["artifact_root"])))
+        release_id = str(release_data.get("id") or "")
+        release_url = str(release_data.get("url") or "")
+        if not release_id or not release_url or release_data.get("isDraft") is True:
+            self._mark_blocked(run.id, "GitHub Release evidence is incomplete")
+            raise ReleaseGovernanceError(
+                "GITHUB_RELEASE_BLOCKED", "GitHub Release was not published successfully"
+            )
+
+        final_path, final_hash = self._write_final_manifest(
+            run=run,
+            approval=approval,
+            release=dict(release),
+            tag=tag,
+            release_id=release_id,
+            release_url=release_url,
+        )
+        now = _utc_now()
+        authority = {
+            **approval.release_authority.model_dump(mode="json"),
+            "final_manifest_path": final_path,
+            "final_manifest_hash": final_hash,
+            "github_release_url": release_url,
+        }
+        with self.database.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE release_records
+                SET status = 'published', pr_number = ?, pr_url_hash = ?, pr_head = ?,
+                    pr_base = ?, pr_head_commit = ?, merge_commit = ?, tag = ?,
+                    github_release_id = ?, authorization_json = ?,
+                    final_manifest_path = ?, final_manifest_hash = ?, reconciled_at = ?,
+                    state_version = state_version + 1, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (
+                    approval.pr_number,
+                    hashlib.sha256(approval.pr_url.encode()).hexdigest(),
+                    run.integration_branch,
+                    run.target_branch,
+                    run.integration_head,
+                    approval.merge_commit.casefold(),
+                    tag,
+                    release_id,
+                    json.dumps(authority, sort_keys=True, separators=(",", ":")),
+                    final_path,
+                    final_hash,
+                    now,
+                    now,
+                    run.id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE version_records SET status = 'released', source_commit = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (approval.merge_commit.casefold(), now, str(release["version_record_id"])),
+            )
+            connection.commit()
+        return G4PublicationResult(
+            pr_number=approval.pr_number,
+            pr_url=approval.pr_url,
+            pr_head_commit=run.integration_head,
+            merge_commit=approval.merge_commit.casefold(),
+            tag=tag,
+            github_release_id=release_id,
+            github_release_url=release_url,
+            final_manifest_path=final_path,
+            final_manifest_hash=final_hash,
+        )
+
+    def verify_publication_intent(
+        self, run: WorkflowRun, approval: G4ApprovalInput
+    ) -> dict[str, object]:
         if approval.version != RUNTIME_VERSIONS.software:
             raise ReleaseGovernanceError(
                 "VERSION_MISMATCH",
@@ -111,77 +196,15 @@ class GitHubReleaseGovernanceService:
         self._require_ancestor(str(release["source_commit"]), run.integration_head)
         self._require_ancestor(run.integration_head, approval.merge_commit)
         self._require_ancestor(approval.merge_commit, f"origin/{run.target_branch}")
-
-        tag = f"v{approval.version}"
-        self._ensure_tag(tag, approval.merge_commit, approval.release_authority.authorized_by)
-        release_data = self._ensure_github_release(tag, Path(str(release["artifact_root"])))
-        release_id = str(release_data.get("id") or "")
-        release_url = str(release_data.get("url") or "")
-        if not release_id or not release_url or release_data.get("isDraft") is True:
-            self._mark_blocked(run.id, "GitHub Release evidence is incomplete")
-            raise ReleaseGovernanceError(
-                "GITHUB_RELEASE_BLOCKED", "GitHub Release was not published successfully"
-            )
-
-        final_path, final_hash = self._write_final_manifest(
-            run=run,
-            approval=approval,
-            release=dict(release),
-            tag=tag,
-            release_id=release_id,
-            release_url=release_url,
-        )
-        now = _utc_now()
-        authority = {
-            **approval.release_authority.model_dump(mode="json"),
-            "final_manifest_path": final_path,
-            "final_manifest_hash": final_hash,
-            "github_release_url": release_url,
+        return {
+            "release_id": str(release["id"]),
+            "approval": approval.model_dump(mode="json"),
+            "integration_head": run.integration_head,
+            "integration_branch": run.integration_branch,
+            "target_branch": run.target_branch,
+            "candidate_commit": release["candidate_commit"],
+            "candidate_manifest_hash": release["candidate_manifest_hash"],
         }
-        with self.database.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                """
-                UPDATE release_records
-                SET status = 'published', pr_number = ?, pr_url_hash = ?, pr_head = ?,
-                    pr_base = ?, pr_head_commit = ?, merge_commit = ?, tag = ?,
-                    github_release_id = ?, authorization_json = ?,
-                    state_version = state_version + 1, updated_at = ?
-                WHERE run_id = ?
-                """,
-                (
-                    approval.pr_number,
-                    hashlib.sha256(approval.pr_url.encode()).hexdigest(),
-                    run.integration_branch,
-                    run.target_branch,
-                    run.integration_head,
-                    approval.merge_commit.casefold(),
-                    tag,
-                    release_id,
-                    json.dumps(authority, sort_keys=True, separators=(",", ":")),
-                    now,
-                    run.id,
-                ),
-            )
-            connection.execute(
-                """
-                UPDATE version_records SET status = 'released', source_commit = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (approval.merge_commit.casefold(), now, str(release["version_record_id"])),
-            )
-            connection.commit()
-        return G4PublicationResult(
-            pr_number=approval.pr_number,
-            pr_url=approval.pr_url,
-            pr_head_commit=run.integration_head,
-            merge_commit=approval.merge_commit.casefold(),
-            tag=tag,
-            github_release_id=release_id,
-            github_release_url=release_url,
-            final_manifest_path=final_path,
-            final_manifest_hash=final_hash,
-        )
 
     def _release_record(self, run_id: str) -> sqlite3.Row:
         with self.database.connection() as connection:

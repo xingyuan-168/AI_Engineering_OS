@@ -70,6 +70,8 @@ G2 批准事务只写入审批、绑定的 evidence/policy/routing hash 与 `int
 
 G3 批准同样只在事务中写入审批、验证缓存绑定和 `release_prepare` Host Operation。executor 幂等建立 Release task/Worktree，在断网 OCI 中挂载已批准 wheelhouse，使用 integration Commit 时间作为 `SOURCE_DATE_EPOCH` 构建 wheel、sdist 和 Plugin 包；制品先进入 operation 专属 staging，完整复算 hash 后原子提升为 candidate。staging 残留必须人工保留并对账；已提升但未入库的 candidate 仅在重试且 manifest/source/lock/全部文件 hash 一致时恢复索引。
 
+G4 审批调用只执行只读 PR、merge Commit、target ancestry、候选 manifest 与发布 authority 预检，并在审批事务中写入 `release_publish` Host Operation；不得创建 tag、上传资产或完成 Workflow。executor 重新校验相同意图并完成远端对账，先将 operation 标记 succeeded，再在受约束事务中把 Workflow 置为 `completed`；任一步结果未知都保持 `reconcile_required`。
+
 ## 5. 四条 V1 Workflow
 
 ### `new-project`

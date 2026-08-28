@@ -281,6 +281,8 @@ G4 必增字段：
 
 Runtime 构建并校验当前 Gate bundle；调用方 hash 与当前 bundle 不同返回 `EVIDENCE_STALE`。G4 还实时查询 GitHub，验证 PR/branch/Commit/merge 包含关系。批准 Gate 不自动授权部署。
 
+API 1.2 的 G4 成功响应表示发布授权与 `release_publish` Operation 已持久化，Workflow 仍为 `running` 并返回 `host_operation` next action；它不表示 tag/Release 已创建。只有 executor 对账成功后才返回 `workflow_phase=completed` 与最终发布信息。
+
 ## 7. 执行与验证
 
 ### 7.1 `verification_run`

@@ -492,6 +492,7 @@ class WorkflowStore:
         host_operation_kind: HostOperationKind | None = None,
         host_operation_idempotency_key: str | None = None,
         host_operation_request: dict[str, Any] | None = None,
+        host_operation_release_id: str | None = None,
     ) -> WorkflowRun:
         now = _utc_now()
         new_version = run.state_version + 1
@@ -520,6 +521,7 @@ class WorkflowStore:
                         connection,
                         project_id=run.project_id,
                         run_id=run.id,
+                        release_id=host_operation_release_id,
                         kind=host_operation_kind,
                         idempotency_key=host_operation_idempotency_key,
                         request=host_operation_request,
@@ -610,6 +612,58 @@ class WorkflowStore:
                         "reason": reason,
                         "operation_id": operation_id,
                     },
+                )
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
+    def complete_release_publish(
+        self,
+        *,
+        run: WorkflowRun,
+        operation_id: str,
+        publication: dict[str, Any],
+    ) -> WorkflowRun:
+        now = _utc_now()
+        checkpoint = {
+            **run.checkpoint,
+            "next_action": {"kind": "complete"},
+            "next_actions": [{"kind": "complete"}],
+            "pending_host_operation_id": None,
+            "release_publication": publication,
+        }
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _assert_run_version(connection, run.id, run.state_version)
+                operation = connection.execute(
+                    "SELECT status FROM host_operations WHERE operation_id = ? AND run_id = ?",
+                    (operation_id, run.id),
+                ).fetchone()
+                if operation is None or str(operation["status"]) != "succeeded":
+                    raise WorkflowConflictError(
+                        "release publication operation is not succeeded"
+                    )
+                _update_run(
+                    connection,
+                    run,
+                    target_phase=WorkflowPhase.COMPLETED,
+                    target_status=RunStatus.COMPLETED,
+                    checkpoint=checkpoint,
+                    now=now,
+                )
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=None,
+                    event_type="release.published",
+                    idempotency_key=(
+                        f"{run.id}:{run.state_version + 1}:release.published"
+                    ),
+                    payload={"operation_id": operation_id, **publication},
                 )
                 connection.commit()
             except (sqlite3.Error, WorkflowConflictError):
