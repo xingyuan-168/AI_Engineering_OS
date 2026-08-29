@@ -968,7 +968,11 @@ class WorkflowEngine:
             code = (
                 exc.code if isinstance(exc, ReleaseGovernanceError) else "CONFIG_INVALID"
             )
-            if code in {"GITHUB_RELEASE_BLOCKED", "REMOTE_UNREACHABLE"}:
+            if code in {
+                "GITHUB_RELEASE_BLOCKED",
+                "REMOTE_UNREACHABLE",
+                "OPERATION_RECONCILE_REQUIRED",
+            }:
                 self.operations.mark_outcome_unknown(
                     operation.operation_id,
                     expected_version=operation.state_version,
@@ -993,6 +997,7 @@ class WorkflowEngine:
             "github_release_url": publication.github_release_url,
             "final_manifest_path": publication.final_manifest_path,
             "final_manifest_hash": publication.final_manifest_hash,
+            "external_reconciliation": publication.external_reconciliation,
         }
         succeeded = self.operations.mark_succeeded(
             operation.operation_id,

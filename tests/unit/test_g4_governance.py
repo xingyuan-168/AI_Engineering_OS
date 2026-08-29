@@ -99,11 +99,22 @@ def test_g4_command_json_tag_and_release_failures_are_auditable(tmp_path: Path) 
     artifacts.mkdir(parents=True)
     (artifacts / "artifact.whl").write_bytes(b"wheel")
     release_runner = _ReleaseRunner()
-    release = GitHubReleaseGovernanceService(root, runner=release_runner)._ensure_github_release(
-        "v0.2.0", artifacts
-    )
+    service = GitHubReleaseGovernanceService(root, runner=release_runner)
+    release = service._ensure_draft_release("v0.2.0", "e" * 40)
     assert release["id"] == "R_1"
+    assert release["isDraft"] is True
     assert any(command[:3] == ["gh", "release", "create"] for command in release_runner.commands)
+
+    asset_runner = _AssetRunner()
+    asset_service = GitHubReleaseGovernanceService(root, runner=asset_runner)
+    reconciled = asset_service._reconcile_assets(
+        "v0.2.0",
+        asset_runner.release(),
+        {"artifact.whl": artifacts / "artifact.whl"},
+    )
+    assert reconciled["artifact.whl"]["sha256"]
+    published = asset_service._publish_release("v0.2.0", asset_runner.release())
+    assert published["isDraft"] is False
 
 
 def test_final_release_manifest_is_idempotent_and_immutable(tmp_path: Path) -> None:
@@ -114,10 +125,14 @@ def test_final_release_manifest_is_idempotent_and_immutable(tmp_path: Path) -> N
     )
     release: dict[str, object] = {
         "source_commit": "9" * 40,
+        "integration_source_commit": "9" * 40,
+        "candidate_commit": "8" * 40,
         "manifest_hash": "1" * 64,
         "sbom_hash": "2" * 64,
         "checksums_hash": "3" * 64,
         "rollback_hash": "4" * 64,
+        "registry_index_digest": "5" * 64,
+        "platform_digest": "6" * 64,
     }
     first = service._write_final_manifest(
         run=run,
@@ -126,6 +141,7 @@ def test_final_release_manifest_is_idempotent_and_immutable(tmp_path: Path) -> N
         tag="v0.2.0",
         release_id="R_1",
         release_url="https://github.com/example/ai-os/releases/tag/v0.2.0",
+        reconciled_assets={"artifact.whl": {"sha256": "7" * 64}},
     )
     assert service._write_final_manifest(
         run=run,
@@ -134,6 +150,7 @@ def test_final_release_manifest_is_idempotent_and_immutable(tmp_path: Path) -> N
         tag="v0.2.0",
         release_id="R_1",
         release_url="https://github.com/example/ai-os/releases/tag/v0.2.0",
+        reconciled_assets={"artifact.whl": {"sha256": "7" * 64}},
     ) == first
     target = root / first[0]
     payload = json.loads(target.read_text(encoding="utf-8"))
@@ -147,8 +164,49 @@ def test_final_release_manifest_is_idempotent_and_immutable(tmp_path: Path) -> N
             tag="v0.2.0",
             release_id="R_1",
             release_url="https://github.com/example/ai-os/releases/tag/v0.2.0",
+            reconciled_assets={"artifact.whl": {"sha256": "7" * 64}},
         )
     assert changed.value.code == "RELEASE_SOURCE_CHANGED"
+
+
+def test_release_assets_resume_partial_and_unknown_uploads(tmp_path: Path) -> None:
+    root = _project(tmp_path / "asset-reconcile")
+    first = root / ".codex-os" / "artifacts" / "first.whl"
+    second = root / ".codex-os" / "artifacts" / "second.tar.gz"
+    first.parent.mkdir(parents=True, exist_ok=True)
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+
+    partial = _AssetRunner()
+    partial.assets[first.name] = first.read_bytes()
+    service = GitHubReleaseGovernanceService(root, runner=partial)
+    reconciled = service._reconcile_assets(
+        "v0.2.0", partial.release(), {first.name: first, second.name: second}
+    )
+    assert set(reconciled) == {first.name, second.name}
+    partial.draft = False
+    assert service._reconcile_assets(
+        "v0.2.0", partial.release(), {first.name: first, second.name: second}
+    ) == reconciled
+
+    conflicting = _AssetRunner()
+    conflicting.assets[first.name] = b"different"
+    with pytest.raises(ReleaseGovernanceError) as drifted:
+        GitHubReleaseGovernanceService(root, runner=conflicting)._reconcile_assets(
+            "v0.2.0", conflicting.release(), {first.name: first}
+        )
+    assert drifted.value.code == "GITHUB_RELEASE_ASSET_CONFLICT"
+
+    unknown = _AssetRunner(fail_after_upload_once=True)
+    unknown_service = GitHubReleaseGovernanceService(root, runner=unknown)
+    with pytest.raises(ReleaseGovernanceError) as interrupted:
+        unknown_service._reconcile_assets(
+            "v0.2.0", unknown.release(), {first.name: first}
+        )
+    assert interrupted.value.code == "GITHUB_RELEASE_BLOCKED"
+    assert unknown_service._reconcile_assets(
+        "v0.2.0", unknown.release(), {first.name: first}
+    )[first.name]["sha256"]
 
 
 class _NeverRunner:
@@ -199,18 +257,64 @@ class _ReleaseRunner:
         if command[:3] == ["gh", "release", "view"]:
             self.views += 1
             if self.views == 1:
-                return _result(command, returncode=1)
+                return _result(command, returncode=1, stderr="release not found")
             return _result(
                 command,
                 stdout=json.dumps(
                     {
                         "id": "R_1",
                         "url": "https://github.com/example/ai-os/releases/tag/v0.2.0",
-                        "isDraft": False,
+                        "isDraft": True,
                         "tagName": "v0.2.0",
+                        "assets": [],
                     }
                 ),
             )
+        return _result(command)
+
+
+class _AssetRunner:
+    def __init__(self, *, fail_after_upload_once: bool = False) -> None:
+        self.assets: dict[str, bytes] = {}
+        self.draft = True
+        self.fail_after_upload_once = fail_after_upload_once
+
+    def release(self) -> dict[str, object]:
+        return {
+            "id": "R_1",
+            "url": "https://github.com/example/ai-os/releases/tag/v0.2.0",
+            "isDraft": self.draft,
+            "tagName": "v0.2.0",
+            "assets": [
+                {
+                    "id": index,
+                    "name": name,
+                    "apiUrl": f"https://api.github.com/assets/{index}",
+                    "size": len(content),
+                }
+                for index, (name, content) in enumerate(sorted(self.assets.items()), 1)
+            ],
+        }
+
+    def __call__(
+        self, command: list[str], _cwd: Path, _timeout: float
+    ) -> subprocess.CompletedProcess[bytes]:
+        if command[:3] == ["gh", "release", "upload"]:
+            path = Path(command[-1])
+            self.assets[path.name] = path.read_bytes()
+            if self.fail_after_upload_once:
+                self.fail_after_upload_once = False
+                return _result(command, returncode=1, stderr="connection reset")
+            return _result(command)
+        if command[:3] == ["gh", "release", "view"]:
+            return _result(command, stdout=json.dumps(self.release()))
+        if command[:2] == ["gh", "api"]:
+            index = int(command[2].rsplit("/", 1)[1]) - 1
+            content = sorted(self.assets.items())[index][1]
+            return _result(command, stdout=content)
+        if command[:3] == ["gh", "release", "edit"]:
+            self.draft = False
+            return _result(command)
         return _result(command)
 
 
@@ -247,9 +351,14 @@ def _project(root: Path) -> Path:
 
 
 def _result(
-    command: list[str], *, returncode: int = 0, stdout: str = ""
+    command: list[str],
+    *,
+    returncode: int = 0,
+    stdout: str | bytes = "",
+    stderr: str = "failure",
 ) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.CompletedProcess(command, returncode, stdout.encode(), b"failure")
+    output = stdout if isinstance(stdout, bytes) else stdout.encode()
+    return subprocess.CompletedProcess(command, returncode, output, stderr.encode())
 
 
 def _git(root: Path, *arguments: str) -> None:

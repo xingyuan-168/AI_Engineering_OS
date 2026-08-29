@@ -70,6 +70,8 @@ class _SuccessfulSandbox:
 class _GitHubRunner:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.assets: dict[str, bytes] = {}
+        self.draft = True
 
     def __call__(
         self, command: list[str], _cwd: Path, _timeout: float
@@ -116,11 +118,33 @@ class _GitHubRunner:
                     {
                         "id": "R_fixture",
                         "url": "https://github.com/example/ai-os/releases/tag/v0.2.0",
-                        "isDraft": False,
+                        "isDraft": self.draft,
                         "tagName": "v0.2.0",
+                        "assets": [
+                            {
+                                "id": index,
+                                "name": name,
+                                "apiUrl": f"https://api.github.com/assets/{index}",
+                                "size": len(content),
+                            }
+                            for index, (name, content) in enumerate(
+                                sorted(self.assets.items()), 1
+                            )
+                        ],
                     }
                 ),
             )
+        if command[:3] == ["gh", "release", "upload"]:
+            path = Path(command[-1])
+            self.assets[path.name] = path.read_bytes()
+            return self._result(command)
+        if command[:2] == ["gh", "api"]:
+            index = int(command[2].rsplit("/", 1)[1]) - 1
+            content = sorted(self.assets.items())[index][1]
+            return subprocess.CompletedProcess(command, 0, content, b"")
+        if command[:3] == ["gh", "release", "edit"]:
+            self.draft = False
+            return self._result(command)
         raise AssertionError(f"unexpected publication command: {command}")
 
     @staticmethod
@@ -477,6 +501,21 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     )
     assert completed.run.run_status.value == "completed"
     assert completed.run.checkpoint["release_publication"]["tag"] == "v0.2.0"
+    with engine.store.database.read_connection() as connection:
+        published = connection.execute(
+            "SELECT status, final_manifest_path, final_manifest_hash, "
+            "external_reconciliation_json FROM release_records WHERE run_id = ?",
+            (completed.run.id,),
+        ).fetchone()
+    assert published is not None
+    assert published["status"] == "published"
+    final_manifest = root / str(published["final_manifest_path"])
+    assert hashlib.sha256(final_manifest.read_bytes()).hexdigest() == published[
+        "final_manifest_hash"
+    ]
+    external = json.loads(str(published["external_reconciliation_json"]))
+    assert external["release"]["is_draft"] is False
+    assert external["assets"]["release-manifest.json"]["sha256"]
 
 
 def _doc(title: str, sections: tuple[str, ...]) -> str:
