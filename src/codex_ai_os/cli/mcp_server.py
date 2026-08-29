@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from mcp.server import MCPServer
 from pydantic import ValidationError
@@ -172,6 +172,29 @@ def workflow_step(project_root: str, run_id: str) -> dict[str, Any]:
         lambda: _workflow_payload(
             WorkflowEngine(Path(project_root), readonly=True).status(run_id),
             Path(project_root),
+        )
+    )
+
+
+@mcp.tool()
+def gate_preflight(
+    project_root: str,
+    run_id: str,
+    gate: str,
+    expected_state_version: int | None = None,
+) -> dict[str, Any]:
+    """Read-only validation of the exact rules used by Gate approval."""
+
+    return _invoke(
+        lambda: _success(
+            **cast(
+                dict[str, Any],
+                WorkflowEngine(Path(project_root), readonly=True).gate_preflight(
+                    run_id,
+                    gate=Gate(gate),
+                    expected_state_version=expected_state_version,
+                ),
+            )
         )
     )
 
@@ -438,10 +461,30 @@ def worktree_cleanup(
 
 
 @mcp.tool()
-def docs_check(project_root: str) -> dict[str, Any]:
+def docs_check(
+    project_root: str,
+    run_id: str | None = None,
+    gate: str | None = None,
+    expected_state_version: int | None = None,
+) -> dict[str, Any]:
     """Check required documents, headings, local links, and forbidden copy directories."""
 
     def operation() -> dict[str, Any]:
+        if gate is not None or run_id is not None:
+            if not gate or not run_id:
+                raise WorkflowError(
+                    "CONFIG_INVALID", "docs_check Gate mode requires run_id and gate", 2
+                )
+            return _success(
+                **cast(
+                    dict[str, Any],
+                    WorkflowEngine(Path(project_root), readonly=True).gate_preflight(
+                        run_id,
+                        gate=Gate(gate),
+                        expected_state_version=expected_state_version,
+                    ),
+                )
+            )
         config = load_project_config(Path(project_root).resolve())
         report = DocumentManager(config.root).check(config.project_type.value)
         return _success(
@@ -926,8 +969,9 @@ def _invoke(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         return error_envelope(
             exc.code,
             str(exc),
+            exc.details,
             context=context,
-            retryable=_retryable_error(exc.code),
+            retryable=exc.retryable or _retryable_error(exc.code),
         )
     except MemoryStoreError as exc:
         return error_envelope("MEMORY_INVALID", str(exc), context=context)

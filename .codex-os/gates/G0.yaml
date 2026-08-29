@@ -1,0 +1,5 @@
+schema_version: '1.2'
+gate: G0
+documents: [docs/PROJECT_MASTER.md, docs/SCOPE.md]
+required_records: [routing-decision]
+git: {source_commit_required: true, push_required: true, enforce_allowed_paths: true}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -21,6 +22,10 @@ from codex_ai_os.application.g4 import (
     G4Publisher,
     GitHubReleaseGovernanceService,
     ReleaseGovernanceError,
+)
+from codex_ai_os.application.governance_policy import (
+    GovernancePolicyCompiler,
+    GovernancePolicyError,
 )
 from codex_ai_os.application.repository import (
     RepositoryGovernanceError,
@@ -84,10 +89,20 @@ if TYPE_CHECKING:
 
 
 class WorkflowError(RuntimeError):
-    def __init__(self, code: str, message: str, exit_code: int = 30) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        exit_code: int = 30,
+        *,
+        details: dict[str, object] | None = None,
+        retryable: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.exit_code = exit_code
+        self.details = details or {}
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +167,7 @@ class WorkflowEngine:
         dependency_count: int = 0,
         release_required: bool = False,
         override_reason: str | None = None,
+        document_version_target: str | None = None,
     ) -> WorkflowResult:
         normalized_goal = goal.strip()
         if not normalized_goal:
@@ -171,6 +187,18 @@ class WorkflowEngine:
             return self._result(existing)
 
         selected_target = target_branch or self.config.target_branch
+        selected_document_version = (
+            document_version_target
+            or self.config.document_version
+            or RUNTIME_VERSIONS.software
+        )
+        if not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?",
+            selected_document_version,
+        ):
+            raise WorkflowError(
+                "CONFIG_INVALID", "document_version_target is not a valid version", 2
+            )
         requested_profile_input = profiles or _default_profiles(self.config.project_type.value)
         router = ProfileRouter(self.store.database, self.config)
         try:
@@ -204,7 +232,10 @@ class WorkflowEngine:
             run_status=RunStatus.RUNNING,
             state_version=0,
             risk_level=self.config.risk_level,
-            checkpoint=_checkpoint(action),
+            checkpoint=_checkpoint(
+                action,
+                document_version_target=selected_document_version,
+            ),
             config_hash=self.store.project_config_hash(self.config.project_id),
             created_at=now,
             updated_at=now,
@@ -232,6 +263,77 @@ class WorkflowEngine:
             return self._result(self.store.get_run(run_id))
         except WorkflowNotFoundError as exc:
             raise WorkflowError("RECOVERY_UNAVAILABLE", str(exc), 30) from exc
+
+    def gate_preflight(
+        self,
+        run_id: str,
+        *,
+        gate: Gate,
+        expected_state_version: int | None = None,
+    ) -> dict[str, object]:
+        """Evaluate the exact approval rules without writing runtime state."""
+
+        run = self._get_run(run_id)
+        if expected_state_version is not None and run.state_version != expected_state_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "workflow state version changed before Gate preflight",
+                30,
+                retryable=True,
+            )
+        pending_gate = run.checkpoint.get("pending_gate")
+        if run.run_status is not RunStatus.NEEDS_APPROVAL or pending_gate != gate.value:
+            raise WorkflowError(
+                "APPROVAL_REQUIRED",
+                f"workflow is not waiting for {gate.value}",
+                20,
+            )
+        source_commit = str(run.checkpoint.get("last_commit_sha") or "")
+        if not source_commit:
+            raise WorkflowError(
+                "EVIDENCE_INCOMPLETE",
+                "gate has no commit-bound source evidence",
+                40,
+                details={
+                    "gate": gate.value,
+                    "repair_actions": [
+                        {
+                            "operation": "amend_task_evidence",
+                            "expected": "commit-bound task evidence",
+                            "actual": "missing",
+                            "allowed": True,
+                        }
+                    ],
+                },
+                retryable=True,
+            )
+        try:
+            bundle = self.evidence_store.evaluate_gate_bundle(
+                run_id=run.id,
+                gate=gate,
+                state_version=run.state_version,
+                source_commit=source_commit,
+            )
+        except EvidenceError as exc:
+            raise WorkflowError(
+                exc.code,
+                str(exc),
+                40,
+                details=exc.details,
+                retryable=exc.retryable,
+            ) from exc
+        return {
+            "valid": bundle.status == "complete" and not bundle.missing,
+            "gate": gate.value,
+            "state_version": run.state_version,
+            "source_commit": bundle.source_commit,
+            "policy_hash": bundle.policy_hash,
+            "requirements_hash": bundle.requirements_hash,
+            "evidence_bundle_hash": bundle.bundle_hash,
+            "requirements": bundle.requirements or {},
+            "findings": list(bundle.missing),
+            "repair_actions": list(bundle.repair_actions),
+        }
 
     def complete_task(
         self,
@@ -395,6 +497,7 @@ class WorkflowEngine:
             target_status = RunStatus.NEEDS_APPROVAL
             checkpoint = _checkpoint(
                 next_action,
+                previous=run.checkpoint,
                 pending_gate=gate,
                 last_completed_task=task.id,
                 last_commit_sha=completion.commit_sha,
@@ -409,7 +512,11 @@ class WorkflowEngine:
             )
             target_phase = next_phase
             target_status = RunStatus.RUNNING
-            checkpoint = _checkpoint(next_action, last_completed_task=task.id)
+            checkpoint = _checkpoint(
+                next_action,
+                previous=run.checkpoint,
+                last_completed_task=task.id,
+            )
         else:
             raise WorkflowError(
                 "STATE_CONFLICT",
@@ -498,7 +605,13 @@ class WorkflowEngine:
                 )
                 self.evidence_store.require_complete(bundle)
             except EvidenceError as exc:
-                raise WorkflowError(exc.code, str(exc), 40) from exc
+                raise WorkflowError(
+                    exc.code,
+                    str(exc),
+                    40,
+                    details=exc.details,
+                    retryable=exc.retryable,
+                ) from exc
             if (
                 evidence_bundle_hash is not None
                 and evidence_bundle_hash.casefold() != bundle.bundle_hash.casefold()
@@ -598,6 +711,7 @@ class WorkflowEngine:
                 next_action = NextAction(kind=ActionKind.COMPLETE)
                 checkpoint = _checkpoint(
                     next_action,
+                    previous=run.checkpoint,
                     approved_gate=gate,
                 )
             else:
@@ -608,11 +722,16 @@ class WorkflowEngine:
                     state_version=next_version,
                     goal=run.goal,
                 )
-                checkpoint = _checkpoint(next_action, approved_gate=gate)
+                checkpoint = _checkpoint(
+                    next_action,
+                    previous=run.checkpoint,
+                    approved_gate=gate,
+                )
         else:
             target_phase = run.workflow_phase
             target_status = RunStatus.BLOCKED
             checkpoint = {
+                **run.checkpoint,
                 "next_action": None,
                 "rejected_gate": gate.value,
                 "rejection_reason": reason,
@@ -1393,6 +1512,7 @@ class WorkflowEngine:
         )
         checkpoint = _checkpoint(
             action,
+            previous=run.checkpoint,
             pending_gate=gate,
             last_completed_task=integration.handoff_id,
             last_commit_sha=integration.integration_head,
@@ -1467,7 +1587,11 @@ class WorkflowEngine:
                 state_version=run.state_version + 1,
                 goal=run.goal,
             )
-        checkpoint = _checkpoint(action, resumed_from=run.run_status.value)
+        checkpoint = _checkpoint(
+            action,
+            previous=run.checkpoint,
+            resumed_from=run.run_status.value,
+        )
         try:
             updated = self.store.resume_transition(
                 run=run,
@@ -1526,6 +1650,13 @@ class WorkflowEngine:
             if action.kind is ActionKind.HOST_OPERATION and action.operation_id is not None:
                 operation = self.operations.get(action.operation_id)
                 updates["expected_operation_version"] = operation.state_version
+            target_gate = action.gate or _gate_after_action_phase(
+                run.workflow_phase, run.profiles
+            )
+            if target_gate is not None:
+                updates["gate_requirements"] = self._gate_requirements(
+                    run, target_gate
+                )
             action = action.model_copy(update=updates)
             hydrated.append(action)
         next_actions = tuple(hydrated)
@@ -1538,6 +1669,26 @@ class WorkflowEngine:
             next_actions=next_actions,
             integration_result=integration_result,
         )
+
+    def _gate_requirements(self, run: WorkflowRun, gate: Gate) -> dict[str, object]:
+        try:
+            policy = GovernancePolicyCompiler(self.config.root).compile(run.profiles)
+        except GovernancePolicyError as exc:
+            raise WorkflowError(exc.code, str(exc), 40) from exc
+        return policy.gate_contract(
+            gate,
+            document_version=self._document_version_target(run),
+            push_required=(
+                self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
+            ),
+        )
+
+    @staticmethod
+    def _document_version_target(run: WorkflowRun) -> str:
+        value = run.checkpoint.get("document_version_target")
+        if isinstance(value, str) and value:
+            return value
+        return RUNTIME_VERSIONS.software
 
     def _action_for_host_operation(self, operation: HostOperation) -> NextAction:
         dependencies = tuple(
@@ -1778,6 +1929,10 @@ class WorkflowEngine:
             state_version=0,
             created_at=now,
             updated_at=now,
+            allowed_paths=definition.allowed_paths,
+            producer=definition.agent,
+            skill=definition.skill,
+            prompt=definition.prompt,
         )
         action = NextAction(
             kind=ActionKind.MODEL_TASK,
@@ -1824,6 +1979,8 @@ class WorkflowEngine:
 def _checkpoint(
     action: NextAction,
     *,
+    previous: dict[str, Any] | None = None,
+    document_version_target: str | None = None,
     pending_gate: Gate | None = None,
     approved_gate: Gate | None = None,
     last_completed_task: str | None = None,
@@ -1833,6 +1990,7 @@ def _checkpoint(
     release_publication: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
+        **(previous or {}),
         "next_action": action.model_dump(mode="json"),
         "pending_gate": pending_gate.value if pending_gate is not None else None,
         "approved_gate": approved_gate.value if approved_gate is not None else None,
@@ -1841,7 +1999,19 @@ def _checkpoint(
         "evidence_refs": list(evidence_refs),
         "resumed_from": resumed_from,
         "release_publication": release_publication,
+        "document_version_target": (
+            document_version_target
+            or (previous or {}).get("document_version_target")
+        ),
     }
+
+
+def _gate_after_action_phase(
+    phase: WorkflowPhase, profiles: tuple[str, ...]
+) -> Gate | None:
+    if phase is WorkflowPhase.DESIGN and "frontend-project" in profiles:
+        return None
+    return GATE_AFTER_PHASE.get(phase)
 
 
 def _action_from_checkpoint(checkpoint: dict[str, Any]) -> NextAction | None:

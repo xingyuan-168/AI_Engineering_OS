@@ -92,6 +92,7 @@ class NextAction(StrictModel):
     expected_task_version: int | None = Field(default=None, ge=0)
     expected_state_version: int | None = Field(default=None, ge=0)
     expected_operation_version: int | None = Field(default=None, ge=0)
+    gate_requirements: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def fields_match_action_kind(self) -> Self:

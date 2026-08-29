@@ -63,6 +63,7 @@ release_app = typer.Typer(help="Create governed release candidates.", no_args_is
 memory_app = typer.Typer(help="Submit, review, and search governed Memory.", no_args_is_help=True)
 worktree_app = typer.Typer(help="Manage governed Worktree lifecycle.", no_args_is_help=True)
 task_app = typer.Typer(help="Complete governed task actions.", no_args_is_help=True)
+gate_app = typer.Typer(help="Validate declarative Gate requirements.", no_args_is_help=True)
 app.add_typer(run_app, name="run")
 app.add_typer(handoff_app, name="handoff")
 app.add_typer(host_operation_app, name="host-operation")
@@ -72,6 +73,7 @@ app.add_typer(release_app, name="release")
 app.add_typer(memory_app, name="memory")
 app.add_typer(worktree_app, name="worktree")
 app.add_typer(task_app, name="task")
+app.add_typer(gate_app, name="gate")
 
 
 @app.command("doctor")
@@ -234,11 +236,34 @@ def status_command(
 @app.command("check-docs")
 def check_docs_command(
     project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
+    run_id: Annotated[str | None, typer.Option("--run-id")] = None,
+    gate: Annotated[Gate | None, typer.Option("--gate")] = None,
+    expected_state_version: Annotated[
+        int | None, typer.Option("--expected-state-version")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
     """Check required documents, headings, local links, and copy directories."""
 
     try:
+        if gate is not None or run_id is not None:
+            if gate is None or run_id is None:
+                _fail(
+                    "CONFIG_INVALID",
+                    "Gate document validation requires --run-id and --gate",
+                    2,
+                    json_output,
+                )
+                return
+            _emit_gate_preflight(
+                WorkflowEngine(project_root, readonly=True).gate_preflight(
+                    run_id,
+                    gate=gate,
+                    expected_state_version=expected_state_version,
+                ),
+                json_output=json_output,
+            )
+            return
         config = load_project_config(project_root.resolve())
         report = DocumentManager(config.root).check(config.project_type.value)
     except (ConfigError, ValueError, OSError) as exc:
@@ -271,6 +296,33 @@ def check_docs_command(
         human="Document governance checks failed.",
     )
     raise typer.Exit(code=10)
+
+
+@gate_app.command("validate")
+def gate_validate_command(
+    run_id: Annotated[str, typer.Argument(help="Workflow run ID.")],
+    gate: Annotated[Gate, typer.Option("--gate")],
+    expected_state_version: Annotated[
+        int | None, typer.Option("--expected-state-version")
+    ] = None,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Read-only validation using exactly the approval evaluator."""
+
+    try:
+        result = WorkflowEngine(project_root, readonly=True).gate_preflight(
+            run_id,
+            gate=gate,
+            expected_state_version=expected_state_version,
+        )
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_gate_preflight(result, json_output=json_output)
 
 
 @app.command("mcp")
@@ -1126,7 +1178,14 @@ def _emit_workflow(
 
 
 def _workflow_fail(error: WorkflowError, json_output: bool) -> None:
-    _fail(error.code, str(error), error.exit_code, json_output)
+    _fail(
+        error.code,
+        str(error),
+        error.exit_code,
+        json_output,
+        details=error.details,
+        retryable=error.retryable,
+    )
 
 
 def _trusted_reviewer_warnings(
@@ -1168,9 +1227,39 @@ def _memory_payload(record: MemoryRecord) -> dict[str, Any]:
     }
 
 
-def _fail(code: str, message: str, exit_code: int, json_output: bool) -> None:
+def _emit_gate_preflight(result: dict[str, object], *, json_output: bool) -> None:
+    valid = bool(result.get("valid"))
+    if valid:
+        emit(
+            success_envelope(result),
+            json_output=json_output,
+            human=f"{result.get('gate')} Gate preflight passed.",
+        )
+        return
     emit(
-        error_envelope(code, message, {}),
+        error_envelope(
+            "GATE_BLOCKED",
+            f"{result.get('gate')} Gate preflight found blocking requirements.",
+            result,
+            retryable=True,
+        ),
+        json_output=json_output,
+        human=f"{result.get('gate')} Gate preflight is blocked.",
+    )
+    raise typer.Exit(code=40)
+
+
+def _fail(
+    code: str,
+    message: str,
+    exit_code: int,
+    json_output: bool,
+    *,
+    details: dict[str, object] | None = None,
+    retryable: bool = False,
+) -> None:
+    emit(
+        error_envelope(code, message, details or {}, retryable=retryable),
         json_output=json_output,
         human=f"{code}: {message}",
     )

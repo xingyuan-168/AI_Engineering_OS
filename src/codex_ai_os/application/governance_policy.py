@@ -10,6 +10,9 @@ from enum import StrEnum
 from fnmatch import fnmatchcase
 from pathlib import Path
 
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from codex_ai_os.domain.coordination import TaskBlueprint
 from codex_ai_os.domain.profiles import ProfileTaskTemplate, ProjectProfile
 from codex_ai_os.domain.workflow import Gate
@@ -58,6 +61,9 @@ class EvidenceRequirements:
     checks: frozenset[str] = frozenset()
     reviews: frozenset[str] = frozenset()
     records: frozenset[str] = frozenset()
+    source_commit_required: bool = True
+    push_required: bool = True
+    enforce_allowed_paths: bool = True
 
     def add(self, other: EvidenceRequirements) -> EvidenceRequirements:
         return EvidenceRequirements(
@@ -66,16 +72,62 @@ class EvidenceRequirements:
             checks=self.checks | other.checks,
             reviews=self.reviews | other.reviews,
             records=self.records | other.records,
+            source_commit_required=(
+                self.source_commit_required or other.source_commit_required
+            ),
+            push_required=self.push_required or other.push_required,
+            enforce_allowed_paths=(
+                self.enforce_allowed_paths or other.enforce_allowed_paths
+            ),
         )
 
-    def payload(self) -> dict[str, list[str]]:
+    def payload(self) -> dict[str, object]:
         return {
             "artifacts": sorted(self.artifacts),
             "artifact_types": sorted(self.artifact_types),
             "checks": sorted(self.checks),
             "reviews": sorted(self.reviews),
             "records": sorted(self.records),
+            "git": {
+                "source_commit_required": self.source_commit_required,
+                "push_required": self.push_required,
+                "enforce_allowed_paths": self.enforce_allowed_paths,
+            },
         }
+
+
+class _GateGitModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_commit_required: bool = True
+    push_required: bool = True
+    enforce_allowed_paths: bool = True
+
+
+class _GateRuleModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: str = Field(pattern=r"^1\.2$")
+    gate: Gate
+    documents: frozenset[str] = frozenset()
+    required_artifacts: frozenset[str] = frozenset()
+    required_artifact_types: frozenset[str] = frozenset()
+    required_checks: frozenset[str] = frozenset()
+    required_reviews: frozenset[str] = frozenset()
+    required_records: frozenset[str] = frozenset()
+    git: _GateGitModel = _GateGitModel()
+
+    def requirements(self) -> EvidenceRequirements:
+        return EvidenceRequirements(
+            artifacts=self.documents | self.required_artifacts,
+            artifact_types=self.required_artifact_types,
+            checks=self.required_checks,
+            reviews=self.required_reviews,
+            records=self.required_records,
+            source_commit_required=self.git.source_commit_required,
+            push_required=self.git.push_required,
+            enforce_allowed_paths=self.git.enforce_allowed_paths,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +144,60 @@ class EffectiveGovernancePolicy:
 
     def requirements_for(self, gate: Gate) -> EvidenceRequirements:
         return self.gates[gate]
+
+    def gate_contract(
+        self,
+        gate: Gate,
+        *,
+        document_version: str,
+        push_required: bool,
+    ) -> dict[str, object]:
+        requirements = self.requirements_for(gate)
+        documents = {
+            path: {
+                "schema_version": "1.2",
+                "document_version": document_version,
+                "required_metadata": [
+                    "schema_version",
+                    "document_version",
+                    "status",
+                    "owner",
+                    "requirement_refs",
+                ],
+                "allowed_statuses": [
+                    "review-ready",
+                    "accepted",
+                    "approved",
+                    "released",
+                ],
+                "placeholders": "forbid",
+            }
+            for path in sorted(requirements.artifacts)
+            if path.casefold().endswith(".md")
+        }
+        payload: dict[str, object] = {
+            "gate": gate.value,
+            "policy_hash": self.policy_hash,
+            "documents": documents,
+            "required_artifacts": sorted(
+                path
+                for path in requirements.artifacts
+                if not path.casefold().endswith(".md")
+            ),
+            "required_artifact_types": sorted(requirements.artifact_types),
+            "required_checks": sorted(requirements.checks),
+            "required_reviews": sorted(requirements.reviews),
+            "required_records": sorted(requirements.records),
+            "git": {
+                "source_commit_required": requirements.source_commit_required,
+                "push_required": requirements.push_required and push_required,
+                "enforce_allowed_paths": requirements.enforce_allowed_paths,
+            },
+        }
+        payload["requirements_hash"] = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return payload
 
     def role_boundary(self, role: str) -> RoleBoundary:
         try:
@@ -130,6 +236,7 @@ GOVERNANCE_RULE_PATHS = (
     ".codex-os/rules.md",
     ".codex-os/workflow.md",
     ".codex-os/execution-policy.yaml",
+    ".codex-os/gates/**",
     "profiles/**",
     "plugins/ai-engineering-os/**",
 )
@@ -163,73 +270,15 @@ BASELINE_ROLE_BOUNDARIES: dict[str, RoleBoundary] = {
 }
 
 
-CORE_GATE_REQUIREMENTS: dict[Gate, EvidenceRequirements] = {
-    Gate.G0: EvidenceRequirements(
-        artifacts=frozenset({"docs/PROJECT_MASTER.md", "docs/SCOPE.md"}),
-        records=frozenset({"routing-decision"}),
-    ),
-    Gate.G1: EvidenceRequirements(
-        artifacts=frozenset(
-            {
-                "docs/PRODUCT_REQUIREMENTS.md",
-                "docs/USER_STORY.md",
-                "docs/BUSINESS_RULES.md",
-                "docs/SCOPE.md",
-            }
-        )
-    ),
-    Gate.G2: EvidenceRequirements(
-        artifacts=frozenset(
-            {
-                "docs/OPEN_SOURCE_RESEARCH.md",
-                "docs/TECH_STACK.md",
-                "docs/ARCHITECTURE.md",
-                "docs/API_SPEC.md",
-                "docs/DATABASE.md",
-                "docs/MIGRATION_SPEC.md",
-                "docs/SECURITY.md",
-                "docs/ADR/README.md",
-            }
-        )
-    ),
-    Gate.G3: EvidenceRequirements(
-        checks=frozenset(
-            {
-                "pytest",
-                "ruff",
-                "pyright",
-                "docs",
-                "secret-scan",
-                "dependency-audit",
-                "bandit",
-                "plugin-validator",
-                "skill-validator",
-                "agent-validator",
-                "hook-fixture",
-                "mcp-contract",
-                "build-install",
-                "security-scan",
-                "real-oci",
-                "image-sbom",
-                "image-scan",
-            }
-        ),
-        reviews=frozenset({"code", "security"}),
-    ),
-    Gate.G4: EvidenceRequirements(
-        artifact_types=frozenset(
-            {"changelog", "release-manifest", "rollback", "sbom", "checksums", "memory"}
-        ),
-        checks=frozenset({"release-manifest", "sbom", "checksums", "rollback"}),
-        reviews=frozenset({"release"}),
-    ),
-}
+CORE_GATE_REQUIREMENTS: dict[Gate, EvidenceRequirements] = {}
 
 
 class GovernancePolicyCompiler:
     def __init__(self, project_root: Path) -> None:
         self.root = project_root.resolve()
         self._profiles = self._load_profiles()
+        self._baseline_gates = self.load_gate_rules(self._baseline_gate_dir())
+        self._project_gates = self._load_project_gate_rules()
 
     def compile(
         self,
@@ -247,7 +296,11 @@ class GovernancePolicyCompiler:
                 "CONFIG_INVALID",
                 f"governance policy references unknown profiles: {sorted(unknown)}",
             )
-        gates = dict(CORE_GATE_REQUIREMENTS)
+        gates = dict(self._baseline_gates)
+        for gate, project_requirement in self._project_gates.items():
+            baseline = gates[gate]
+            _require_monotonic_gate(gate, baseline, project_requirement)
+            gates[gate] = project_requirement
         reviewers: list[str] = []
         for name in profile_names:
             profile = self._profiles[name]
@@ -383,6 +436,63 @@ class GovernancePolicyCompiler:
                 "CONFIG_INVALID", f"invalid governance profiles: {exc}"
             ) from exc
 
+    def _baseline_gate_dir(self) -> Path:
+        packaged = Path(__file__).parents[1] / "resources" / "gates"
+        repository = Path(__file__).parents[3] / "gates"
+        return packaged if packaged.is_dir() else repository
+
+    def _load_project_gate_rules(self) -> dict[Gate, EvidenceRequirements]:
+        directory = self.root / ".codex-os" / "gates"
+        if not directory.exists():
+            return dict(self._baseline_gates)
+        return self.load_gate_rules(directory)
+
+    @staticmethod
+    def load_gate_rules(directory: Path) -> dict[Gate, EvidenceRequirements]:
+        rules: dict[Gate, EvidenceRequirements] = {}
+        for gate in Gate:
+            path = directory / f"{gate.value}.yaml"
+            try:
+                raw: object = yaml.safe_load(path.read_text(encoding="utf-8"))
+                model = _GateRuleModel.model_validate(raw)
+            except (OSError, UnicodeError, yaml.YAMLError, ValidationError) as exc:
+                raise GovernancePolicyError(
+                    "CONFIG_INVALID", f"invalid or missing Gate policy {path}: {exc}"
+                ) from exc
+            if model.gate is not gate:
+                raise GovernancePolicyError(
+                    "CONFIG_INVALID",
+                    f"Gate policy identity mismatch: {path} declares {model.gate.value}",
+                )
+            rules[gate] = model.requirements()
+        return rules
+
+
+def _require_monotonic_gate(
+    gate: Gate,
+    baseline: EvidenceRequirements,
+    candidate: EvidenceRequirements,
+) -> None:
+    for field in ("artifacts", "artifact_types", "checks", "reviews", "records"):
+        baseline_values = getattr(baseline, field)
+        candidate_values = getattr(candidate, field)
+        removed = baseline_values - candidate_values
+        if removed:
+            raise GovernancePolicyError(
+                "CONFIG_INVALID",
+                f"project {gate.value} policy relaxes baseline {field}: {sorted(removed)}",
+            )
+    for field in (
+        "source_commit_required",
+        "push_required",
+        "enforce_allowed_paths",
+    ):
+        if getattr(baseline, field) and not getattr(candidate, field):
+            raise GovernancePolicyError(
+                "CONFIG_INVALID",
+                f"project {gate.value} policy relaxes baseline git.{field}",
+            )
+
 
 def _normalize_impact_path(value: str) -> str:
     normalized = value.replace("\\", "/").strip("/")
@@ -471,6 +581,17 @@ def _policy_pattern_matches(pattern: str, path: str) -> bool:
     if pattern.startswith("**."):
         return path.endswith(pattern[2:])
     return fnmatchcase(path, pattern)
+
+
+_PACKAGED_GATE_ROOT = Path(__file__).parents[1] / "resources" / "gates"
+_REPOSITORY_GATE_ROOT = Path(__file__).parents[3] / "gates"
+CORE_GATE_REQUIREMENTS.update(
+    GovernancePolicyCompiler.load_gate_rules(
+        _PACKAGED_GATE_ROOT
+        if _PACKAGED_GATE_ROOT.is_dir()
+        else _REPOSITORY_GATE_ROOT
+    )
+)
 
 
 __all__ = [

@@ -846,8 +846,9 @@ def _insert_task(connection: sqlite3.Connection, task: TaskRecord) -> None:
         """
         INSERT INTO tasks(
             id, run_id, agent, status, input_hash, branch, worktree,
-            output_ref, review_status, state_version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            output_ref, review_status, state_version, created_at, updated_at,
+            allowed_paths_json, producer, skill, prompt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task.id,
@@ -862,6 +863,10 @@ def _insert_task(connection: sqlite3.Connection, task: TaskRecord) -> None:
             task.state_version,
             task.created_at,
             task.updated_at,
+            _json(task.allowed_paths),
+            task.producer,
+            task.skill,
+            task.prompt,
         ),
     )
 

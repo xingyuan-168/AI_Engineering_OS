@@ -350,6 +350,7 @@ Runtime 验证 content/source 路径、hash、项目范围与 Secret 扫描，�
 | `workflow_start` | `codex-os run <workflow>` |
 | `workflow_status` | `codex-os status` |
 | `workflow_step` | `codex-os step` |
+| `gate_preflight` | `codex-os gate validate` |
 | `workflow_resume` | `codex-os resume` |
 | `handoff_review` | `codex-os handoff review` |
 | `worktree_cleanup` | `codex-os worktree cleanup` |

@@ -16,7 +16,7 @@ from codex_ai_os.domain.governance import (
     ReviewDecision,
     ReviewEvidenceInput,
 )
-from codex_ai_os.domain.workflow import Gate
+from codex_ai_os.domain.workflow import ChangeKind, Gate, PushStatus, TaskCompletion
 from codex_ai_os.infrastructure.evidence import EvidenceError, GateBundle
 
 
@@ -284,6 +284,94 @@ def test_review_gate_bundle_and_document_revalidation_fail_closed(tmp_path: Path
         bundle_hash="a" * 64,
     )
     store.require_complete(complete)
+
+
+def test_gate_preflight_is_read_only_and_matches_approval(tmp_path: Path) -> None:
+    root = _project(tmp_path / "preflight")
+    engine = WorkflowEngine(root)
+    current = engine.start("Validate exact G0 preflight")
+    assert current.active_task is not None
+    assert current.next_action is not None
+    assert current.next_action.worktree is not None
+    assert current.next_action.gate_requirements is not None
+    assert current.next_action.gate_requirements["gate"] == "G0"
+    worktree = Path(current.next_action.worktree)
+    metadata = json.dumps(
+        {
+            "schema_version": "1.2",
+            "document_version": "0.1.0",
+            "status": "review-ready",
+            "owner": "product-manager",
+            "requirement_refs": ["REQ-G0"],
+        },
+        separators=(",", ":"),
+    )
+    for relative in ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"):
+        (worktree / relative).write_text(
+            f"# Gate document\n\n<!-- codex-os-document: {metadata} -->\n\nApproved content.\n",
+            encoding="utf-8",
+        )
+    _git(worktree, "add", "docs/PROJECT_MASTER.md", "docs/SCOPE.md")
+    _git(worktree, "commit", "-m", "docs: prepare G0 evidence")
+    head = _git_output(worktree, "rev-parse", "HEAD")
+    artifacts: list[ArtifactEvidenceInput] = []
+    hashes: dict[str, str] = {}
+    for relative in ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"):
+        content = subprocess.check_output(
+            ["git", "-C", str(worktree), "show", f"{head}:{relative}"]
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        hashes[relative] = digest
+        artifacts.append(
+            ArtifactEvidenceInput(
+                path=relative,
+                artifact_type="governance-document",
+                sha256=digest,
+                source_commit=head,
+            )
+        )
+    waiting = engine.complete_task(
+        current.run.id,
+        TaskCompletion(
+            task_id=current.active_task.id,
+            change_kind=ChangeKind.REPOSITORY,
+            branch=current.next_action.branch,
+            commit_sha=head,
+            push_status=PushStatus.LOCAL_ONLY,
+            artifact_paths_and_hashes=hashes,
+            artifacts=tuple(artifacts),
+        ),
+        expected_task_version=current.active_task.state_version,
+        idempotency_key="preflight-complete",
+    )
+    assert waiting.next_action is not None
+    assert waiting.next_action.gate_requirements is not None
+    with engine.store.database.read_connection() as connection:
+        before = int(
+            connection.execute("SELECT COUNT(*) FROM gate_evidence_bundles").fetchone()[0]
+        )
+    result = WorkflowEngine(root, readonly=True).gate_preflight(
+        waiting.run.id,
+        gate=Gate.G0,
+        expected_state_version=waiting.run.state_version,
+    )
+    with engine.store.database.read_connection() as connection:
+        after = int(
+            connection.execute("SELECT COUNT(*) FROM gate_evidence_bundles").fetchone()[0]
+        )
+    assert result["valid"] is True
+    assert before == after == 0
+    approved = engine.submit_approval(
+        waiting.run.id,
+        gate=Gate.G0,
+        approved=True,
+        reviewer="independent-user",
+        reason="preflight snapshot reviewed",
+        expected_state_version=waiting.run.state_version,
+        idempotency_key="approve-g0",
+        evidence_bundle_hash=str(result["evidence_bundle_hash"]),
+    )
+    assert approved.run.workflow_phase.value == "requirements"
 
 
 def _artifact(path: str, digest: str) -> ArtifactEvidenceInput:

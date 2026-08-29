@@ -60,6 +60,10 @@ class ProjectConfig(StrictModel):
     target_branch: str = Field(default="main", pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
     github_hosts: frozenset[str] = frozenset({"github.com"})
     max_parallel_agents: int = Field(default=4, ge=1, le=4)
+    document_version: str | None = Field(
+        default=None,
+        pattern=r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$",
+    )
 
     @field_validator("root")
     @classmethod

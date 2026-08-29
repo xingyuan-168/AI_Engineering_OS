@@ -59,6 +59,7 @@ class ProjectInitializer:
                 project_type=project_type,
                 risk_level=risk_level,
                 git_push_policy=git_push_policy,
+                document_version="0.1.0",
             )
             config_text = yaml.safe_dump(
                 _serializable_config(config),
@@ -72,7 +73,13 @@ class ProjectInitializer:
             if documents.write_atomic(relative, content, overwrite=False):
                 created.append(relative)
 
-        created.extend(documents.initialize_documents(config.name, config.project_type.value))
+        created.extend(
+            documents.initialize_documents(
+                config.name,
+                config.project_type.value,
+                document_version=config.document_version or RUNTIME_VERSIONS.software,
+            )
+        )
         context_path = documents.generate_context()
 
         database_path = root / ".codex-os" / "state" / "state.db"
@@ -119,7 +126,7 @@ def _serializable_config(config: ProjectConfig) -> dict[str, object]:
 
 
 def _runtime_entry_files() -> dict[str, str]:
-    return {
+    files = {
         ".gitignore": (
             ".codex-os/state/\n.codex-os/logs/\n.codex-os/cache/\n"
             ".codex-os/context/\n.codex-os/tmp/\n.codex-os/artifacts/\n.worktrees/\n"
@@ -147,3 +154,11 @@ def _runtime_entry_files() -> dict[str, str]:
             "allow_host_execution: false\n"
         ),
     }
+    packaged = Path(__file__).parents[1] / "resources" / "gates"
+    repository = Path(__file__).parents[3] / "gates"
+    gate_root = packaged if packaged.is_dir() else repository
+    for gate in ("G0", "G1", "G2", "G3", "G4"):
+        files[f".codex-os/gates/{gate}.yaml"] = (gate_root / f"{gate}.yaml").read_text(
+            encoding="utf-8"
+        )
+    return files

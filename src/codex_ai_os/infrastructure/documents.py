@@ -109,10 +109,22 @@ class DocumentManager:
                 temporary.unlink(missing_ok=True)
         return True
 
-    def initialize_documents(self, project_name: str, project_type: str) -> tuple[str, ...]:
+    def initialize_documents(
+        self,
+        project_name: str,
+        project_type: str,
+        *,
+        document_version: str = "0.1.0",
+    ) -> tuple[str, ...]:
         created: list[str] = []
         for relative, template in documents_for(project_type).items():
             content = template.replace("{{ project_name }}", project_name)
+            if relative.casefold().endswith(".md") and DOCUMENT_METADATA.search(content) is None:
+                content = _add_template_metadata(
+                    content,
+                    document_version=document_version,
+                    owner="project-manager",
+                )
             if self.write_atomic(relative, content, overwrite=False):
                 created.append(relative)
         return tuple(created)
@@ -290,6 +302,26 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _add_template_metadata(content: str, *, document_version: str, owner: str) -> str:
+    first_line, separator, remainder = content.partition("\n")
+    metadata = json.dumps(
+        {
+            "schema_version": RUNTIME_VERSIONS.document_schema,
+            "document_version": document_version,
+            "status": "draft",
+            "owner": owner,
+            "requirement_refs": ["PROJECT-INIT"],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    suffix = f"\n\n<!-- codex-os-document: {metadata} -->\n"
+    if not separator:
+        return f"{first_line}{suffix}"
+    return f"{first_line}{suffix}\n{remainder.lstrip()}"
 
 
 def _is_expired(value: str) -> bool:

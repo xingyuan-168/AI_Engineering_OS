@@ -29,6 +29,13 @@ PUBLIC_TOOL_CONTRACTS: tuple[PublicToolContract, ...] = (
     ),
     PublicToolContract("workflow_status", ("status",), "WorkflowEngine", False),
     PublicToolContract("workflow_step", ("step",), "WorkflowEngine", False),
+    PublicToolContract(
+        "gate_preflight",
+        ("gate validate",),
+        "WorkflowEngine",
+        False,
+        ("expected_state_version",),
+    ),
     PublicToolContract("workflow_resume", ("resume",), "WorkflowEngine", True),
     PublicToolContract(
         "approval_submit",

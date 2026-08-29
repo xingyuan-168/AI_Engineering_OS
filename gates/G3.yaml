@@ -1,0 +1,22 @@
+schema_version: '1.2'
+gate: G3
+required_checks:
+  - pytest
+  - ruff
+  - pyright
+  - docs
+  - secret-scan
+  - dependency-audit
+  - bandit
+  - plugin-validator
+  - skill-validator
+  - agent-validator
+  - hook-fixture
+  - mcp-contract
+  - build-install
+  - security-scan
+  - real-oci
+  - image-sbom
+  - image-scan
+required_reviews: [code, security]
+git: {source_commit_required: true, push_required: true, enforce_allowed_paths: true}
