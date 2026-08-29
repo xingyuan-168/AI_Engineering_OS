@@ -9,6 +9,7 @@ from codex_ai_os.application.governance_policy import (
     PathAccessDecision,
     RoleBoundary,
 )
+from codex_ai_os.domain.workflow import Gate
 
 PROJECT_ROOT = Path(__file__).parents[2]
 
@@ -21,6 +22,30 @@ def test_baseline_policy_is_fail_closed_and_default_deny() -> None:
     with pytest.raises(GovernancePolicyError) as caught:
         policy.role_boundary("self-reported-owner")
     assert caught.value.code == "ROLE_NOT_AUTHORIZED"
+
+
+def test_formal_g3_policy_requires_complete_offline_release_matrix() -> None:
+    policy = GovernancePolicyCompiler(PROJECT_ROOT).compile(("backend-project",))
+
+    assert policy.requirements_for(Gate.G3).checks == {
+        "pytest",
+        "ruff",
+        "pyright",
+        "docs",
+        "secret-scan",
+        "dependency-audit",
+        "bandit",
+        "plugin-validator",
+        "skill-validator",
+        "agent-validator",
+        "hook-fixture",
+        "mcp-contract",
+        "build-install",
+        "security-scan",
+        "real-oci",
+        "image-sbom",
+        "image-scan",
+    }
 
 
 def test_project_role_policy_can_tighten_but_cannot_raise_capabilities() -> None:

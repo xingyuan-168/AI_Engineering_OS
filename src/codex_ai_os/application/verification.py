@@ -44,12 +44,90 @@ class VerificationResult:
 
 
 DEFAULT_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pytest", ("python", "-m", "pytest", "-q")),
+    (
+        "pytest",
+        (
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "--cov=codex_ai_os",
+            "--cov-branch",
+            "--cov-report=term-missing",
+            "--cov-fail-under=85",
+        ),
+    ),
     ("ruff", ("python", "-m", "ruff", "check", ".")),
     ("pyright", ("python", "-m", "pyright")),
     (
+        "docs",
+        ("python", "-m", "codex_ai_os.application.formal_checks", "docs", "/workspace"),
+    ),
+    (
         "secret-scan",
         ("python", "-m", "codex_ai_os.application.secret_scan", "/workspace"),
+    ),
+    (
+        "bandit",
+        (
+            "python",
+            "-m",
+            "bandit",
+            "-q",
+            "-r",
+            "src",
+            "--severity-level",
+            "high",
+            "--confidence-level",
+            "high",
+        ),
+    ),
+    (
+        "plugin-validator",
+        ("python", "-m", "pytest", "-q", "tests/unit/test_plugin_skills.py"),
+    ),
+    (
+        "skill-validator",
+        (
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/unit/test_plugin_skills.py",
+            "-k",
+            "skill_set",
+        ),
+    ),
+    (
+        "agent-validator",
+        ("python", "-m", "pytest", "-q", "tests/unit/test_agent_profiles.py"),
+    ),
+    (
+        "hook-fixture",
+        ("python", "-m", "pytest", "-q", "tests/integration/test_plugin_hooks.py"),
+    ),
+    (
+        "mcp-contract",
+        (
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/unit/test_mcp_v11.py",
+            "tests/integration/test_mcp_server.py",
+            "-k",
+            "not plugin_launcher",
+        ),
+    ),
+    (
+        "build-install",
+        (
+            "python",
+            "-m",
+            "codex_ai_os.application.formal_checks",
+            "build-install",
+            "/workspace",
+        ),
     ),
     (
         "dependency-audit",
@@ -71,6 +149,30 @@ DEFAULT_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "-q",
             "tests/unit/test_docker_sandbox.py",
             "tests/unit/test_git_evidence.py",
+        ),
+    ),
+    (
+        "real-oci",
+        ("python", "-m", "codex_ai_os.application.formal_checks", "real-oci"),
+    ),
+    (
+        "image-sbom",
+        (
+            "python",
+            "-m",
+            "codex_ai_os.application.formal_checks",
+            "image-sbom",
+            "/cache",
+        ),
+    ),
+    (
+        "image-scan",
+        (
+            "python",
+            "-m",
+            "codex_ai_os.application.formal_checks",
+            "image-scan",
+            "/cache",
         ),
     ),
 )
@@ -308,6 +410,8 @@ class VerificationService:
             report_path=relative,
             report_hash=hashlib.sha256(content.encode()).hexdigest(),
             source_commit=source_commit,
+            started_at=str(report["started_at"]),
+            ended_at=str(report["ended_at"]),
             executed_at=str(report["ended_at"] or report["started_at"]),
             status=CheckStatus(str(report["status"])),
         )

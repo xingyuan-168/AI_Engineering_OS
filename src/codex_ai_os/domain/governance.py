@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Self
 
@@ -42,6 +43,8 @@ class CheckEvidenceInput(StrictModel):
     report_path: str = Field(min_length=1, max_length=1024)
     report_hash: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
     source_commit: str = Field(pattern=r"^[0-9a-fA-F]{7,64}$")
+    started_at: str
+    ended_at: str
     executed_at: str
     status: CheckStatus
 
@@ -51,6 +54,15 @@ class CheckEvidenceInput(StrictModel):
             raise ValueError("passed check evidence requires exit_code=0")
         if self.status is CheckStatus.FAILED and self.exit_code == 0:
             raise ValueError("failed check evidence requires a non-zero exit code")
+        try:
+            started = datetime.fromisoformat(self.started_at.replace("Z", "+00:00"))
+            ended = datetime.fromisoformat(self.ended_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("check evidence timestamps must be ISO 8601") from exc
+        if started.tzinfo is None or ended.tzinfo is None:
+            raise ValueError("check evidence timestamps must include a timezone")
+        if ended < started:
+            raise ValueError("check evidence ended_at cannot precede started_at")
         return self
 
 

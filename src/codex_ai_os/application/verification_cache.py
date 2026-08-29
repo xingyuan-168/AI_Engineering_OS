@@ -16,6 +16,7 @@ from typing import Any, cast
 from codex_ai_os.application.offline_audit import AuditSnapshotError, build_snapshot
 from codex_ai_os.domain.operations import HostOperation, HostOperationKind
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
+from codex_ai_os.infrastructure.config import load_execution_policy
 
 CommandRunner = Callable[[list[str], Path, float], subprocess.CompletedProcess[bytes]]
 DEFAULT_VERIFICATION_PLATFORM = "linux-amd64"
@@ -110,6 +111,8 @@ class VerificationCachePreparer:
             requirements = staging / "requirements.txt"
             audit_report = staging / "pip-audit-report.json"
             audit_snapshot = staging / "audit-snapshot.json"
+            image_sbom = staging / "image-sbom.cdx.json"
+            image_scan = staging / "image-scan.json"
             trivy_cache = staging / "trivy"
             trivy_cache.mkdir()
 
@@ -188,6 +191,58 @@ class VerificationCachePreparer:
                 raise VerificationCachePrepareError(
                     "DEPENDENCY_UNVERIFIED", "verification prepare produced no Trivy DB files"
                 )
+            engine = load_execution_policy(self.root).sandbox.value
+            inspected = self._run(
+                [
+                    engine,
+                    "image",
+                    "inspect",
+                    requested_image,
+                    "--format",
+                    "{{json .}}",
+                ],
+                "SANDBOX_IMAGE_UNAVAILABLE",
+            )
+            image = _load_json_bytes(inspected.stdout, "OCI image inspection")
+            platform_digest = _platform_digest(image)
+            _require_image_platform(image, platform_payload)
+            self._run(
+                [
+                    "trivy",
+                    "image",
+                    "--offline-scan",
+                    "--skip-db-update",
+                    "--cache-dir",
+                    str(trivy_cache),
+                    "--format",
+                    "cyclonedx",
+                    "--output",
+                    str(image_sbom),
+                    requested_image,
+                ],
+                "DEPENDENCY_UNVERIFIED",
+            )
+            self._run(
+                [
+                    "trivy",
+                    "image",
+                    "--offline-scan",
+                    "--skip-db-update",
+                    "--cache-dir",
+                    str(trivy_cache),
+                    "--format",
+                    "json",
+                    "--severity",
+                    "HIGH,CRITICAL",
+                    "--exit-code",
+                    "1",
+                    "--output",
+                    str(image_scan),
+                    requested_image,
+                ],
+                "DEPENDENCY_UNVERIFIED",
+            )
+            _validate_image_reports(image_sbom, image_scan)
             wheel_files = sorted(path.name for path in staging.glob("*.whl"))
             if not wheel_files:
                 raise VerificationCachePrepareError(
@@ -203,6 +258,15 @@ class VerificationCachePreparer:
                 "target_python": target_python,
                 "platform": target_platform,
                 "execution_image": requested_image,
+                "image": {
+                    "engine": engine,
+                    "registry_index_digest": requested_image.rsplit("@", 1)[1],
+                    "platform_digest": platform_digest,
+                    "os": str(image.get("Os") or image.get("os") or "").casefold(),
+                    "architecture": str(
+                        image.get("Architecture") or image.get("architecture") or ""
+                    ).casefold(),
+                },
                 "expires_at": expires_at,
                 "prepared_at": datetime.now(UTC).isoformat(),
                 "requirements": {
@@ -216,6 +280,14 @@ class VerificationCachePreparer:
                 "trivy_cache": {
                     "path": "trivy",
                     "sha256": _tree_hash(trivy_cache),
+                },
+                "image_sbom": {
+                    "path": "image-sbom.cdx.json",
+                    "sha256": _sha256(image_sbom),
+                },
+                "image_scan": {
+                    "path": "image-scan.json",
+                    "sha256": _sha256(image_scan),
                 },
                 "wheelhouse": {"path": ".", "wheels": wheel_files},
                 "files": _file_hashes(staging),
@@ -255,7 +327,9 @@ class VerificationCachePreparer:
                 outcome_unknown=True,
             ) from exc
 
-    def _run(self, command: list[str], error_code: str) -> None:
+    def _run(
+        self, command: list[str], error_code: str
+    ) -> subprocess.CompletedProcess[bytes]:
         try:
             result = self.runner(command, self.root, 600.0)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -269,6 +343,7 @@ class VerificationCachePreparer:
                 error_code,
                 _command_error(command, result),
             )
+        return result
 
 
 def _required_text(request: dict[str, Any], key: str) -> str:
@@ -378,6 +453,28 @@ def validate_verification_cache(
     _require_file_descriptor(
         cache, manifest.get("pip_audit_snapshot"), expected_path="audit-snapshot.json"
     )
+    _require_file_descriptor(
+        cache, manifest.get("image_sbom"), expected_path="image-sbom.cdx.json"
+    )
+    _require_file_descriptor(
+        cache, manifest.get("image_scan"), expected_path="image-scan.json"
+    )
+    _validate_image_reports(cache / "image-sbom.cdx.json", cache / "image-scan.json")
+    image = _as_mapping(manifest.get("image"), "image")
+    expected_architectures = {
+        "linux-amd64": {"amd64", "x86_64"},
+        "linux-arm64": {"arm64", "aarch64"},
+    }[expected_platform]
+    if (
+        image.get("registry_index_digest")
+        != RUNTIME_VERSIONS.execution_image.rsplit("@", 1)[1]
+        or not _is_digest(image.get("platform_digest"))
+        or image.get("os") != "linux"
+        or image.get("architecture") not in expected_architectures
+    ):
+        raise VerificationCachePrepareError(
+            "EXECUTION_IMAGE_MISMATCH", "verification image identity drifted"
+        )
     trivy = _as_mapping(manifest.get("trivy_cache"), "trivy_cache")
     trivy_root = cache / "trivy"
     if (
@@ -534,6 +631,14 @@ def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
+def _is_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and _is_sha256(value.removeprefix("sha256:"))
+    )
+
+
 def _as_mapping(value: object, field: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise VerificationCachePrepareError(
@@ -580,6 +685,93 @@ def _load_json(path: Path) -> dict[str, Any]:
             "DEPENDENCY_UNVERIFIED", f"expected JSON object: {path}"
         )
     return cast(dict[str, Any], value)
+
+
+def _load_json_bytes(content: bytes, label: str) -> dict[str, Any]:
+    try:
+        value: object = json.loads(content.decode("utf-8", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise VerificationCachePrepareError(
+            "SANDBOX_IMAGE_UNAVAILABLE", f"{label} returned invalid JSON"
+        ) from exc
+    if not isinstance(value, dict):
+        raise VerificationCachePrepareError(
+            "SANDBOX_IMAGE_UNAVAILABLE", f"{label} returned a non-object response"
+        )
+    return cast(dict[str, Any], value)
+
+
+def _platform_digest(image: Mapping[str, object]) -> str:
+    for key in ("Digest", "digest", "Id", "ID", "id"):
+        value = image.get(key)
+        if _is_digest(value):
+            return cast(str, value).casefold()
+    raise VerificationCachePrepareError(
+        "SANDBOX_IMAGE_UNAVAILABLE", "OCI image inspection has no platform digest"
+    )
+
+
+def _require_image_platform(
+    image: Mapping[str, object], expected: Mapping[str, str]
+) -> None:
+    system = str(image.get("Os") or image.get("os") or "").casefold()
+    architecture = str(
+        image.get("Architecture") or image.get("architecture") or ""
+    ).casefold()
+    expected_architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(
+        expected["machine"], expected["machine"]
+    )
+    if system != expected["system"] or architecture not in {
+        expected["machine"],
+        expected_architecture,
+    }:
+        raise VerificationCachePrepareError(
+            "PLATFORM_MISMATCH", "OCI image platform does not match verification target"
+        )
+
+
+def _validate_image_reports(sbom_path: Path, scan_path: Path) -> None:
+    sbom = _load_json(sbom_path)
+    if sbom.get("bomFormat") != "CycloneDX" or not isinstance(
+        sbom.get("serialNumber"), str
+    ):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "Trivy image SBOM is invalid"
+        )
+    scan = _load_json(scan_path)
+    results = scan.get("Results")
+    if not isinstance(results, list):
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED", "Trivy image scan has no Results array"
+        )
+    blockers: list[str] = []
+    for raw_result in cast(list[object], results):
+        if not isinstance(raw_result, dict):
+            raise VerificationCachePrepareError(
+                "DEPENDENCY_UNVERIFIED", "Trivy image scan result is invalid"
+            )
+        raw_vulnerabilities = cast(dict[str, object], raw_result).get("Vulnerabilities")
+        if raw_vulnerabilities is None:
+            vulnerabilities: list[object] = []
+        elif isinstance(raw_vulnerabilities, list):
+            vulnerabilities = cast(list[object], raw_vulnerabilities)
+        else:
+            raise VerificationCachePrepareError(
+                "DEPENDENCY_UNVERIFIED", "Trivy vulnerabilities value is invalid"
+            )
+        for raw_finding in vulnerabilities:
+            if not isinstance(raw_finding, dict):
+                raise VerificationCachePrepareError(
+                    "DEPENDENCY_UNVERIFIED", "Trivy vulnerability entry is invalid"
+                )
+            finding = cast(dict[str, object], raw_finding)
+            if str(finding.get("Severity") or "").casefold() in {"high", "critical"}:
+                blockers.append(str(finding.get("VulnerabilityID") or "unknown"))
+    if blockers:
+        raise VerificationCachePrepareError(
+            "DEPENDENCY_UNVERIFIED",
+            f"image has unapproved high/critical findings: {blockers}",
+        )
 
 
 def _mark_read_only(root: Path) -> None:

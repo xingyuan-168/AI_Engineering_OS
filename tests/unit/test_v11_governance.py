@@ -5,6 +5,7 @@ import hashlib
 import json
 import stat
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -405,6 +406,7 @@ class _FailingSandbox:
         self.exit_code = exit_code
 
     def run(self, request: SandboxRequest) -> SandboxResult:
+        now = datetime.now(UTC).isoformat()
         return SandboxResult(
             execution_id=request.execution_id,
             command_hash=command_hash(request.command),
@@ -414,8 +416,8 @@ class _FailingSandbox:
             stdout="",
             stderr="tests failed\n",
             worktree_dirty=False,
-            started_at="2026-08-27T00:00:01+00:00",
-            ended_at="2026-08-27T00:00:02+00:00",
+            started_at=now,
+            ended_at=now,
         )
 
 
@@ -443,6 +445,7 @@ def test_verification_records_failed_check_evidence_for_nonzero_exit(
     check = result.checks[0]
     assert check.status.value == "failed"
     assert check.exit_code == 7
+    assert check.started_at <= check.ended_at
     report = json.loads((root / check.report_path).read_text(encoding="utf-8"))
     assert report["status"] == "failed"
     assert report["exit_code"] == 7
@@ -546,6 +549,8 @@ def test_host_operation_executes_verification_prepare_cache(
     assert (cache / "fixture-1.0-py3-none-any.whl").is_file()
     assert (cache / "audit-snapshot.json").is_file()
     assert (cache / "trivy" / "db.json").is_file()
+    assert (cache / "image-sbom.cdx.json").is_file()
+    assert (cache / "image-scan.json").is_file()
     assert succeeded.result["files"]["requirements.txt"]
     assert VerificationService(root, bootstrap_dependencies=True)._wheelhouse(root) == cache
     _make_writable(cache)
@@ -645,6 +650,30 @@ class _VerificationPrepareRunner:
         if command[:3] == ["trivy", "image", "--download-db-only"]:
             cache = Path(command[command.index("--cache-dir") + 1])
             (cache / "db.json").write_text("{}", encoding="utf-8")
+            return _result(command)
+        if len(command) >= 3 and command[1:3] == ["image", "inspect"]:
+            return _result(
+                command,
+                json.dumps(
+                    {
+                        "Id": "sha256:" + "b" * 64,
+                        "Os": "linux",
+                        "Architecture": "amd64",
+                    }
+                ),
+            )
+        if command[:2] == ["trivy", "image"] and "--output" in command:
+            output = Path(command[command.index("--output") + 1])
+            if command[command.index("--format") + 1] == "cyclonedx":
+                payload: dict[str, object] = {
+                    "bomFormat": "CycloneDX",
+                    "specVersion": "1.6",
+                    "serialNumber": "urn:uuid:00000000-0000-0000-0000-000000000001",
+                    "metadata": {},
+                }
+            else:
+                payload = {"Results": list[object]()}
+            output.write_text(json.dumps(payload), encoding="utf-8")
             return _result(command)
         raise AssertionError(f"unexpected verification prepare command: {command}")
 

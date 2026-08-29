@@ -194,7 +194,25 @@ CORE_GATE_REQUIREMENTS: dict[Gate, EvidenceRequirements] = {
     ),
     Gate.G3: EvidenceRequirements(
         checks=frozenset(
-            {"pytest", "ruff", "pyright", "secret-scan", "dependency-audit", "security-scan"}
+            {
+                "pytest",
+                "ruff",
+                "pyright",
+                "docs",
+                "secret-scan",
+                "dependency-audit",
+                "bandit",
+                "plugin-validator",
+                "skill-validator",
+                "agent-validator",
+                "hook-fixture",
+                "mcp-contract",
+                "build-install",
+                "security-scan",
+                "real-oci",
+                "image-sbom",
+                "image-scan",
+            }
         ),
         reviews=frozenset({"code", "security"}),
     ),

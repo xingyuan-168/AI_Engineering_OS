@@ -121,8 +121,8 @@ class EvidenceStore:
                         INSERT OR IGNORE INTO check_evidence(
                             id, bundle_id, run_id, task_id, check_name, command_hash,
                             execution_id, exit_code, report_path, report_hash,
-                            source_commit, status, executed_at
-                        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            source_commit, status, executed_at, started_at, ended_at
+                        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             new_id("CHECKEVIDENCE"),
@@ -137,6 +137,8 @@ class EvidenceStore:
                             check.source_commit.casefold(),
                             check.status.value,
                             check.executed_at,
+                            check.started_at,
+                            check.ended_at,
                         ),
                     )
                 connection.commit()
