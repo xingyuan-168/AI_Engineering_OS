@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,8 @@ from codex_ai_os.application.public_contracts import (
 from codex_ai_os.application.responses import success_envelope
 from codex_ai_os.cli import app as cli_app
 from codex_ai_os.cli import mcp_server
+from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
+from codex_ai_os.domain.operations import ReconciliationOutcome
 from codex_ai_os.domain.workflow import ChangeKind, PushStatus
 
 
@@ -154,3 +157,121 @@ def test_task_complete_cli_uses_shared_model_and_concurrency_contract(
     )
     assert invalid.exit_code == 2
     assert "CONFIG_INVALID" in invalid.output
+
+
+def test_public_cli_failures_use_the_shared_error_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = tmp_path / "missing-project"
+    failures: list[tuple[str, int, bool]] = []
+
+    def record_failure(
+        code: str,
+        _message: str,
+        exit_code: int,
+        json_output: bool,
+        *,
+        retryable: bool = False,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        del retryable, details
+        failures.append((code, exit_code, json_output))
+
+    monkeypatch.setattr(cli_app, "_fail", record_failure)
+    cli_app.task_complete_command(
+        "RUN-1",
+        "TASK-1",
+        0,
+        "task-complete",
+        ChangeKind.NONE,
+        '{"artifacts":{},"checks":[]}',
+        project_root=missing,
+        json_output=True,
+    )
+    cli_app.verification_prepare_command(
+        "RUN-1",
+        0,
+        "verification-prepare",
+        "APPROVAL-1",
+        "2026-09-01T00:00:00+00:00",
+        project_root=missing,
+        json_output=True,
+    )
+    cli_app.host_operation_execute_command(
+        "OP-1",
+        0,
+        "operation-execute",
+        project_root=missing,
+        json_output=True,
+    )
+    cli_app.host_operation_reconcile_command(
+        "OP-1",
+        0,
+        "operation-reconcile",
+        ReconciliationOutcome.NOT_APPLIED,
+        project_root=missing,
+        json_output=True,
+    )
+    cli_app.database_migrate_command(
+        "0006",
+        project_root=missing,
+        json_output=True,
+    )
+    cli_app.release_candidate_command(
+        "RUN-1",
+        project_root=missing,
+        json_output=True,
+    )
+    cli_app.memory_submit_command(
+        "release",
+        "Release memory",
+        "docs/RELEASE.md",
+        [],
+        1.0,
+        project_root=missing,
+        json_output=True,
+    )
+    cli_app.memory_review_command(
+        "MEMORY-1",
+        "reviewer",
+        "accepted",
+        "reviewed",
+        project_root=missing,
+        json_output=True,
+    )
+    cli_app.memory_search_command(
+        "release",
+        project_root=missing,
+        json_output=True,
+    )
+
+    class _FailingWorkflowEngine:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def complete_task(self, *_args: object, **_kwargs: object) -> object:
+            raise cli_app.WorkflowError("STATE_VERSION_CONFLICT", "stale task", 30)
+
+    monkeypatch.setattr(cli_app, "WorkflowEngine", _FailingWorkflowEngine)
+    cli_app.task_complete_command(
+        "RUN-1",
+        "TASK-1",
+        0,
+        "task-complete-conflict",
+        ChangeKind.NONE,
+        "{}",
+        project_root=missing,
+        json_output=True,
+    )
+
+    assert len(failures) == 10
+    assert all(json_output for _code, _exit, json_output in failures)
+    assert cli_app._trusted_reviewer_warnings(
+        "os:fixture",
+        InvocationContext(
+            request_id="REQ-1",
+            correlation_id="CORR-1",
+            principal="os:fixture",
+            source=InvocationSource.CLI,
+        ),
+    ) == ()
