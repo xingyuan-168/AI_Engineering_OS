@@ -671,6 +671,69 @@ def task_complete_command(
     _emit_workflow(result, json_output=json_output)
 
 
+@task_app.command("amend-evidence")
+def task_amend_evidence_command(
+    run_id: Annotated[str, typer.Argument(help="Workflow run ID.")],
+    task_id: Annotated[str, typer.Option("--task-id")],
+    expected_task_version: Annotated[int, typer.Option("--expected-task-version")],
+    expected_state_version: Annotated[int, typer.Option("--expected-state-version")],
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
+    evidence_json: Annotated[str, typer.Option("--evidence-json")] = "{}",
+    branch: Annotated[str, typer.Option("--branch")] = "",
+    commit_sha: Annotated[str, typer.Option("--commit-sha")] = "",
+    remote_name: Annotated[str | None, typer.Option("--remote-name")] = None,
+    push_status: Annotated[PushStatus, typer.Option("--push-status")] = PushStatus.PUSHED,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Append corrected evidence for the task producing the pending Gate."""
+
+    try:
+        raw: object = json.loads(evidence_json)
+        if not isinstance(raw, dict):
+            raise ValueError("evidence_json must contain a JSON object")
+        evidence = cast(dict[str, object], raw)
+        raw_artifacts: object = evidence.get("artifacts", ())
+        raw_checks: object = evidence.get("checks", ())
+        if not isinstance(raw_artifacts, (list, tuple)) or not isinstance(
+            raw_checks, (list, tuple)
+        ):
+            raise ValueError("artifacts and checks must be JSON arrays")
+        completion = TaskCompletion.model_validate(
+            {
+                **evidence,
+                "task_id": task_id,
+                "change_kind": ChangeKind.REPOSITORY,
+                "branch": branch,
+                "commit_sha": commit_sha,
+                "remote_name": remote_name,
+                "push_status": push_status,
+                "artifacts": tuple(
+                    ArtifactEvidenceInput.model_validate(item)
+                    for item in cast(list[object] | tuple[object, ...], raw_artifacts)
+                ),
+                "checks": tuple(
+                    CheckEvidenceInput.model_validate(item)
+                    for item in cast(list[object] | tuple[object, ...], raw_checks)
+                ),
+            }
+        )
+        result = WorkflowEngine(project_root).amend_task_evidence(
+            run_id,
+            completion,
+            expected_task_version=expected_task_version,
+            expected_state_version=expected_state_version,
+            idempotency_key=idempotency_key,
+        )
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_workflow(result, json_output=json_output)
+
+
 @verification_app.command("prepare")
 def verification_prepare_command(
     run_id: Annotated[str, typer.Argument()],

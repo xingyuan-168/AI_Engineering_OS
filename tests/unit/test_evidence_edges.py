@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -299,7 +300,7 @@ def test_gate_preflight_is_read_only_and_matches_approval(tmp_path: Path) -> Non
     metadata = json.dumps(
         {
             "schema_version": "1.2",
-            "document_version": "0.1.0",
+            "document_version": "0.0.1",
             "status": "review-ready",
             "owner": "product-manager",
             "requirement_refs": ["REQ-G0"],
@@ -359,15 +360,78 @@ def test_gate_preflight_is_read_only_and_matches_approval(tmp_path: Path) -> Non
         after = int(
             connection.execute("SELECT COUNT(*) FROM gate_evidence_bundles").fetchone()[0]
         )
-    assert result["valid"] is True
+    assert result["valid"] is False
     assert before == after == 0
-    approved = engine.submit_approval(
+    assert any(
+        action.get("operation") == "set_document_version"
+        for action in cast(list[dict[str, object]], result["repair_actions"])
+    )
+    for relative in ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"):
+        path = worktree / relative
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                '"document_version":"0.0.1"',
+                '"document_version":"0.1.0"',
+            ),
+            encoding="utf-8",
+        )
+    _git(worktree, "add", "docs/PROJECT_MASTER.md", "docs/SCOPE.md")
+    _git(worktree, "commit", "-m", "docs: repair G0 document versions")
+    repaired_head = _git_output(worktree, "rev-parse", "HEAD")
+    repaired_artifacts: list[ArtifactEvidenceInput] = []
+    repaired_hashes: dict[str, str] = {}
+    for relative in ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"):
+        content = subprocess.check_output(
+            ["git", "-C", str(worktree), "show", f"{repaired_head}:{relative}"]
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        repaired_hashes[relative] = digest
+        repaired_artifacts.append(
+            ArtifactEvidenceInput(
+                path=relative,
+                artifact_type="governance-document",
+                sha256=digest,
+                source_commit=repaired_head,
+            )
+        )
+    completed_task = engine.store.get_task(current.active_task.id)
+    amendment = TaskCompletion(
+        task_id=current.active_task.id,
+        change_kind=ChangeKind.REPOSITORY,
+        branch=current.next_action.branch,
+        commit_sha=repaired_head,
+        push_status=PushStatus.LOCAL_ONLY,
+        artifact_paths_and_hashes=repaired_hashes,
+        artifacts=tuple(repaired_artifacts),
+    )
+    amended = engine.amend_task_evidence(
         waiting.run.id,
+        amendment,
+        expected_task_version=completed_task.state_version,
+        expected_state_version=waiting.run.state_version,
+        idempotency_key="amend-g0-evidence",
+    )
+    replayed = engine.amend_task_evidence(
+        waiting.run.id,
+        amendment,
+        expected_task_version=completed_task.state_version,
+        expected_state_version=waiting.run.state_version,
+        idempotency_key="amend-g0-evidence",
+    )
+    assert replayed.run.state_version == amended.run.state_version
+    result = WorkflowEngine(root, readonly=True).gate_preflight(
+        amended.run.id,
+        gate=Gate.G0,
+        expected_state_version=amended.run.state_version,
+    )
+    assert result["valid"] is True
+    approved = engine.submit_approval(
+        amended.run.id,
         gate=Gate.G0,
         approved=True,
         reviewer="independent-user",
         reason="preflight snapshot reviewed",
-        expected_state_version=waiting.run.state_version,
+        expected_state_version=amended.run.state_version,
         idempotency_key="approve-g0",
         evidence_bundle_hash=str(result["evidence_bundle_hash"]),
     )

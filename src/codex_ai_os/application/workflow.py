@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -322,6 +323,21 @@ class WorkflowEngine:
                 details=exc.details,
                 retryable=exc.retryable,
             ) from exc
+        task_id = run.checkpoint.get("last_completed_task")
+        repair_actions = [
+            {**action, "task_id": task_id}
+            for action in bundle.repair_actions
+        ]
+        if repair_actions:
+            repair_actions.append(
+                {
+                    "operation": "amend_task_evidence",
+                    "task_id": task_id,
+                    "expected": "successor Commit with corrected complete evidence",
+                    "actual": "Gate blocked",
+                    "allowed": True,
+                }
+            )
         return {
             "valid": bundle.status == "complete" and not bundle.missing,
             "gate": gate.value,
@@ -332,7 +348,7 @@ class WorkflowEngine:
             "evidence_bundle_hash": bundle.bundle_hash,
             "requirements": bundle.requirements or {},
             "findings": list(bundle.missing),
-            "repair_actions": list(bundle.repair_actions),
+            "repair_actions": repair_actions,
         }
 
     def complete_task(
@@ -543,6 +559,174 @@ class WorkflowEngine:
                 base_ref=completion.commit_sha or "HEAD",
             )
         return self._result(self.store.get_run(updated.id))
+
+    def amend_task_evidence(
+        self,
+        run_id: str,
+        completion: TaskCompletion,
+        *,
+        expected_task_version: int,
+        expected_state_version: int,
+        idempotency_key: str,
+    ) -> WorkflowResult:
+        """Append corrected commit-bound evidence while a Gate is still pending."""
+
+        if not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "idempotency_key cannot be empty", 2)
+        if completion.change_kind.value != "repository" or completion.commit_sha is None:
+            raise WorkflowError(
+                "GIT_EVIDENCE_REQUIRED",
+                "evidence amendment requires repository completion evidence",
+                40,
+            )
+        request_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "expected_task_version": expected_task_version,
+                    "expected_state_version": expected_state_version,
+                    "completion": completion.model_dump(mode="json"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        previous_hash = self.store.idempotency_request_hash(idempotency_key)
+        if previous_hash is not None:
+            if previous_hash == request_hash:
+                return self._result(self._get_run(run_id))
+            raise WorkflowError(
+                "IDEMPOTENCY_CONFLICT",
+                "idempotency key was already used with different evidence",
+                30,
+            )
+
+        run = self._get_run(run_id)
+        task = self._get_task(completion.task_id)
+        if run.state_version != expected_state_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "workflow state version changed before evidence amendment",
+                30,
+                retryable=True,
+            )
+        if task.state_version != expected_task_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "task state version changed before evidence amendment",
+                30,
+                retryable=True,
+            )
+        if (
+            run.run_status is not RunStatus.NEEDS_APPROVAL
+            or not run.checkpoint.get("pending_gate")
+            or run.checkpoint.get("last_completed_task") != task.id
+            or task.status is not TaskStatus.COMPLETED
+        ):
+            raise WorkflowError(
+                "APPROVAL_REQUIRED",
+                "only the task producing the current pending Gate may amend evidence",
+                20,
+            )
+        if task.run_id != run.id or task.head_commit is None or task.worktree is None:
+            raise WorkflowError("EVIDENCE_STALE", "task amendment context is incomplete", 40)
+        if completion.branch != task.branch:
+            raise WorkflowError(
+                "GIT_EVIDENCE_INVALID", "evidence amendment must stay on the task branch", 40
+            )
+        structured_paths = {artifact.path for artifact in completion.artifacts}
+        compatibility_paths = {
+            path
+            for path in completion.artifact_paths_and_hashes
+            if not path.startswith(f".codex-os/artifacts/{run.id}/")
+        }
+        if structured_paths != compatibility_paths:
+            raise WorkflowError(
+                "EVIDENCE_INCOMPLETE",
+                "evidence amendment requires structured evidence for every repository artifact",
+                40,
+                details={
+                    "repair_actions": [
+                        {
+                            "operation": "record_artifact_evidence",
+                            "expected": sorted(compatibility_paths),
+                            "actual": sorted(structured_paths),
+                            "allowed": True,
+                        }
+                    ]
+                },
+                retryable=True,
+            )
+        worktree = Path(task.worktree).resolve()
+        descendant = _is_commit_ancestor(worktree, task.head_commit, completion.commit_sha)
+        if not descendant and not (
+            self.config.git_push_policy is GitPushPolicy.FIXTURE_LOCAL_ONLY
+            and _commits_are_local_only(worktree, task.head_commit, completion.commit_sha)
+        ):
+            raise WorkflowError(
+                "GIT_EVIDENCE_INVALID",
+                "new evidence Commit must descend from the prior task Commit",
+                40,
+            )
+        allowed_paths = task.allowed_paths or PHASE_DEFINITIONS[run.workflow_phase].allowed_paths
+        try:
+            evidence = GitEvidenceService(
+                worktree,
+                require_push=(
+                    self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
+                ),
+                base_commit=task.head_commit,
+                allowed_paths=allowed_paths,
+            ).verify(completion)
+        except GitEvidenceError as exc:
+            raise WorkflowError("GIT_EVIDENCE_INVALID", str(exc), 40) from exc
+        verified = {
+            "branch": evidence.branch,
+            "commit_sha": evidence.commit_sha,
+            "remote_name": evidence.remote_name,
+            "remote_url": evidence.remote_url,
+            "artifact_hashes": evidence.artifact_hashes,
+            "verified_at": evidence.verified_at,
+            "changed_paths": list(evidence.changed_paths),
+        }
+        checkpoint = {
+            **run.checkpoint,
+            "last_commit_sha": completion.commit_sha,
+            "evidence_refs": list(completion.artifact_paths_and_hashes),
+        }
+
+        def write_evidence(connection: Any) -> None:
+            self.evidence_store.record_task_evidence_in_transaction(
+                connection,
+                run_id=run.id,
+                task_id=task.id,
+                artifacts=completion.artifacts,
+                checks=completion.checks,
+            )
+
+        try:
+            updated = self.store.amend_task_evidence(
+                run=run,
+                task=task,
+                completion=completion,
+                expected_task_version=expected_task_version,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                checkpoint=checkpoint,
+                verified_git_evidence=verified,
+                evidence_writer=write_evidence,
+            )
+        except EvidenceError as exc:
+            raise WorkflowError(
+                exc.code,
+                str(exc),
+                40,
+                details=exc.details,
+                retryable=exc.retryable,
+            ) from exc
+        except WorkflowConflictError as exc:
+            raise WorkflowError("STATE_VERSION_CONFLICT", str(exc), 30, retryable=True) from exc
+        return self._result(updated)
 
     def submit_approval(
         self,
@@ -2095,6 +2279,31 @@ def _default_profiles(project_type: str) -> tuple[str, ...]:
     if project_type == "fullstack":
         return ("backend-project", "frontend-project")
     return ("backend-project",)
+
+
+def _is_commit_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", ancestor, descendant],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+    return result.returncode == 0
+
+
+def _commits_are_local_only(root: Path, *commits: str) -> bool:
+    for commit in commits:
+        result = subprocess.run(
+            ["git", "-C", str(root), "branch", "-r", "--contains", commit],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+        if result.returncode != 0 or result.stdout.strip():
+            return False
+    return True
 
 
 def _input_artifacts_for(phase: WorkflowPhase) -> tuple[str, ...]:

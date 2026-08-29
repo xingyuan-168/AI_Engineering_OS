@@ -228,6 +228,12 @@ Plugin API 1.2 输入：
 
 重复提交相同 task/version/commit 返回原结果；Commit 或证据不同返回 `IDEMPOTENCY_CONFLICT`。
 
+### 4.5 `task_amend_evidence`
+
+仅在 Gate 尚未通过时，允许当前 Gate 的产出任务提交同一分支上的后继 Commit，修正文档 metadata、版本、placeholder 或结构化 Evidence。输入必须包含 `expected_task_version`、`expected_state_version`、稳定幂等键和完整的 artifacts/checks/Git evidence。Runtime 重新校验 clean Worktree、allowed paths、Commit ancestry 与远端推送状态；存在 accepted Handoff、Integration Merge 或后续 Host Operation 时 fail closed。
+
+成功后旧 Evidence 保留审计，新 Evidence、Task head、Workflow `last_commit_sha`、ready Handoff 和 `task.evidence_amended` 事件在同一事务更新，旧 Gate bundle 标记 stale。普通项目不得 amend/rewrite 已推送 Commit；仅 `fixture_local_only` 且旧、新 Commit 均不在远端 ref 时允许本地 Commit 替换。
+
 ## 5. Handoff、集成与清理
 
 ### 5.1 `handoff_review`
@@ -259,6 +265,10 @@ accepted 后 Runtime 在同一事务保存 Review、期望版本和 `integration
 Runtime 重新验证：受管路径、分支已合入 integration/target、Worktree clean、无开放 Review/任务/执行/冲突、无未知文件。任一不满足返回 `WORKTREE_NOT_CLEANABLE`，且不删除。成功记录清理审批与 Git worktree remove 结果；不删除远端分支，除非另有发布后授权。
 
 ## 6. Gate 与审批
+
+### 6.0 `gate_preflight`
+
+`gate_preflight` / `codex-os gate validate` 是唯一只读 dry-run。`codex-os check-docs --run-id RUN-ID --gate G2` 调用同一 evaluator。输出包含 source Commit、state version、policy/requirements/evidence hash、完整 requirements、findings 与 `repair_actions`；preflight 不迁移、不写 Gate bundle、不推进状态。若这些快照未漂移，`approval_submit` 不得因同类证据规则产生不同结论。
 
 ### 6.1 `approval_submit`
 
@@ -362,6 +372,7 @@ Runtime 验证 content/source 路径、hash、项目范围与 Secret 扫描，�
 | `release_candidate_create` | `codex-os release candidate` |
 | `approval_submit` | `codex-os approve|reject` |
 | `task_complete` | `codex-os task complete` |
+| `task_amend_evidence` | `codex-os task amend-evidence` |
 | `memory_candidate_submit` | `codex-os memory submit` |
 | `memory_review` | `codex-os memory review` |
 | `memory_search` | `codex-os memory search` |

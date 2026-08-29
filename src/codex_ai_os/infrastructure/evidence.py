@@ -89,82 +89,105 @@ class EvidenceStore:
         with self.database.connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
-                task = connection.execute(
-                    "SELECT run_id, worktree FROM tasks WHERE id = ?", (task_id,)
-                ).fetchone()
-                if task is None or str(task["run_id"]) != run_id:
-                    raise EvidenceError("EVIDENCE_STALE", "task/run evidence identity mismatch")
-                worktree = Path(str(task["worktree"])).resolve() if task["worktree"] else self.root
-                for artifact in artifacts:
-                    self._verify_artifact(worktree, artifact)
-                    connection.execute(
-                        """
-                        INSERT OR IGNORE INTO artifact_evidence(
-                            id, bundle_id, run_id, task_id, path, artifact_type,
-                            content_hash, source_commit, status, created_at
-                        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            new_id("ARTEVIDENCE"),
-                            run_id,
-                            task_id,
-                            artifact.path,
-                            artifact.artifact_type,
-                            artifact.sha256.casefold(),
-                            artifact.source_commit.casefold(),
-                            artifact.status.value,
-                            _utc_now(),
-                        ),
-                    )
-                for check in checks:
-                    execution = connection.execute(
-                        "SELECT task_id, exit_code, status FROM executions WHERE id = ?",
-                        (check.execution_id,),
-                    ).fetchone()
-                    if (
-                        execution is None
-                        or str(execution["task_id"]) != task_id
-                        or execution["exit_code"] != check.exit_code
-                        or (check.status.value == "passed" and execution["status"] != "completed")
-                    ):
-                        raise EvidenceError(
-                            "EVIDENCE_STALE", f"check execution is not verified: {check.name}"
-                        )
-                    self._verify_report(
-                        worktree,
-                        check.report_path,
-                        check.report_hash,
-                        source_commit=check.source_commit,
-                    )
-                    connection.execute(
-                        """
-                        INSERT OR IGNORE INTO check_evidence(
-                            id, bundle_id, run_id, task_id, check_name, command_hash,
-                            execution_id, exit_code, report_path, report_hash,
-                            source_commit, status, executed_at, started_at, ended_at
-                        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            new_id("CHECKEVIDENCE"),
-                            run_id,
-                            task_id,
-                            check.name,
-                            check.command_hash.casefold(),
-                            check.execution_id,
-                            check.exit_code,
-                            check.report_path,
-                            check.report_hash.casefold(),
-                            check.source_commit.casefold(),
-                            check.status.value,
-                            check.executed_at,
-                            check.started_at,
-                            check.ended_at,
-                        ),
-                    )
+                self.record_task_evidence_in_transaction(
+                    connection,
+                    run_id=run_id,
+                    task_id=task_id,
+                    artifacts=artifacts,
+                    checks=checks,
+                )
                 connection.commit()
             except (sqlite3.Error, EvidenceError):
                 connection.rollback()
                 raise
+
+    def record_task_evidence_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        task_id: str,
+        artifacts: tuple[ArtifactEvidenceInput, ...],
+        checks: tuple[CheckEvidenceInput, ...],
+    ) -> None:
+        """Verify and append task evidence inside the caller's transaction."""
+
+        if not artifacts:
+            raise EvidenceError(
+                "EVIDENCE_INCOMPLETE", "repository task requires structured artifacts"
+            )
+        task = connection.execute(
+            "SELECT run_id, worktree FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if task is None or str(task["run_id"]) != run_id:
+            raise EvidenceError("EVIDENCE_STALE", "task/run evidence identity mismatch")
+        worktree = Path(str(task["worktree"])).resolve() if task["worktree"] else self.root
+        for artifact in artifacts:
+            self._verify_artifact(worktree, artifact)
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO artifact_evidence(
+                    id, bundle_id, run_id, task_id, path, artifact_type,
+                    content_hash, source_commit, status, created_at
+                ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("ARTEVIDENCE"),
+                    run_id,
+                    task_id,
+                    artifact.path,
+                    artifact.artifact_type,
+                    artifact.sha256.casefold(),
+                    artifact.source_commit.casefold(),
+                    artifact.status.value,
+                    _utc_now(),
+                ),
+            )
+        for check in checks:
+            execution = connection.execute(
+                "SELECT task_id, exit_code, status FROM executions WHERE id = ?",
+                (check.execution_id,),
+            ).fetchone()
+            if (
+                execution is None
+                or str(execution["task_id"]) != task_id
+                or execution["exit_code"] != check.exit_code
+                or (check.status.value == "passed" and execution["status"] != "completed")
+            ):
+                raise EvidenceError(
+                    "EVIDENCE_STALE", f"check execution is not verified: {check.name}"
+                )
+            self._verify_report(
+                worktree,
+                check.report_path,
+                check.report_hash,
+                source_commit=check.source_commit,
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO check_evidence(
+                    id, bundle_id, run_id, task_id, check_name, command_hash,
+                    execution_id, exit_code, report_path, report_hash,
+                    source_commit, status, executed_at, started_at, ended_at
+                ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("CHECKEVIDENCE"),
+                    run_id,
+                    task_id,
+                    check.name,
+                    check.command_hash.casefold(),
+                    check.execution_id,
+                    check.exit_code,
+                    check.report_path,
+                    check.report_hash.casefold(),
+                    check.source_commit.casefold(),
+                    check.status.value,
+                    check.executed_at,
+                    check.started_at,
+                    check.ended_at,
+                ),
+            )
 
     def record_review(
         self,

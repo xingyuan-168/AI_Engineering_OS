@@ -342,6 +342,59 @@ def task_complete(
 
 
 @mcp.tool()
+def task_amend_evidence(
+    project_root: str,
+    run_id: str,
+    task_id: str,
+    expected_task_version: int,
+    expected_state_version: int,
+    idempotency_key: str,
+    branch: str,
+    commit_sha: str,
+    push_status: str,
+    remote_name: str | None = None,
+    artifact_paths_and_hashes: dict[str, str] | None = None,
+    verification_results: list[str] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+    checks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Append corrected commit-bound task evidence before the pending Gate is approved."""
+
+    def operation() -> dict[str, Any]:
+        structured_artifacts = tuple(
+            ArtifactEvidenceInput.model_validate(item) for item in artifacts or ()
+        )
+        structured_checks = tuple(
+            CheckEvidenceInput.model_validate(item) for item in checks or ()
+        )
+        completion = TaskCompletion(
+            task_id=task_id,
+            change_kind=ChangeKind.REPOSITORY,
+            branch=branch,
+            commit_sha=commit_sha,
+            remote_name=remote_name,
+            push_status=PushStatus(push_status),
+            artifact_paths_and_hashes=artifact_paths_and_hashes
+            or {artifact.path: artifact.sha256 for artifact in structured_artifacts},
+            verification_results=tuple(verification_results or ()),
+            artifacts=structured_artifacts,
+            checks=structured_checks,
+        )
+        return _workflow_payload(
+            WorkflowEngine(Path(project_root)).amend_task_evidence(
+                run_id,
+                completion,
+                expected_task_version=expected_task_version,
+                expected_state_version=expected_state_version,
+                idempotency_key=idempotency_key,
+            ),
+            Path(project_root),
+        )
+
+    return _invoke(operation)
+
+
+@mcp.tool()
 def handoff_review(
     project_root: str,
     handoff_id: str,

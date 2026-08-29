@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -43,6 +44,23 @@ class WorkflowStore:
         if row is None:
             raise WorkflowNotFoundError(f"project not registered: {project_id}")
         return str(row["config_hash"])
+
+    def idempotency_request_hash(self, idempotency_key: str) -> str | None:
+        with self.database.read_connection() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM events WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value: object = json.loads(str(row["payload_json"]))
+        except json.JSONDecodeError:
+            return ""
+        if not isinstance(value, dict):
+            return ""
+        request_hash = cast(dict[object, object], value).get("request_hash")
+        return request_hash if isinstance(request_hash, str) else ""
 
     def find_active_run(
         self, project_id: str, workflow_name: str, goal: str
@@ -611,6 +629,167 @@ class WorkflowStore:
                         "reviewer": reviewer,
                         "reason": reason,
                         "operation_id": operation_id,
+                    },
+                )
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
+    def amend_task_evidence(
+        self,
+        *,
+        run: WorkflowRun,
+        task: TaskRecord,
+        completion: TaskCompletion,
+        expected_task_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        checkpoint: dict[str, Any],
+        verified_git_evidence: dict[str, Any],
+        evidence_writer: Callable[[sqlite3.Connection], None],
+    ) -> WorkflowRun:
+        """Atomically append replacement evidence before the pending Gate is approved."""
+
+        now = _utc_now()
+        completion_json = completion.model_dump_json()
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                existing = connection.execute(
+                    "SELECT payload_json FROM events WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing is not None:
+                    payload_value: object = json.loads(str(existing["payload_json"]))
+                    if isinstance(payload_value, dict) and cast(
+                        dict[object, object], payload_value
+                    ).get("request_hash") == request_hash:
+                        connection.rollback()
+                        return self.get_run(run.id)
+                    raise WorkflowConflictError(
+                        "idempotency key was already used with different evidence"
+                    )
+                _assert_run_version(connection, run.id, run.state_version)
+                current_task = connection.execute(
+                    "SELECT status, state_version, head_commit FROM tasks WHERE id = ?",
+                    (task.id,),
+                ).fetchone()
+                if (
+                    current_task is None
+                    or str(current_task["status"]) != TaskStatus.COMPLETED.value
+                    or int(current_task["state_version"]) != expected_task_version
+                    or str(current_task["head_commit"] or "").casefold()
+                    != str(task.head_commit or "").casefold()
+                ):
+                    raise WorkflowConflictError("task evidence amendment version conflict")
+                accepted = connection.execute(
+                    "SELECT 1 FROM handoffs WHERE task_id = ? AND status = 'accepted' LIMIT 1",
+                    (task.id,),
+                ).fetchone()
+                merged = connection.execute(
+                    "SELECT 1 FROM integration_merges WHERE task_id = ? LIMIT 1",
+                    (task.id,),
+                ).fetchone()
+                operation = connection.execute(
+                    """
+                    SELECT 1 FROM host_operations
+                    WHERE run_id = ? AND (task_id = ? OR task_id IS NULL)
+                      AND status IN ('pending', 'running', 'succeeded', 'reconcile_required')
+                    LIMIT 1
+                    """,
+                    (run.id, task.id),
+                ).fetchone()
+                if accepted is not None or merged is not None or operation is not None:
+                    raise WorkflowConflictError(
+                        "task evidence cannot change after handoff, merge, or host operation"
+                    )
+
+                evidence_writer(connection)
+                changed = connection.execute(
+                    """
+                    UPDATE tasks
+                    SET output_ref = ?, head_commit = ?, branch = ?,
+                        review_status = ?, state_version = state_version + 1,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'completed' AND state_version = ?
+                    """,
+                    (
+                        completion_json,
+                        completion.commit_sha,
+                        completion.branch,
+                        "verified" if completion.verification_results else "pending",
+                        now,
+                        task.id,
+                        expected_task_version,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise WorkflowConflictError("task evidence amendment version conflict")
+                for path, digest in completion.artifact_paths_and_hashes.items():
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO artifacts(
+                            id, run_id, task_id, path, kind, content_hash,
+                            source_commit, status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'verified', ?)
+                        """,
+                        (
+                            new_id("ARTIFACT"),
+                            run.id,
+                            task.id,
+                            path,
+                            _artifact_kind(path),
+                            digest,
+                            completion.commit_sha,
+                            now,
+                        ),
+                    )
+                connection.execute(
+                    """
+                    UPDATE handoffs
+                    SET artifact_refs_json = ?, commit_refs_json = ?, tests_json = ?,
+                        updated_at = ?, state_version = state_version + 1
+                    WHERE task_id = ? AND status = 'ready'
+                    """,
+                    (
+                        _json(completion.artifact_paths_and_hashes),
+                        _json(verified_git_evidence),
+                        _json(completion.verification_results),
+                        now,
+                        task.id,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE gate_evidence_bundles SET status = 'stale' "
+                    "WHERE run_id = ? AND status IN ('building', 'complete')",
+                    (run.id,),
+                )
+                updated = connection.execute(
+                    """
+                    UPDATE workflow_runs
+                    SET checkpoint_json = ?, state_version = state_version + 1, updated_at = ?
+                    WHERE id = ? AND state_version = ?
+                    """,
+                    (_json(checkpoint), now, run.id, run.state_version),
+                ).rowcount
+                if updated != 1:
+                    raise WorkflowConflictError("workflow evidence amendment conflict")
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=task.id,
+                    event_type="task.evidence_amended",
+                    idempotency_key=idempotency_key,
+                    payload={
+                        "request_hash": request_hash,
+                        "old_commit": task.head_commit,
+                        "new_commit": completion.commit_sha,
+                        "branch": completion.branch,
+                        "artifact_hashes": completion.artifact_paths_and_hashes,
+                        "git_verification": verified_git_evidence,
                     },
                 )
                 connection.commit()

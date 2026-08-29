@@ -52,6 +52,13 @@ PUBLIC_TOOL_CONTRACTS: tuple[PublicToolContract, ...] = (
         ("expected_task_version", "idempotency_key"),
     ),
     PublicToolContract(
+        "task_amend_evidence",
+        ("task amend-evidence",),
+        "WorkflowEngine",
+        True,
+        ("expected_task_version", "expected_state_version", "idempotency_key"),
+    ),
+    PublicToolContract(
         "handoff_review",
         ("handoff review",),
         "WorkflowEngine",
