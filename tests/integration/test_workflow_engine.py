@@ -251,12 +251,32 @@ def test_task_completion_is_idempotent_and_conflicting_evidence_is_rejected(
     assert started.active_task is not None
     completion = _completion(started.active_task.id)
 
-    first = engine.complete_task(started.run.id, completion)
-    repeated = engine.complete_task(started.run.id, completion)
+    with pytest.raises(WorkflowError) as stale:
+        engine.complete_task(
+            started.run.id,
+            completion,
+            expected_task_version=started.active_task.state_version + 1,
+            idempotency_key="complete-intake",
+        )
+    assert stale.value.code == "STATE_VERSION_CONFLICT"
+
+    first = engine.complete_task(
+        started.run.id,
+        completion,
+        expected_task_version=started.active_task.state_version,
+        idempotency_key="complete-intake",
+    )
+    repeated = engine.complete_task(
+        started.run.id,
+        completion,
+        expected_task_version=started.active_task.state_version,
+        idempotency_key="complete-intake",
+    )
 
     assert repeated.run.state_version == first.run.state_version
-    with pytest.raises(WorkflowError, match="different evidence"):
+    with pytest.raises(WorkflowError, match="different evidence") as conflicting:
         engine.complete_task(started.run.id, _completion(started.active_task.id, "b"))
+    assert conflicting.value.code == "IDEMPOTENCY_CONFLICT"
 
 
 def test_rejected_gate_blocks_and_resume_creates_new_task(tmp_path: Path) -> None:

@@ -233,7 +233,14 @@ class WorkflowEngine:
         except WorkflowNotFoundError as exc:
             raise WorkflowError("RECOVERY_UNAVAILABLE", str(exc), 30) from exc
 
-    def complete_task(self, run_id: str, completion: TaskCompletion) -> WorkflowResult:
+    def complete_task(
+        self,
+        run_id: str,
+        completion: TaskCompletion,
+        *,
+        expected_task_version: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> WorkflowResult:
         run = self._get_run(run_id)
         self._require_migration_revalidation(run)
         task = self._get_task(completion.task_id)
@@ -246,10 +253,18 @@ class WorkflowEngine:
             if task.output_ref == completion_json:
                 return self._result(run)
             raise WorkflowError(
-                "STATE_CONFLICT",
+                "IDEMPOTENCY_CONFLICT",
                 "task already completed with different evidence",
                 30,
             )
+        if expected_task_version is not None and task.state_version != expected_task_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "task state version changed before completion",
+                30,
+            )
+        if idempotency_key is not None and not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "idempotency_key cannot be empty", 2)
 
         actions = _actions_from_checkpoint(run.checkpoint)
         action = next(
@@ -430,11 +445,22 @@ class WorkflowEngine:
         approved: bool,
         reviewer: str,
         reason: str,
+        expected_state_version: int | None = None,
+        idempotency_key: str | None = None,
+        evidence_bundle_hash: str | None = None,
         g4_evidence: G4ApprovalInput | None = None,
         invocation: InvocationContext | None = None,
     ) -> WorkflowResult:
         run = self._get_run(run_id)
         self._require_migration_revalidation(run)
+        if expected_state_version is not None and run.state_version != expected_state_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "workflow state version changed before gate review",
+                30,
+            )
+        if idempotency_key is not None and not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "idempotency_key cannot be empty", 2)
         if run.run_status is not RunStatus.NEEDS_APPROVAL:
             raise WorkflowError("APPROVAL_REQUIRED", "workflow is not waiting for approval", 20)
         pending_gate = run.checkpoint.get("pending_gate")
@@ -473,6 +499,15 @@ class WorkflowEngine:
                 self.evidence_store.require_complete(bundle)
             except EvidenceError as exc:
                 raise WorkflowError(exc.code, str(exc), 40) from exc
+            if (
+                evidence_bundle_hash is not None
+                and evidence_bundle_hash.casefold() != bundle.bundle_hash.casefold()
+            ):
+                raise WorkflowError(
+                    "EVIDENCE_STALE",
+                    "gate evidence bundle changed before approval",
+                    40,
+                )
 
         publication_intent: dict[str, object] | None = None
         if approved and gate is Gate.G4 and self.config.schema_version != "1.0":

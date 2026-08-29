@@ -195,6 +195,9 @@ def approval_submit(
     approved: bool,
     reviewer: str,
     reason: str,
+    expected_state_version: int | None = None,
+    idempotency_key: str | None = None,
+    evidence_bundle_hash: str | None = None,
     pr_number: int | None = None,
     pr_url: str | None = None,
     merge_commit: str | None = None,
@@ -236,6 +239,9 @@ def approval_submit(
                 approved=approved,
                 reviewer=reviewer,
                 reason=reason,
+                expected_state_version=expected_state_version,
+                idempotency_key=idempotency_key,
+                evidence_bundle_hash=evidence_bundle_hash,
                 g4_evidence=g4_evidence,
                 invocation=context,
             ),
@@ -252,6 +258,8 @@ def task_complete(
     run_id: str,
     task_id: str,
     change_kind: str,
+    expected_task_version: int | None = None,
+    idempotency_key: str | None = None,
     branch: str | None = None,
     commit_sha: str | None = None,
     remote_name: str | None = None,
@@ -264,6 +272,20 @@ def task_complete(
     """Complete the active task with artifact hashes, verification, and required Git evidence."""
 
     def operation() -> dict[str, Any]:
+        config = load_project_config(Path(project_root).resolve())
+        warnings: tuple[str, ...] = ()
+        if config.schema_version == RUNTIME_VERSIONS.api:
+            if expected_task_version is None or not (idempotency_key or "").strip():
+                raise WorkflowError(
+                    "CONFIG_INVALID",
+                    "API 1.2 task_complete requires expected_task_version and idempotency_key",
+                    2,
+                )
+        elif expected_task_version is None or not (idempotency_key or "").strip():
+            warnings = (
+                "Legacy task_complete without expected_task_version/idempotency_key is "
+                "deprecated and will be removed in 0.3.0.",
+            )
         structured_artifacts = tuple(
             ArtifactEvidenceInput.model_validate(item) for item in artifacts or ()
         )
@@ -285,8 +307,13 @@ def task_complete(
             artifacts=structured_artifacts,
             checks=structured_checks,
         )
-        result = WorkflowEngine(Path(project_root)).complete_task(run_id, completion)
-        return _workflow_payload(result, Path(project_root))
+        result = WorkflowEngine(Path(project_root)).complete_task(
+            run_id,
+            completion,
+            expected_task_version=expected_task_version,
+            idempotency_key=idempotency_key,
+        )
+        return _workflow_payload(result, Path(project_root), warnings=warnings)
 
     return _invoke(operation)
 
@@ -541,13 +568,17 @@ def database_migrate(
 
 
 @mcp.tool()
-def release_candidate_create(project_root: str, run_id: str) -> dict[str, Any]:
+def release_candidate_create(
+    project_root: str, run_id: str, expected_task_version: int | None = None
+) -> dict[str, Any]:
     """Build and assemble a candidate in the active Release Worktree and artifact area."""
 
     def operation() -> dict[str, Any]:
         if load_project_config(Path(project_root)).schema_version == "1.0":
             return _legacy_release_candidate(Path(project_root), run_id)
-        candidate = ReleaseCandidateService(Path(project_root)).create(run_id)
+        candidate = ReleaseCandidateService(Path(project_root)).create(
+            run_id, expected_task_version=expected_task_version
+        )
         return _success(
             candidate_id=candidate.id,
             version=candidate.version,

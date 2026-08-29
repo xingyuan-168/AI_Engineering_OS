@@ -360,9 +360,11 @@ Runtime 验证 content/source 路径、hash、项目范围与 Secret 扫描，�
 | `database_migrate` | `codex-os database migrate` |
 | `release_candidate_create` | `codex-os release candidate` |
 | `approval_submit` | `codex-os approve|reject` |
+| `task_complete` | `codex-os task complete` |
 | `memory_candidate_submit` | `codex-os memory submit` |
 | `memory_review` | `codex-os memory review` |
 | `memory_search` | `codex-os memory search` |
+| `docs_check` | `codex-os check-docs` |
 
 CLI `--json` stdout 只输出一个通用响应；日志写 stderr。MCP 与 CLI 必须产生相同业务错误码和状态变化。
 

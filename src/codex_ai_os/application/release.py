@@ -121,7 +121,11 @@ class ReleaseCandidateService:
         self.require_offline_cache = execution_service is None
 
     def create(
-        self, run_id: str, *, operation: HostOperation | None = None
+        self,
+        run_id: str,
+        *,
+        operation: HostOperation | None = None,
+        expected_task_version: int | None = None,
     ) -> ReleaseCandidate:
         result = WorkflowEngine(self.root).status(run_id)
         if (
@@ -132,6 +136,15 @@ class ReleaseCandidateService:
             raise WorkflowError(
                 "RELEASE_INCOMPLETE",
                 "release candidate requires an active Release task after G3 approval",
+                30,
+            )
+        if (
+            expected_task_version is not None
+            and result.active_task.state_version != expected_task_version
+        ):
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "Release task version changed before candidate lookup",
                 30,
             )
         assignment = self.worktrees.get_for_task(result.active_task.id)
