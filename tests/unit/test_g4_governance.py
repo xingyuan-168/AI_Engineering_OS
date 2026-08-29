@@ -10,6 +10,11 @@ import pytest
 from codex_ai_os.application.g4 import (
     GitHubReleaseGovernanceService,
     ReleaseGovernanceError,
+    _asset_map,
+    _decode_json,
+    _is_missing_release,
+    _materialize_asset,
+    _require_within,
 )
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine
@@ -207,6 +212,115 @@ def test_release_assets_resume_partial_and_unknown_uploads(tmp_path: Path) -> No
     assert unknown_service._reconcile_assets(
         "v0.2.0", unknown.release(), {first.name: first}
     )[first.name]["sha256"]
+
+
+def test_g4_json_asset_and_materialization_helpers_fail_closed(tmp_path: Path) -> None:
+    assert _decode_json(_result([], stdout='{"ok": true}')) == {"ok": True}
+    for value in ("not-json", "[]"):
+        with pytest.raises(ReleaseGovernanceError) as invalid:
+            _decode_json(_result([], stdout=value))
+        assert invalid.value.code == "GITHUB_PR_INVALID"
+
+    assert _asset_map({"assets": [{"name": "artifact.whl", "id": "A1"}]})[
+        "artifact.whl"
+    ]["id"] == "A1"
+    invalid_assets: tuple[object, ...] = (
+        {"bad": 1},
+        ["invalid"],
+        [{"name": ""}],
+        [{"name": "same"}, {"name": "same"}],
+    )
+    for assets in invalid_assets:
+        with pytest.raises(ReleaseGovernanceError):
+            _asset_map({"assets": assets})
+
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    source = managed / "source.whl"
+    source.write_bytes(b"wheel")
+    target = managed / "publication" / "artifact.whl"
+    assert _materialize_asset(source, target).read_bytes() == b"wheel"
+    assert _materialize_asset(source, target) == target.resolve()
+    target.write_bytes(b"different")
+    with pytest.raises(ReleaseGovernanceError, match="differs"):
+        _materialize_asset(source, target)
+    with pytest.raises(ReleaseGovernanceError, match="regular file"):
+        _materialize_asset(managed / "missing", managed / "other")
+    residue_target = managed / "residue.whl"
+    residue_target.with_name(".residue.whl.tmp").write_bytes(b"residue")
+    with pytest.raises(ReleaseGovernanceError) as residue:
+        _materialize_asset(source, residue_target)
+    assert residue.value.code == "OPERATION_RECONCILE_REQUIRED"
+
+    _require_within(source, managed, "asset")
+    with pytest.raises(ReleaseGovernanceError) as escaped:
+        _require_within(tmp_path / "outside", managed, "asset")
+    assert escaped.value.code == "PATH_ESCAPE"
+    assert _is_missing_release(_result([], returncode=1, stderr="HTTP 404"))
+    assert not _is_missing_release(_result([], returncode=1, stderr="permission denied"))
+
+
+def test_g4_remote_asset_and_release_state_fail_closed(tmp_path: Path) -> None:
+    root = _project(tmp_path / "remote-edges")
+    service = GitHubReleaseGovernanceService(root, runner=_AssetRunner())
+    assets: tuple[dict[str, object], ...] = (
+        {},
+        {"apiUrl": "http://api.github.com/assets/1"},
+        {"apiUrl": "https://user@example.invalid/assets/1"},
+    )
+    for asset in assets:
+        with pytest.raises(ReleaseGovernanceError) as untrusted:
+            service._remote_asset_hash(asset)
+        assert untrusted.value.code == "GITHUB_RELEASE_BLOCKED"
+    unavailable = GitHubReleaseGovernanceService(root, runner=_RaisingRunner())
+    with pytest.raises(ReleaseGovernanceError, match="download"):
+        unavailable._remote_asset_hash(
+            {"apiUrl": "https://api.github.com/repos/example/releases/assets/1"}
+        )
+    with pytest.raises(ReleaseGovernanceError, match="inspect"):
+        unavailable._release_data("v0.2.0")
+    with pytest.raises(ReleaseGovernanceError) as ancestry:
+        unavailable._require_ancestor("a" * 40, "b" * 40)
+    assert ancestry.value.code == "GIT_EVIDENCE_INVALID"
+
+    artifact = root / "artifact.whl"
+    artifact.write_bytes(b"wheel")
+    with pytest.raises(ReleaseGovernanceError, match="unauthorized"):
+        service._reconcile_assets(
+            "v0.2.0",
+            {
+                "isDraft": True,
+                "assets": [
+                    {
+                        "name": "extra.bin",
+                        "apiUrl": "https://api.github.com/assets/1",
+                    }
+                ],
+            },
+            {artifact.name: artifact},
+        )
+    with pytest.raises(ReleaseGovernanceError, match="missing asset"):
+        service._reconcile_assets(
+            "v0.2.0", {"isDraft": False, "assets": []}, {artifact.name: artifact}
+        )
+    with pytest.raises(ReleaseGovernanceError, match="regular file"):
+        service._reconcile_assets(
+            "v0.2.0",
+            {"isDraft": True, "assets": []},
+            {"missing.whl": root / "missing.whl"},
+        )
+
+    class _StillDraftRunner(_AssetRunner):
+        def __call__(
+            self, command: list[str], cwd: Path, timeout: float
+        ) -> subprocess.CompletedProcess[bytes]:
+            if command[:3] == ["gh", "release", "edit"]:
+                return _result(command)
+            return super().__call__(command, cwd, timeout)
+
+    still_draft = GitHubReleaseGovernanceService(root, runner=_StillDraftRunner())
+    with pytest.raises(ReleaseGovernanceError, match="still a draft"):
+        still_draft._publish_release("v0.2.0", {"isDraft": True})
 
 
 class _NeverRunner:

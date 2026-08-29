@@ -188,10 +188,83 @@ def test_operation_intent_participates_in_callers_transaction(tmp_path: Path) ->
             request={"base_commit": "a" * 40},
         )
         connection.rollback()
-
     with pytest.raises(HostOperationError, match="not found"):
         store.get(operation.operation_id)
 
+
+def test_operation_invalid_transitions_fail_closed(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    with pytest.raises(HostOperationError) as missing:
+        store.get("OP-MISSING")
+    assert missing.value.code == "RECOVERY_UNAVAILABLE"
+
+    with store.database.connection() as connection:
+        with pytest.raises(HostOperationError, match="active transaction"):
+            store.ensure_pending_in_transaction(
+                connection,
+                project_id="PROJECT-OPS",
+                kind=HostOperationKind.RELEASE_PUBLISH,
+                idempotency_key="publish",
+                request={},
+            )
+        connection.execute("BEGIN IMMEDIATE")
+        with pytest.raises(HostOperationError, match="idempotency_key"):
+            store.ensure_pending_in_transaction(
+                connection,
+                project_id="PROJECT-OPS",
+                kind=HostOperationKind.RELEASE_PUBLISH,
+                idempotency_key=" ",
+                request={},
+            )
+        connection.rollback()
+
+    pending = _operation(store, "invalid-transitions")
+    with pytest.raises(HostOperationError, match="invalid operation lease"):
+        store.acquire(pending.operation_id, expected_version=0, lease_owner="", lease_seconds=0)
+    running = store.acquire(pending.operation_id, expected_version=0, lease_owner="os:test")
+    with pytest.raises(HostOperationError) as wrong_owner:
+        store.mark_succeeded(
+            running.operation_id,
+            expected_version=running.state_version,
+            lease_owner="os:other",
+            result={},
+        )
+    assert wrong_owner.value.code == "OPERATION_LEASED"
+    with pytest.raises(HostOperationError, match="error_code"):
+        store.mark_failed(
+            running.operation_id,
+            expected_version=running.state_version,
+            lease_owner="os:test",
+            error_code=" ",
+        )
+    succeeded = store.mark_succeeded(
+        running.operation_id,
+        expected_version=running.state_version,
+        lease_owner="os:test",
+        result={},
+    )
+    assert store.acquire(
+        succeeded.operation_id,
+        expected_version=succeeded.state_version,
+        lease_owner="os:test",
+    ).status is HostOperationStatus.SUCCEEDED
+    with pytest.raises(HostOperationError, match="completed operation"):
+        store.require_reconciliation(
+            succeeded.operation_id,
+            expected_version=succeeded.state_version,
+        )
+    with pytest.raises(HostOperationError, match="error_code"):
+        store.require_reconciliation(
+            pending.operation_id,
+            expected_version=0,
+            error_code=" ",
+        )
+    with pytest.raises(HostOperationError, match="does not require"):
+        store.reconcile(
+            _operation(store, "not-unknown").operation_id,
+            expected_version=0,
+            outcome=ReconciliationOutcome.FAILED,
+        )
 
 def _operation(store: HostOperationStore, key: str) -> HostOperation:
     return store.ensure_pending(

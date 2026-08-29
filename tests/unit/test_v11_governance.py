@@ -19,6 +19,7 @@ from codex_ai_os.application.verification import VerificationService
 from codex_ai_os.application.verification_cache import (
     VerificationCachePrepareError,
     VerificationCachePreparer,
+    validate_verification_cache,
     validate_verification_target,
 )
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
@@ -553,7 +554,48 @@ def test_host_operation_executes_verification_prepare_cache(
     assert (cache / "image-scan.json").is_file()
     assert succeeded.result["files"]["requirements.txt"]
     assert VerificationService(root, bootstrap_dependencies=True)._wheelhouse(root) == cache
+    manifest_path = cache / "verification-cache-manifest.json"
+    baseline = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutations: tuple[tuple[str, object], ...] = (
+        ("schema_version", "0.0"),
+        ("kind", "unknown"),
+        ("network_approval_ref", ""),
+        ("uv_lock_hash", "0" * 64),
+        ("target_python", "3.11"),
+        ("platform", "linux-arm64"),
+        ("execution_image", "python:invalid"),
+        ("read_only", False),
+        ("files", []),
+        ("files", {"../unsafe": "a" * 64}),
+        ("image", {}),
+        ("trivy_cache", {}),
+        ("wheelhouse", {}),
+        ("wheelhouse", {"path": ".", "wheels": []}),
+        ("wheelhouse", {"path": ".", "wheels": ["missing.whl"]}),
+        ("requirements", {}),
+    )
+    for field, value in mutations:
+        changed = {**baseline, field: value}
+        manifest_path.chmod(stat.S_IREAD | stat.S_IWRITE)
+        manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+        manifest_path.chmod(stat.S_IREAD)
+        with pytest.raises(VerificationCachePrepareError):
+            validate_verification_cache(cache, lock_path=root / "uv.lock")
+    manifest_path.chmod(stat.S_IREAD | stat.S_IWRITE)
+    manifest_path.write_text(json.dumps(baseline), encoding="utf-8")
+    manifest_path.chmod(stat.S_IREAD)
+    with pytest.raises(VerificationCachePrepareError, match="request hash"):
+        validate_verification_cache(
+            cache,
+            lock_path=root / "uv.lock",
+            expected_request_hash="0" * 64,
+        )
+    with pytest.raises(VerificationCachePrepareError) as missing_lock:
+        validate_verification_cache(cache, lock_path=root / "missing.lock")
+    assert missing_lock.value.code == "SANDBOX_DEPENDENCIES_UNAVAILABLE"
     _make_writable(cache)
+    with pytest.raises(VerificationCachePrepareError, match="permissions"):
+        validate_verification_cache(cache, lock_path=root / "uv.lock")
     (cache / "fixture-1.0-py3-none-any.whl").write_bytes(b"tampered")
     with pytest.raises(ExecutionServiceError) as drifted:
         VerificationService(root, bootstrap_dependencies=True)._wheelhouse(root)

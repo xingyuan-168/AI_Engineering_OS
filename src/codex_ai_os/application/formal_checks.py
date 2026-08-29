@@ -87,10 +87,13 @@ def check_build_install(root: Path) -> None:
 
 
 def check_real_oci() -> None:
+    container_environment = any(
+        key.casefold() == "container" and bool(value) for key, value in os.environ.items()
+    )
     if not (
         Path("/.dockerenv").is_file()
         or Path("/run/.containerenv").is_file()
-        or bool(dict(os.environ).get("container"))
+        or container_environment
     ):
         raise FormalCheckError("formal real-oci check is not running inside a container")
     if os.name == "nt":

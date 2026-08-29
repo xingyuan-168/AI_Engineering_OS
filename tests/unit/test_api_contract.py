@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from codex_ai_os.application.responses import error_envelope, success_envelope
 from codex_ai_os.domain.coordination import HandoffReviewInput
 from codex_ai_os.domain.governance import (
+    CheckEvidenceInput,
+    CheckStatus,
     ReviewDecision,
     ReviewFinding,
     ReviewFindingSeverity,
@@ -79,3 +81,29 @@ def test_accepted_handoff_rejects_open_high_finding() -> None:
             report_ref="reports/review.json",
             report_hash="b" * 64,
         )
+
+
+def test_check_evidence_status_and_timestamps_fail_closed() -> None:
+    baseline = {
+        "name": "pytest",
+        "command_hash": "a" * 64,
+        "execution_id": "EXEC-1",
+        "exit_code": 0,
+        "report_path": "reports/pytest.json",
+        "report_hash": "b" * 64,
+        "source_commit": "c" * 40,
+        "started_at": "2026-08-29T00:00:00+00:00",
+        "ended_at": "2026-08-29T00:01:00+00:00",
+        "executed_at": "2026-08-29T00:01:00+00:00",
+        "status": CheckStatus.PASSED,
+    }
+    CheckEvidenceInput.model_validate(baseline)
+    for updates in (
+        {"exit_code": 7},
+        {"status": CheckStatus.FAILED},
+        {"started_at": "invalid"},
+        {"started_at": "2026-08-29T00:00:00"},
+        {"ended_at": "2026-08-28T00:00:00+00:00"},
+    ):
+        with pytest.raises(ValidationError):
+            CheckEvidenceInput.model_validate({**baseline, **updates})

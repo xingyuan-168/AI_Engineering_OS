@@ -131,6 +131,40 @@ def test_start_is_idempotent_for_same_active_goal(tmp_path: Path) -> None:
     assert first.active_task == second.active_task
 
 
+def test_start_and_gate_concurrency_inputs_fail_closed(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    with pytest.raises(WorkflowError) as empty:
+        engine.start(" ")
+    assert empty.value.code == "CONFIG_INVALID"
+    with pytest.raises(WorkflowError, match="unsupported workflow"):
+        engine.start("goal", workflow_name="unknown")
+    with pytest.raises(WorkflowError) as unknown_profile:
+        engine.start("goal", profiles=("unknown-profile",))
+    assert unknown_profile.value.code == "CONFIG_INVALID"
+
+    started = engine.start("Approve with concurrency binding")
+    completed = _complete_current(engine, started.run.id)
+    with pytest.raises(WorkflowError) as stale:
+        engine.submit_approval(
+            completed.run.id,
+            gate=Gate.G0,
+            approved=False,
+            reviewer="user",
+            reason="stale",
+            expected_state_version=completed.run.state_version + 1,
+            idempotency_key="reject-g0",
+        )
+    assert stale.value.code == "STATE_VERSION_CONFLICT"
+    with pytest.raises(WorkflowError, match="idempotency_key"):
+        engine.submit_approval(
+            completed.run.id,
+            gate=Gate.G0,
+            approved=False,
+            reviewer="user",
+            reason="blank key",
+            expected_state_version=completed.run.state_version,
+            idempotency_key=" ",
+        )
 @pytest.mark.parametrize(
     ("workflow_name", "phase"),
     [
