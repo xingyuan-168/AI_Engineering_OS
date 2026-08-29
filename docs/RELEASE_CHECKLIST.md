@@ -34,7 +34,7 @@
 
 ## 4. 沙箱与安全
 
-- [ ] `doctor` 已确认正式阶段的 Podman machine、锁定镜像、Trivy snapshot 和 `gh` 均可用；当前主机 Podman machine 已停止且未安装 `gh`。
+- [ ] `doctor` 已确认正式阶段的 Podman machine、锁定镜像、Trivy snapshot 和 `gh` 均可用；当前 Podman machine 已运行且锁定镜像存在，`gh 2.98.0` 已安装但未认证，正式 Trivy snapshot 尚未批准。
 - [x] 默认网络关闭、挂载路径最小化、Docker socket 未挂载。
 - [ ] L0-L4 命令风险策略已测试。
 - [ ] 容器不可用时高风险任务进入 `blocked`，没有宿主机静默降级。
@@ -45,7 +45,7 @@
 
 ## 5. 质量与验收
 
-- [ ] 单元、集成、端到端、恢复、迁移和安全测试通过。
+- [x] 开发分支的单元、集成、端到端、恢复、迁移和安全测试通过：`248 passed`、`0 skipped`，总体覆盖率 `86.89%`，变更行覆盖率 `90%`。
 - [ ] G0-G3 证据齐全，G4 已获得人工批准。
 - [ ] Routing Decision、Agent Handoff 的评分/理由、hash、Commit、测试和阻塞证据齐全。
 - [ ] Memory 记录已完成脱敏、来源 hash、项目隔离和失效状态检查。
@@ -54,7 +54,9 @@
 - [ ] 发布后健康检查、故障联系人和回滚窗口已确认。
 - [ ] 所有 `integration_prepare`、`integration_merge`、`release_prepare`、`release_publish` Host Operation 均为 succeeded，或已完成结果未知对账且无残留 lease。
 - [ ] candidate/final manifest 区分 source/candidate/PR merge Commit；tag、draft/published Release 和全部资产 hash 已对账。
-- [ ] 真实 Podman 测试实际运行且通过，测试汇总中没有必需检查 skip。
+- [x] 真实 Podman 测试实际运行且通过，测试汇总中没有必需检查 skip。
+
+当前开发收口证据见 [RELEASE_CLOSURE_EVIDENCE.md](RELEASE_CLOSURE_EVIDENCE.md)。上述已完成项不替代新建正式 Release Workflow 的 Commit-bound G3/G4 Evidence。
 
 ## 6. 发布后
 

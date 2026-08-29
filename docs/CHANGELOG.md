@@ -61,6 +61,9 @@
 - 补齐 V1 的产品、交互、UI、API、Agent、Execution 和变更工作流 Skills，并增加可校验的 frontend/backend/large 增量 Profiles。
 - 增加 V1 发布候选验收报告，归档构建、测试、Git 证据及 OCI、Codex Host 和 G4 阻塞项。
 - 增加显式启用的真实 Podman 集成测试，在隔离 Git Worktree 中验证锁定镜像、非 root、断网、只读根、最小权限、资源限制和执行后干净状态。
+- 完成 draft GitHub Release、远端资产下载 SHA-256 复核、final manifest 资产化和未知副作用对账；资产全部核验前 Release/Version/Workflow 不得完成。
+- G3/G4 Gate 改为完整结构化证据矩阵，公共 CLI/MCP/应用/API 文档由同一 20-tool registry 自动比对，并补齐发布故障注入和 1.0/1.1 兼容回归。
+- 开发收口全量验证提升至 `248 passed`、`0 skipped`，总体 branch-aware 覆盖率 `86.89%`、相对 `ab879c0` 的变更行覆盖率 `90%`；最新远端提交通过干净 clone、独立虚拟环境 wheel 安装与 doctor 冒烟验证。
 
 ### Governance
 
@@ -83,7 +86,7 @@
 - 当前 Windows 环境已验证 Git、uv、Python 3.12 与 SQLite FTS5。
 - 已安装 WSL 2.7.12 和 Podman 5.8.3，启动 rootless `podman-machine-default` 并预拉取项目锁定 digest；`doctor` 返回 `ok=true`。
 - 真实 Podman 沙箱复验通过，ENV-SANDBOX-001 与 ERP PA-007 环境遗留项已解除；Docker Desktop 未安装且不再是阻塞条件。
-- 2026-08-26 当前主机复核发现 Podman machine 已停止且未安装 `gh`；开发诊断可继续，但新的真实 G3/G4 在恢复环境并形成证据前保持 blocked。
+- 2026-08-29 当前主机已启动 `podman-machine-default`，Podman 5.8.6 与锁定 Python 3.12.14 Bookworm digest 可用，真实 OCI 全量测试零 skip；已安装 `gh 2.98.0` 但尚未认证，正式 verification/Trivy 快照、GitHub 对账和独立 G4 仍保持 blocked。
 
 ### Documentation baseline (2026-08-20)
 

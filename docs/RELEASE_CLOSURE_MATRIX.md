@@ -25,3 +25,11 @@
 2. “测试通过”必须引用绑定 Commit 的结构化 `CheckEvidence`；自由文本不计入。
 3. 环境缺少 Podman machine、`gh`、有效 Trivy snapshot 或 GitHub 权限时，开发诊断可以继续，但真实 G3/G4 保持 blocked。
 4. 当前实施请求不构成合并 `main`、创建 `v0.2.0` 或发布 GitHub Release 的独立 G4 授权。
+
+## 2026-08-29 收口快照
+
+- 发布对账、完整 G3/G4 证据策略、公共契约矩阵和故障恢复实现已落地到 `68437bb`；相对 `ab879c0` 共 26 个逻辑提交。
+- 全量验证为 `248 passed`、`0 skipped`；总体 branch-aware 覆盖率 `86.89%`，变更行覆盖率 `90%`，真实 Podman OCI 已实际运行。
+- 最新远端 Commit 已通过干净 clone、构建、独立虚拟环境 wheel 安装和 `doctor` 冒烟测试。
+- Podman machine 当前运行，锁定 Python 3.12.14 Bookworm 镜像已存在；`gh 2.98.0` 已安装但未认证，因此真实 GitHub PR/draft Release/资产对账和 G4 发布保持 blocked。
+- 详细证据与仍未关闭的正式发布前置条件见 [RELEASE_CLOSURE_EVIDENCE.md](RELEASE_CLOSURE_EVIDENCE.md)。
