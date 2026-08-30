@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,8 +32,37 @@ class DoctorReport:
     def sandbox_available(self) -> bool:
         return any(check.name in {"docker", "podman"} and check.ok for check in self.checks)
 
+    @property
+    def path_encoding_corrupt(self) -> bool:
+        return any(check.name == "path-encoding" and not check.ok for check in self.checks)
+
 
 class DoctorService:
+    _PATH_COLUMNS: ClassVar[dict[str, tuple[str, ...]]] = {
+        "projects": ("root",),
+        "tasks": ("worktree",),
+        "worktrees": ("path",),
+        "workflow_worktrees": ("path",),
+        "artifacts": ("path",),
+        "documents": ("path",),
+        "artifact_evidence": ("path",),
+        "check_evidence": ("report_path",),
+        "review_evidence": ("report_ref",),
+        "executions": ("stdout_ref", "stderr_ref"),
+        "release_records": (
+            "manifest_path",
+            "artifact_root",
+            "rollback_path",
+            "sbom_path",
+            "checksums_path",
+            "final_manifest_path",
+        ),
+        "memory_records": ("content_ref",),
+    }
+
+    def __init__(self, project_root: Path | None = None) -> None:
+        self.project_root = (project_root or Path.cwd()).resolve()
+
     def run(self) -> DoctorReport:
         return DoctorReport(
             checks=(
@@ -42,8 +73,57 @@ class DoctorService:
                 self._docker_check(),
                 self._podman_check(),
                 self._command_check("codex", required=False, version_args=("--version",)),
+                self._path_encoding_check(),
             )
         )
+
+    def _path_encoding_check(self) -> DoctorCheck:
+        database_path = self.project_root / ".codex-os" / "state" / "state.db"
+        if not database_path.is_file():
+            return DoctorCheck("path-encoding", True, True, "project state database is not present")
+        corrupt: list[dict[str, object]] = []
+        try:
+            with sqlite3.connect(database_path) as connection:
+                connection.row_factory = sqlite3.Row
+                tables = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                for table, requested_columns in self._PATH_COLUMNS.items():
+                    if table not in tables:
+                        continue
+                    available = {
+                        str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')
+                    }
+                    for column in requested_columns:
+                        if column not in available:
+                            continue
+                        rows = connection.execute(
+                            f'SELECT rowid, "{column}" FROM "{table}" '
+                            f'WHERE instr("{column}", char(65533)) > 0'
+                        ).fetchall()
+                        corrupt.extend(
+                            {
+                                "table": table,
+                                "record": int(row["rowid"]),
+                                "field": column,
+                            }
+                            for row in rows
+                        )
+        except sqlite3.Error as exc:
+            return DoctorCheck("path-encoding", True, False, f"state database unreadable: {exc}")
+        detail = json.dumps(
+            {
+                "code": "PATH_ENCODING_CORRUPT" if corrupt else None,
+                "records": corrupt,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return DoctorCheck("path-encoding", True, not corrupt, detail)
 
     @staticmethod
     def _python_check() -> DoctorCheck:

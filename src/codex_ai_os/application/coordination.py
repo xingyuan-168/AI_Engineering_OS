@@ -22,6 +22,7 @@ from codex_ai_os.infrastructure.coordination import (
     HandoffDecisionResult,
 )
 from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.path_codec import path_from_state, state_path
 
 GitRunner = Callable[[list[str], Path, float], subprocess.CompletedProcess[bytes]]
 
@@ -59,7 +60,7 @@ class CoordinationService:
                 (run_id,),
             ).fetchone()
         if existing is not None:
-            path = Path(str(existing["path"])).resolve()
+            path = path_from_state(existing["path"]).resolve()
             state = self._git(path, "rev-parse", "HEAD")
             if state.returncode != 0 or not path.is_relative_to(self.root / ".worktrees"):
                 raise CoordinationError("WORKTREE_BLOCKED", "integration Worktree is invalid")
@@ -88,16 +89,23 @@ class CoordinationService:
             )
             return path
         path.parent.mkdir(parents=True, exist_ok=True)
-        branch_exists = self._git(
-            self.root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"
-        ).returncode == 0
-        args = ("worktree", "add", str(path), branch) if branch_exists else (
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            str(path),
-            base_commit,
+        branch_exists = (
+            self._git(
+                self.root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"
+            ).returncode
+            == 0
+        )
+        args = (
+            ("worktree", "add", str(path), branch)
+            if branch_exists
+            else (
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                str(path),
+                base_commit,
+            )
         )
         created = self._git(self.root, *args)
         if created.returncode != 0:
@@ -140,7 +148,7 @@ class CoordinationService:
                         new_id("WORKFLOWWORKTREE"),
                         project_id,
                         run_id,
-                        path.as_posix(),
+                        state_path(path),
                         branch,
                         base_commit,
                         head,
@@ -195,9 +203,7 @@ class CoordinationService:
 
     def execute_merge_operation(self, operation: HostOperation) -> IntegrationResult:
         if operation.kind is not HostOperationKind.INTEGRATION_MERGE:
-            raise CoordinationError(
-                "CONFIG_INVALID", "host operation is not an integration merge"
-            )
+            raise CoordinationError("CONFIG_INVALID", "host operation is not an integration merge")
         request = operation.request
         required = ("handoff_id", "task_id", "task_group_id", "source_commit")
         if not all(isinstance(request.get(key), str) for key in required):
@@ -231,7 +237,7 @@ class CoordinationService:
         run_id = str(row["run_id"])
         source_branch = str(row["branch"])
         integration_branch = str(row["integration_branch"])
-        worktree = Path(str(row["path"])).resolve()
+        worktree = path_from_state(row["path"]).resolve()
         token = self._acquire_lock(run_id)
         try:
             dirty = self._require_git(worktree, "status", "--porcelain")
@@ -256,9 +262,7 @@ class CoordinationService:
             )
             if already.returncode == 0:
                 merge_commit = before
-                parent_text = self._require_git(
-                    worktree, "show", "-s", "--format=%P", "HEAD"
-                )
+                parent_text = self._require_git(worktree, "show", "-s", "--format=%P", "HEAD")
                 parents = tuple(parent_text.split())
             else:
                 merged = self._git(
@@ -298,9 +302,7 @@ class CoordinationService:
                     self._require_git(worktree, "show", "-s", "--format=%P", "HEAD").split()
                 )
                 valid_parents = (
-                    len(parents) >= 2
-                    and before in parents
-                    and decision.source_commit in parents
+                    len(parents) >= 2 and before in parents and decision.source_commit in parents
                 )
                 if not valid_parents:
                     raise CoordinationError(
@@ -429,9 +431,7 @@ class CoordinationService:
         return result.stdout.decode("utf-8", errors="replace").strip()
 
 
-def _run_git(
-    arguments: list[str], cwd: Path, timeout: float
-) -> subprocess.CompletedProcess[bytes]:
+def _run_git(arguments: list[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         arguments,
         cwd=cwd,

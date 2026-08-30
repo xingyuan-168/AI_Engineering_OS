@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-codex-os = "codex_ai_os.cli.app:app"
+codex-os = "codex_ai_os.cli.app:main"
 
 [dependency-groups]
 dev = [

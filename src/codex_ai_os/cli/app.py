@@ -45,6 +45,7 @@ from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
 from codex_ai_os.infrastructure.documents import DocumentManager
 from codex_ai_os.infrastructure.memory import MemoryRecord, MemoryStore, MemoryStoreError
+from codex_ai_os.infrastructure.path_codec import configure_utf8_stdio
 
 app = typer.Typer(
     name="codex-os",
@@ -80,11 +81,12 @@ app.add_typer(prototype_app, name="prototype")
 
 @app.command("doctor")
 def doctor_command(
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
     """Check required local runtime dependencies."""
 
-    report = DoctorService().run()
+    report = DoctorService(project_root).run()
     checks = [
         {
             "name": check.name,
@@ -100,7 +102,13 @@ def doctor_command(
         return
 
     payload = error_envelope(
-        "SANDBOX_UNAVAILABLE" if not report.sandbox_available else "CONFIG_INVALID",
+        (
+            "PATH_ENCODING_CORRUPT"
+            if report.path_encoding_corrupt
+            else "SANDBOX_UNAVAILABLE"
+            if not report.sandbox_available
+            else "CONFIG_INVALID"
+        ),
         "Required environment checks failed.",
         {"checks": checks},
     )
@@ -1351,3 +1359,8 @@ def _fail(
         human=f"{code}: {message}",
     )
     raise typer.Exit(code=exit_code)
+
+
+def main() -> None:
+    configure_utf8_stdio()
+    app()

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from codex_ai_os.domain.config import ProjectConfig
 from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.path_codec import state_path
 
 
 class ProjectStore:
@@ -34,7 +35,7 @@ class ProjectStore:
                 (
                     config.project_id,
                     config.name,
-                    config.root.as_posix(),
+                    state_path(config.root),
                     config_hash,
                     now,
                     now,

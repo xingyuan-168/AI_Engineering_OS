@@ -47,6 +47,7 @@
 
 - 路径验证顺序：拒绝绝对输出/空/`.`/`..` -> 与 Worktree 根拼接 -> `resolve(strict=False)` -> 确认 relative_to -> 逐段检查 symlink/junction/reparse point -> 对已存在文件重新 `resolve(strict=True)`。
 - Windows 比较使用大小写不敏感的规范路径，拒绝 device path、ADS、UNC（除非项目根本身是显式批准 UNC）、保留设备名和末尾点/空格歧义。
+- Windows 绝对项目根与 Worktree 路径在持久化前统一解析并转为正斜杠 UTF-8 文本；包含 `U+FFFD` 的新记录 fail closed。Plugin MCP launcher 固定 `PYTHONUTF8=1` 与 `PYTHONIOENCODING=utf-8`；Doctor 只报告损坏表/记录/字段，不推测恢复中文路径。
 - 禁止目录/文件规则只扫描项目自有树；排除 `.git`、`.venv`、依赖、受管 `.worktrees` 和 `.codex-os/state|logs|cache|tmp|artifacts`。
 - Git 跟踪扫描使用 `git ls-files -z`，不能依赖文件系统遍历推断 tracked 状态。
 - `.gitignore` 校验以必需类别而非固定单一模板判断，避免合法更严格规则误报。

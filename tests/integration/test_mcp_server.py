@@ -29,16 +29,16 @@ def test_mcp_lists_the_public_runtime_tools() -> None:
         "workflow_step",
         "workflow_resume",
         "approval_submit",
-            "repository_check",
-            "task_complete",
-            "task_amend_evidence",
-            "prototype_review_submit",
-            "handoff_review",
+        "repository_check",
+        "task_complete",
+        "task_amend_evidence",
+        "prototype_review_submit",
+        "handoff_review",
         "host_operation_execute",
         "host_operation_reconcile",
         "worktree_cleanup",
-            "docs_check",
-            "gate_preflight",
+        "docs_check",
+        "gate_preflight",
         "verification_prepare",
         "verification_run",
         "database_migrate",
@@ -50,8 +50,10 @@ def test_mcp_lists_the_public_runtime_tools() -> None:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="the repository plugin launcher is Windows-only")
-def test_plugin_launcher_serves_the_same_tools_over_stdio() -> None:
-    async def exercise() -> set[str]:
+def test_plugin_launcher_serves_unicode_over_real_stdio(tmp_path: Path) -> None:
+    unicode_root = tmp_path / "中文 MCP 项目"
+
+    async def exercise() -> tuple[set[str], dict[str, Any]]:
         launcher = (
             Path(__file__).parents[2]
             / "plugins"
@@ -65,11 +67,26 @@ def test_plugin_launcher_serves_the_same_tools_over_stdio() -> None:
         )
         async with Client(stdio_client(parameters), raise_exceptions=True) as client:
             result = await client.list_tools()
-            return {tool.name for tool in result.tools}
+            initialized = await client.call_tool(
+                "project_init",
+                {
+                    "project_root": str(unicode_root),
+                    "project_id": "PROJECT-MCP-UNICODE",
+                    "name": "中文 MCP 工程",
+                    "project_type": "backend",
+                },
+            )
+            return (
+                {tool.name for tool in result.tools},
+                cast(dict[str, Any], initialized.structured_content),
+            )
 
-    names = asyncio.run(exercise())
+    names, initialized = asyncio.run(exercise())
     assert "workflow_start" in names
     assert "task_complete" in names
+    assert initialized["ok"] is True
+    assert initialized["data"]["root"] == unicode_root.resolve().as_posix()
+    assert "\ufffd" not in str(initialized)
 
 
 def test_mcp_initializes_and_starts_a_workflow(tmp_path: Path) -> None:
@@ -118,9 +135,7 @@ def test_mcp_initializes_and_starts_a_workflow(tmp_path: Path) -> None:
         ],
         "deprecated": True,
     }
-    assert checked["warnings"] == [
-        "Supply run_id and task_id for governed verification."
-    ]
+    assert checked["warnings"] == ["Supply run_id and task_id for governed verification."]
 
 
 def test_mcp_host_handshake_completes_the_full_fixture_workflow(

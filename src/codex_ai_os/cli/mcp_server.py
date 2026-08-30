@@ -57,6 +57,7 @@ from codex_ai_os.infrastructure.coordination import CoordinationError
 from codex_ai_os.infrastructure.database import Database, MigrationError
 from codex_ai_os.infrastructure.documents import DocumentManager
 from codex_ai_os.infrastructure.memory import MemoryRecord, MemoryStore, MemoryStoreError
+from codex_ai_os.infrastructure.path_codec import configure_utf8_stdio
 
 mcp = MCPServer(
     "AI Engineering OS",
@@ -913,6 +914,7 @@ def memory_review(
 def run_server() -> None:
     """Run the local server over the default stdio transport."""
 
+    configure_utf8_stdio()
     mcp.run()
 
 
