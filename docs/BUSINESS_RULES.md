@@ -98,6 +98,8 @@
 - `BR-063`：Memory 检索使用 FTS5，按项目隔离，并支持类型、状态、标签、时间、来源和 supersedes 关系过滤。
 - `BR-064`：frontend、backend 和 large Profile 必须参与路由、任务生成、证据与审批；选择理由保存为 `routing_decisions`。
 - `BR-065`：涉及前端实现的任务必须可路由到 `frontend-engineer` Profile 与 Frontend Implementation Skill。
+- `BR-066`：项目类型或 impact paths 表明存在前端页面时必须启用 `frontend-project`，不得通过显式 Profile 或人工 override 移除原型门禁。
+- `BR-067`：前端实现前必须提交 Commit-bound、离线自包含的 HTML 交互原型；`html-prototype-validator` 和非生产者的 `ux-prototype` accepted Review 均为 G2 必需证据，原型 Commit 或 hash 变化立即使确认失效。
 
 ## 11. 规则例外与优先级
 

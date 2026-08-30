@@ -18,6 +18,7 @@ class WorkflowPhase(StrEnum):
     REQUIREMENTS = "requirements"
     RESEARCH = "research"
     DESIGN = "design"
+    PROTOTYPE = "prototype"
     IMPLEMENTATION = "implementation"
     VERIFY = "verify"
     RELEASE = "release"
@@ -266,6 +267,19 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         ),
         RiskLevel.MEDIUM,
     ),
+    WorkflowPhase.PROTOTYPE: PhaseDefinition(
+        "frontend-engineer",
+        "html-prototype",
+        "Build an offline, self-contained HTML interaction prototype covering all "
+        "required UI states, then request independent UX confirmation.",
+        (
+            "docs/PRODUCT_DESIGN.md",
+            "docs/INTERACTION_DESIGN.md",
+            "docs/UI_DESIGN.md",
+            "docs/prototypes/",
+        ),
+        RiskLevel.MEDIUM,
+    ),
     WorkflowPhase.IMPLEMENTATION: PhaseDefinition(
         "backend-engineer",
         "backend-implementation",
@@ -308,6 +322,7 @@ GATE_AFTER_PHASE: dict[WorkflowPhase, Gate] = {
     WorkflowPhase.INTAKE: Gate.G0,
     WorkflowPhase.REQUIREMENTS: Gate.G1,
     WorkflowPhase.DESIGN: Gate.G2,
+    WorkflowPhase.PROTOTYPE: Gate.G2,
     WorkflowPhase.VERIFY: Gate.G3,
     WorkflowPhase.MEMORY: Gate.G4,
 }

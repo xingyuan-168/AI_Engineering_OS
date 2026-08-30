@@ -13,6 +13,7 @@
 | `requirements` | G0 通过 | 产品需求、用户故事、业务规则 | `blocked` |
 | `research` | G1 通过 | 开源研究、License 记录 | `blocked` |
 | `design` | G1 通过且研究输入齐全 | 架构、技术栈、API、数据库、安全、UI（如适用） | `blocked` |
+| `prototype` | 含 `frontend-project` 且设计任务完成 | 离线 HTML 交互原型、validator 证据、独立 UX 确认 | `blocked` |
 | `implementation` | G2 通过且 Agent 交接依赖满足 | 代码提交、任务产物、Handoff | `failed` |
 | `verify` | 实现任务完成 | 测试、Review、安全扫描 | `failed` |
 | `release` | G3 通过 | 发布候选物、变更记录、回滚包 | `blocked` |
@@ -35,7 +36,8 @@
 ## 2. 合法转换
 
 ```text
-intake -> requirements -> research -> design -> implementation
+backend: intake -> requirements -> research -> design -> implementation
+frontend/fullstack: intake -> requirements -> research -> design -> prototype -> implementation
 implementation -> verify -> release -> memory -> completed
 
 run_status: created -> running
@@ -62,7 +64,9 @@ failed -> running | cancelled
 
 `intake` 必须先调用 [WORKFLOW_ROUTING_RULES.md](WORKFLOW_ROUTING_RULES.md)，保存评分、理由、风险级别、候选 Workflow、Profile 和人工覆盖信息。路由失败、不确定、边界分数或用户选择与风险策略冲突时进入 `needs_approval` 或 `blocked`，不得猜测。
 
-基础 Workflow 与 Profile 独立组合：`large-project` 提供多 Agent、Worktree 和额外 Review 门禁；`frontend-project` 启用 UX Research 到 UI Spec 的设计链路；`backend-project` 启用 API、数据库、迁移和服务测试链路。Profile 只能增加步骤和证据，不能跳过 G0-G4 或降低执行安全等级。
+基础 Workflow 与 Profile 独立组合：`large-project` 提供多 Agent、Worktree 和额外 Review 门禁；`frontend-project` 启用 UX Research、UI Spec、离线 HTML 交互原型、validator 和独立用户确认；`backend-project` 启用 API、数据库、迁移和服务测试链路。Profile 只能增加步骤和证据，不能跳过 G0-G4 或降低执行安全等级。项目类型或 impact paths 表明存在前端页面时，Routing 必须保留 `frontend-project`，人工 override 不能移除原型门禁。
+
+前端原型由 `frontend-engineer` 使用 `html-prototype` Skill 生成在 `docs/prototypes/<prototype-id>/index.html`。原型必须 UTF-8、自包含、断网可运行，并覆盖成功、空态、加载、验证、权限、失败、重试、取消和恢复状态。`prototype_review_submit` 只从任务绑定 Commit 读取原型并复算 hash；生产者不得自审。只有 `html-prototype-validator` 通过且独立 `ux-prototype` Review accepted 后，G2 才可能通过。原型 Commit、文件或 hash 变化会使旧 Review stale。
 
 Profile Schema 1.2 声明任务模板、影响路径模式、增量 Gate 证据和 Reviewer。Runtime 将核心 Gate 与所选 Profile 编译为不可放宽的 `EffectiveGovernancePolicy` 并保存 policy hash；任务允许路径从已批准 impact paths 匹配产生，重叠路径按稳定顺序建立依赖，未映射路径阻塞。G0 bundle 必须绑定 Routing Decision，G2 bundle 必须包含 Migration Spec 与适用 ADR 索引。
 
@@ -76,7 +80,7 @@ G4 审批调用只执行只读 PR、merge Commit、target ancestry、候选 mani
 
 ### `new-project`
 
-`intake -> requirements -> research -> design -> implementation -> verify -> release -> memory`。
+后端为 `intake -> requirements -> research -> design -> implementation -> verify -> release -> memory`；含前端页面时强制为 `intake -> requirements -> research -> design -> prototype -> implementation -> verify -> release -> memory`。
 
 ### `feature-development`
 

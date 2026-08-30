@@ -234,6 +234,12 @@ Plugin API 1.2 输入：
 
 成功后旧 Evidence 保留审计，新 Evidence、Task head、Workflow `last_commit_sha`、ready Handoff 和 `task.evidence_amended` 事件在同一事务更新，旧 Gate bundle 标记 stale。普通项目不得 amend/rewrite 已推送 Commit；仅 `fixture_local_only` 且旧、新 Commit 均不在远端 ref 时允许本地 Commit 替换。
 
+### 4.6 `prototype_review_submit`
+
+含 `frontend-project` 的 Workflow 在 design 后进入 prototype 阶段。输入包含 `run_id`、`task_id`、`expected_task_version`、`expected_state_version`、稳定幂等键、`docs/prototypes/<prototype-id>/index.html`、原型 SHA-256、reviewed Commit、decision、reason 和结构化 findings。
+
+Runtime 只从任务 Worktree 的 reviewed Commit 读取原型并复算 hash，验证 UTF-8、自包含资源、完整交互状态、交互控件和基本表单可访问性。Adapter 使用受信 `InvocationContext` principal，兼容 `reviewer` 字符串不能提升权限，生产者不得自审。accepted 时原子记录 `html-prototype` Artifact、`html-prototype-validator` Check 和逻辑 `ux-prototype` Review；任一 Commit/hash 变化会使旧证据 stale。validator 失败返回 `GATE_BLOCKED` 和 `amend_task_evidence` repair action，不进入实现。
+
 ## 5. Handoff、集成与清理
 
 ### 5.1 `handoff_review`
@@ -373,6 +379,7 @@ Runtime 验证 content/source 路径、hash、项目范围与 Secret 扫描，�
 | `approval_submit` | `codex-os approve|reject` |
 | `task_complete` | `codex-os task complete` |
 | `task_amend_evidence` | `codex-os task amend-evidence` |
+| `prototype_review_submit` | `codex-os prototype review` |
 | `memory_candidate_submit` | `codex-os memory submit` |
 | `memory_review` | `codex-os memory review` |
 | `memory_search` | `codex-os memory search` |

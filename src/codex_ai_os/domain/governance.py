@@ -92,7 +92,7 @@ class ReviewFinding(StrictModel):
 
 
 class ReviewEvidenceInput(StrictModel):
-    review_type: str = Field(pattern=r"^(code|security|handoff|release)$")
+    review_type: str = Field(pattern=r"^(code|security|handoff|release|ux-prototype)$")
     reviewer: str = Field(min_length=1, max_length=128)
     reviewed_commit: str = Field(pattern=r"^[0-9a-fA-F]{7,64}$")
     decision: ReviewDecision

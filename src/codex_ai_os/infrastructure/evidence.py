@@ -197,6 +197,11 @@ class EvidenceStore:
         task_id: str | None,
         review: ReviewEvidenceInput,
     ) -> str:
+        if review.review_type == "ux-prototype":
+            raise EvidenceError(
+                "CONFIG_INVALID",
+                "ux-prototype reviews must use prototype_review_submit",
+            )
         review_id = new_id("REVIEWEVIDENCE")
         with self.database.connection() as connection:
             worktree = self.root
@@ -464,8 +469,8 @@ class EvidenceStore:
         except GovernancePolicyError as exc:
             raise EvidenceError(exc.code, str(exc)) from exc
         requirements = policy.requirements_for(gate)
-        effective_document_version = (
-            document_version_target or self._document_version_for_run(run_id)
+        effective_document_version = document_version_target or self._document_version_for_run(
+            run_id
         )
         with self.database.read_connection() as connection:
             artifacts = connection.execute(
@@ -487,11 +492,22 @@ class EvidenceStore:
             ).fetchall()
             reviews = connection.execute(
                 """
-                SELECT review_type, report_hash, reviewed_commit, id FROM review_evidence
-                WHERE run_id = ? AND decision = 'accepted'
+                SELECT review_type, report_hash, reviewed_commit, id FROM (
+                    SELECT review_type, report_hash, reviewed_commit, id, created_at
+                    FROM review_evidence
+                    WHERE run_id = ? AND decision = 'accepted'
+                    UNION ALL
+                    SELECT 'ux-prototype' AS review_type,
+                        json_extract(payload_json, '$.report_hash') AS report_hash,
+                        json_extract(payload_json, '$.reviewed_commit') AS reviewed_commit,
+                        event_id AS id, created_at
+                    FROM events
+                    WHERE run_id = ? AND event_type = 'prototype.reviewed'
+                      AND json_extract(payload_json, '$.review.decision') = 'accepted'
+                )
                 ORDER BY created_at DESC, review_type, report_hash
                 """,
-                (run_id,),
+                (run_id, run_id),
             ).fetchall()
 
             artifacts = self._latest_ancestor_rows(
@@ -506,6 +522,24 @@ class EvidenceStore:
                 source_column="reviewed_commit",
                 key_column="review_type",
             )
+            artifacts = [
+                row
+                for row in artifacts
+                if str(row["artifact_type"]) != "html-prototype"
+                or str(row["source_commit"]).casefold() == source_commit.casefold()
+            ]
+            checks = [
+                row
+                for row in checks
+                if str(row["check_name"]) != "html-prototype-validator"
+                or str(row["source_commit"]).casefold() == source_commit.casefold()
+            ]
+            reviews = [
+                row
+                for row in reviews
+                if str(row["review_type"]) != "ux-prototype"
+                or str(row["reviewed_commit"]).casefold() == source_commit.casefold()
+            ]
 
             artifact_paths = tuple(str(row["path"]) for row in artifacts)
             artifact_types = tuple(str(row["artifact_type"]) for row in artifacts)
@@ -525,9 +559,7 @@ class EvidenceStore:
                 run_id,
                 source_commit,
                 requirements.artifacts,
-                document_version_target=(
-                    effective_document_version
-                ),
+                document_version_target=(effective_document_version),
             )
             git_findings = self._git_findings(
                 connection,
@@ -550,9 +582,7 @@ class EvidenceStore:
             requirements_payload = policy.gate_contract(
                 gate,
                 document_version=effective_document_version,
-                push_required=(
-                    self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
-                ),
+                push_required=(self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED),
             )
             requirements_hash = str(requirements_payload["requirements_hash"])
             payload = {
@@ -562,9 +592,7 @@ class EvidenceStore:
                 "source_commit": source_commit.casefold(),
                 "artifacts": [(str(row["path"]), str(row["content_hash"])) for row in artifacts],
                 "checks": [(str(row["check_name"]), str(row["report_hash"])) for row in checks],
-                "reviews": [
-                    (str(row["review_type"]), str(row["report_hash"])) for row in reviews
-                ],
+                "reviews": [(str(row["review_type"]), str(row["report_hash"])) for row in reviews],
                 "records": sorted(record_hashes.items()),
                 "policy_hash": policy.policy_hash,
                 "requirements_hash": requirements_hash,
@@ -592,9 +620,7 @@ class EvidenceStore:
             requirements=requirements_payload,
             repair_actions=_repair_actions(
                 tuple(missing),
-                document_version=(
-                    effective_document_version
-                ),
+                document_version=(effective_document_version),
             ),
             artifact_ids=tuple(str(row["id"]) for row in artifacts),
             check_ids=tuple(str(row["id"]) for row in checks),
@@ -614,9 +640,7 @@ class EvidenceStore:
         items = cast(list[object], parsed)
         if not all(isinstance(item, str) for item in items):
             raise GovernancePolicyError("CONFIG_INVALID", "Workflow profiles are invalid")
-        return GovernancePolicyCompiler(self.root).compile(
-            tuple(cast(str, item) for item in items)
-        )
+        return GovernancePolicyCompiler(self.root).compile(tuple(cast(str, item) for item in items))
 
     def _document_version_for_run(self, run_id: str) -> str:
         with self.database.read_connection() as connection:
@@ -676,7 +700,21 @@ class EvidenceStore:
             (run_id, source_commit.casefold(), source_commit.casefold()),
         ).fetchone()
         if row is None:
-            return ("source task is unavailable",)
+            integrated = connection.execute(
+                """
+                SELECT id FROM integration_merges
+                WHERE run_id = ? AND merge_commit = ? AND status = 'merged'
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (run_id, source_commit.casefold()),
+            ).fetchone()
+            if integrated is not None:
+                # The coordinator created this Commit only from individually validated,
+                # accepted task merges. Remote-required mode records `merged` only after
+                # the integration push succeeds, so task-level path/push checks must not
+                # be reapplied to the synthetic merge Commit.
+                return ()
+            return ("source task or accepted integration merge is unavailable",)
         try:
             completion_value: object = json.loads(str(row["output_ref"] or "{}"))
             allowed_value: object = json.loads(str(row["allowed_paths_json"] or "[]"))
@@ -705,10 +743,7 @@ class EvidenceStore:
                     if not any(
                         str(path) == str(prefix).rstrip("/")
                         or str(path).startswith(f"{str(prefix).rstrip('/')}/")
-                        or (
-                            str(prefix).endswith("/")
-                            and str(path).startswith(str(prefix))
-                        )
+                        or (str(prefix).endswith("/") and str(path).startswith(str(prefix)))
                         for prefix in allowed_raw
                     )
                     and not str(path).startswith(f".codex-os/artifacts/{run_id}/")
@@ -798,22 +833,14 @@ class EvidenceStore:
                 findings.append(f"{relative} metadata is not an object")
                 continue
             mapping = cast(dict[object, object], raw)
-            metadata: dict[str, object] = {
-                str(key): value for key, value in mapping.items()
-            }
+            metadata: dict[str, object] = {str(key): value for key, value in mapping.items()}
             if metadata.get("schema_version") != RUNTIME_VERSIONS.document_schema:
                 findings.append(
-                    f"{relative} schema_version is not "
-                    f"{RUNTIME_VERSIONS.document_schema}"
+                    f"{relative} schema_version is not {RUNTIME_VERSIONS.document_schema}"
                 )
-            expected_document_version = (
-                document_version_target
-                or RUNTIME_VERSIONS.software
-            )
+            expected_document_version = document_version_target or RUNTIME_VERSIONS.software
             if metadata.get("document_version") != expected_document_version:
-                findings.append(
-                    f"{relative} document_version is not {expected_document_version}"
-                )
+                findings.append(f"{relative} document_version is not {expected_document_version}")
             if str(metadata.get("status", "")).casefold() not in {
                 "accepted",
                 "approved",
@@ -825,9 +852,7 @@ class EvidenceStore:
                 findings.append(f"{relative} owner is missing")
             refs = metadata.get("requirement_refs")
             ref_values = cast(list[object], refs) if isinstance(refs, list) else []
-            if not ref_values or not all(
-                isinstance(item, str) and item for item in ref_values
-            ):
+            if not ref_values or not all(isinstance(item, str) and item for item in ref_values):
                 findings.append(f"{relative} requirement_refs are invalid")
             if UNAPPROVED_PLACEHOLDER.search(text):
                 findings.append(f"{relative} contains an unapproved placeholder")

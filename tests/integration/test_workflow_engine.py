@@ -28,12 +28,12 @@ from codex_ai_os.domain.workflow import (
 from codex_ai_os.infrastructure.workflows import WorkflowConflictError
 
 
-def _engine(tmp_path: Path) -> WorkflowEngine:
+def _engine(tmp_path: Path, *, project_type: ProjectType = ProjectType.BACKEND) -> WorkflowEngine:
     ProjectInitializer().initialize(
         tmp_path,
         project_id="PROJECT-WORKFLOW",
         name="Workflow pilot",
-        project_type=ProjectType.BACKEND,
+        project_type=project_type,
         schema_version="1.0",
     )
     return WorkflowEngine(
@@ -165,6 +165,8 @@ def test_start_and_gate_concurrency_inputs_fail_closed(tmp_path: Path) -> None:
             expected_state_version=completed.run.state_version,
             idempotency_key=" ",
         )
+
+
 @pytest.mark.parametrize(
     ("workflow_name", "phase"),
     [
@@ -251,6 +253,32 @@ def test_full_new_project_gate_sequence(tmp_path: Path) -> None:
     assert event_count == 43
     assert handoff_count == 8
     assert '"verified_at":"2026-08-21T00:00:00+00:00"' in str(event_payload)
+
+
+def test_frontend_workflow_requires_prototype_before_g2(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, project_type=ProjectType.FRONTEND)
+    result = engine.start("Build governed frontend")
+    run_id = result.run.id
+
+    result = _complete_current(engine, run_id, "1")
+    engine.submit_approval(run_id, gate=Gate.G0, approved=True, reviewer="user", reason="ok")
+    result = _complete_current(engine, run_id, "2")
+    engine.submit_approval(run_id, gate=Gate.G1, approved=True, reviewer="user", reason="ok")
+    result = _complete_current(engine, run_id, "3")
+    assert result.run.workflow_phase is WorkflowPhase.DESIGN
+    result = _complete_current(engine, run_id, "4")
+
+    assert result.run.workflow_phase is WorkflowPhase.PROTOTYPE
+    assert result.run.run_status is RunStatus.RUNNING
+    assert result.next_action is not None
+    assert result.next_action.skill == "html-prototype"
+    assert result.next_action.gate is None
+
+    result = _complete_current(engine, run_id, "5")
+    assert result.run.workflow_phase is WorkflowPhase.PROTOTYPE
+    assert result.run.run_status is RunStatus.NEEDS_APPROVAL
+    assert result.next_action is not None
+    assert result.next_action.gate is Gate.G2
 
 
 def test_gate_cannot_be_bypassed_or_mismatched(tmp_path: Path) -> None:
@@ -348,8 +376,7 @@ def test_pause_and_resume_preserve_the_active_task(tmp_path: Path) -> None:
     assert resumed.active_task.id == started.active_task.id
     with engine.store.database.connection() as connection:
         pause_events = connection.execute(
-            "SELECT COUNT(*) FROM events WHERE run_id = ? "
-            "AND event_type = 'workflow.paused'",
+            "SELECT COUNT(*) FROM events WHERE run_id = ? AND event_type = 'workflow.paused'",
             (started.run.id,),
         ).fetchone()[0]
     assert pause_events == 1
@@ -412,8 +439,7 @@ def test_worktree_allocation_failure_blocks_run_and_task(tmp_path: Path) -> None
             "SELECT status FROM tasks ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         blocked_events = connection.execute(
-            "SELECT COUNT(*) FROM events WHERE event_type IN "
-            "('task.blocked', 'workflow.blocked')"
+            "SELECT COUNT(*) FROM events WHERE event_type IN ('task.blocked', 'workflow.blocked')"
         ).fetchone()[0]
     assert run[0] == "blocked"
     assert task[0] == "blocked"
@@ -482,9 +508,7 @@ def test_real_pushed_git_evidence_creates_verified_handoff(tmp_path: Path) -> No
     _git(task_worktree, "commit", "-m", "docs: add intake evidence")
     _git(task_worktree, "push", "-u", "origin", started.active_task.branch)
     commit_sha = _git(task_worktree, "rev-parse", "HEAD")
-    committed = _git_bytes(
-        task_worktree, "show", f"{commit_sha}:docs/PROJECT_MASTER.md"
-    )
+    committed = _git_bytes(task_worktree, "show", f"{commit_sha}:docs/PROJECT_MASTER.md")
     digest = hashlib.sha256(committed).hexdigest()
 
     result = engine.complete_task(

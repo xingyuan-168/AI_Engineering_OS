@@ -2,7 +2,7 @@ schema_version: "1.2"
 name: frontend-project
 description: Add product, interaction, UI, accessibility, and frontend verification evidence.
 project_types: [frontend, fullstack]
-additional_skills: [product-design, interaction-design, ui-design, frontend-implementation, testing]
+additional_skills: [product-design, interaction-design, ui-design, html-prototype, frontend-implementation, testing]
 required_artifacts:
   - docs/PRODUCT_DESIGN.md
   - docs/INTERACTION_DESIGN.md
@@ -25,3 +25,9 @@ gate_requirements:
       - docs/PRODUCT_DESIGN.md
       - docs/INTERACTION_DESIGN.md
       - docs/UI_DESIGN.md
+    artifact_types:
+      - html-prototype
+    checks:
+      - html-prototype-validator
+    reviews:
+      - ux-prototype

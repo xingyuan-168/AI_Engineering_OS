@@ -20,6 +20,7 @@ from codex_ai_os.application.maintenance import (
     VerificationPrepareService,
 )
 from codex_ai_os.application.project import ProjectInitializer
+from codex_ai_os.application.prototype import PrototypeReviewService
 from codex_ai_os.application.release import ReleaseCandidateService
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.application.responses import error_envelope, success_envelope
@@ -312,9 +313,7 @@ def task_complete(
         structured_artifacts = tuple(
             ArtifactEvidenceInput.model_validate(item) for item in artifacts or ()
         )
-        structured_checks = tuple(
-            CheckEvidenceInput.model_validate(item) for item in checks or ()
-        )
+        structured_checks = tuple(CheckEvidenceInput.model_validate(item) for item in checks or ())
         compatibility_artifacts = artifact_paths_and_hashes or {
             artifact.path: artifact.sha256 for artifact in structured_artifacts
         }
@@ -364,9 +363,7 @@ def task_amend_evidence(
         structured_artifacts = tuple(
             ArtifactEvidenceInput.model_validate(item) for item in artifacts or ()
         )
-        structured_checks = tuple(
-            CheckEvidenceInput.model_validate(item) for item in checks or ()
-        )
+        structured_checks = tuple(CheckEvidenceInput.model_validate(item) for item in checks or ())
         completion = TaskCompletion(
             task_id=task_id,
             change_kind=ChangeKind.REPOSITORY,
@@ -389,6 +386,51 @@ def task_amend_evidence(
                 idempotency_key=idempotency_key,
             ),
             Path(project_root),
+        )
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def prototype_review_submit(
+    project_root: str,
+    run_id: str,
+    task_id: str,
+    expected_task_version: int,
+    expected_state_version: int,
+    idempotency_key: str,
+    prototype_path: str,
+    prototype_hash: str,
+    reviewed_commit: str,
+    decision: str,
+    reviewer: str,
+    reason: str,
+    findings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Validate and independently confirm the current offline HTML prototype."""
+
+    def operation() -> dict[str, Any]:
+        context = _current_context()
+        warnings = _trusted_reviewer_warnings(reviewer, context)
+        PrototypeReviewService(Path(project_root)).submit(
+            run_id=run_id,
+            task_id=task_id,
+            expected_task_version=expected_task_version,
+            expected_state_version=expected_state_version,
+            idempotency_key=idempotency_key,
+            prototype_path=prototype_path,
+            prototype_hash=prototype_hash,
+            reviewed_commit=reviewed_commit,
+            decision=ReviewDecision(decision),
+            reviewer=reviewer,
+            reason=reason,
+            findings=tuple(ReviewFinding.model_validate(item) for item in findings or ()),
+            invocation=context,
+        )
+        return _workflow_payload(
+            WorkflowEngine(Path(project_root), readonly=True).status(run_id),
+            Path(project_root),
+            warnings=warnings,
         )
 
     return _invoke(operation)
@@ -569,9 +611,7 @@ def verification_run(
         if (run_id is None) != (task_id is None):
             raise ValueError("run_id and task_id must be supplied together")
         if run_id is not None and task_id is not None:
-            result = VerificationService(Path(project_root)).run(
-                run_id=run_id, task_id=task_id
-            )
+            result = VerificationService(Path(project_root)).run(run_id=run_id, task_id=task_id)
             return _success(
                 valid=result.valid,
                 run_id=result.run_id,

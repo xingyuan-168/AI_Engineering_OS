@@ -4,6 +4,7 @@
 
 ### Added
 
+- 含前端页面的 Routing 现在不可移除 `frontend-project`；Workflow 在 design 与 G2 之间强制进入 prototype 阶段，要求离线自包含 HTML、`html-prototype-validator` 和独立 accepted UX Review，原型 Commit/hash 变化会使旧确认失效。
 - 增加唯一不可变 `RuntimeVersions`，统一软件、Plugin、API、配置、文档、Profile、SQLite、需求和执行镜像版本；公共 1.2 配置使用可移植项目根。
 - 增加 SQLite `0007_release_closure`：Host Operation、脱敏调用审计、Memory 乐观版本、Routing 评分、Release candidate/final 对账、Check 时间和不可逆 accepted Handoff 约束。
 - 增加受管 Worktree/coordinator root 明确拒绝、0006→0007 重验证、Memory expected-version 和迁移失败临时库校验/原子恢复测试。

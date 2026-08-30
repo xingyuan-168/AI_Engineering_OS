@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 产品需求
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001","FRONTEND-002"]} -->
 
 需求基线：`REQ-1.6.2`
 
@@ -85,6 +85,7 @@ AI Engineering OS 是运行在 Codex Host 周围的工程治理与执行层。Co
 | MEMORY-001 | Memory 具备完整生命周期、来源校验和 FTS5 检索 | 状态统一为 `pending/active/needs_review/superseded/revoked/expired/deleted`；旧状态按迁移规则转换；ADR 接受、Bug 关闭、Release、回滚和重要失败产生候选；来源变化进入复核；Secret 不进入索引；查询按项目、类型、状态、标签、时间和来源隔离 |
 | ROUTING-001 | Profile 真实参与 Workflow | `frontend-project/backend-project/large-project` Profile 作为 YAML 事实源影响路由决策、任务生成、允许路径、依赖、证据和审批；短名只作 warning 兼容；决策在 G0 前持久化并可通过 status/MCP 查询 |
 | FRONTEND-001 | 提供实际 Frontend Engineer 路径 | `frontend-engineer` Profile、Frontend Implementation Skill、Agent 资产、任务生成、允许路径、Review 和验证 fixture 全部通过验证器与端到端测试 |
+| FRONTEND-002 | 前端实现受 HTML 交互原型硬门禁约束 | 任何含前端页面的有效 Routing Decision 都包含 `frontend-project`；G2 前必须存在绑定当前 Commit/hash 的离线 HTML 原型、通过的 `html-prototype-validator` 和独立 accepted `ux-prototype` Review；缺失、拒绝或原型变化均阻塞实现 |
 
 ### 4.7 公共接口、迁移与兼容
 

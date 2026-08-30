@@ -212,6 +212,12 @@ class ProfileRouter:
             selected = ["backend-project", "frontend-project"]
         else:
             selected = ["backend-project"]
+        frontend_required = self.config.project_type in {
+            ProjectType.FRONTEND,
+            ProjectType.FULLSTACK,
+        } or any(self._frontend_impact(path) for path in impact_paths)
+        if frontend_required and "frontend-project" not in selected:
+            selected.append("frontend-project")
         if (
             len(impact_paths) >= 20
             and "large-project" in self.allowed_profiles
@@ -222,6 +228,14 @@ class ProfileRouter:
 
     def _canonical_profile(self, profile: str) -> str:
         return self.PROFILE_ALIASES.get(profile, profile)
+
+    @staticmethod
+    def _frontend_impact(value: str) -> bool:
+        normalized = value.replace("\\", "/").casefold().strip("/")
+        parts = set(normalized.split("/"))
+        return bool(parts & {"frontend", "ui", "web"}) or normalized.endswith(
+            (".html", ".css", ".jsx", ".tsx", ".vue", ".svelte")
+        )
 
     def _load_allowed_profiles(self) -> frozenset[str]:
         profile_dir = self.config.root / "profiles"

@@ -48,6 +48,15 @@ def test_formal_g3_policy_requires_complete_offline_release_matrix() -> None:
     }
 
 
+def test_frontend_g2_requires_validated_and_reviewed_html_prototype() -> None:
+    policy = GovernancePolicyCompiler(PROJECT_ROOT).compile(("frontend-project",))
+    requirements = policy.requirements_for(Gate.G2)
+
+    assert "html-prototype" in requirements.artifact_types
+    assert "html-prototype-validator" in requirements.checks
+    assert "ux-prototype" in requirements.reviews
+
+
 def test_project_role_policy_can_tighten_but_cannot_raise_capabilities() -> None:
     policy = GovernancePolicyCompiler(PROJECT_ROOT).compile(
         ("backend-project",),

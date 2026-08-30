@@ -10,6 +10,7 @@ from codex_ai_os.adapters.docker import SandboxRequest, SandboxResult, command_h
 from codex_ai_os.application.execution import ExecutionService
 from codex_ai_os.application.g4 import GitHubReleaseGovernanceService
 from codex_ai_os.application.project import ProjectInitializer
+from codex_ai_os.application.prototype import PrototypeReviewService
 from codex_ai_os.application.release import ReleaseCandidateService
 from codex_ai_os.application.verification import DEFAULT_CHECKS, VerificationService
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowResult
@@ -85,10 +86,7 @@ class _GitHubRunner:
         if command[:2] == ["git", "tag"]:
             return self._result(command)
         if command[:3] == ["git", "ls-remote", "--tags"]:
-            output = (
-                f"{'a' * 40}\trefs/tags/v0.2.0\n"
-                f"{'e' * 40}\trefs/tags/v0.2.0^{{}}\n"
-            )
+            output = f"{'a' * 40}\trefs/tags/v0.2.0\n{'e' * 40}\trefs/tags/v0.2.0^{{}}\n"
             return self._result(command, stdout=output)
         if command[:3] == ["gh", "pr", "view"]:
             with Database(self.root / ".codex-os" / "state" / "state.db").connection() as db:
@@ -127,9 +125,7 @@ class _GitHubRunner:
                                 "apiUrl": f"https://api.github.com/assets/{index}",
                                 "size": len(content),
                             }
-                            for index, (name, content) in enumerate(
-                                sorted(self.assets.items()), 1
-                            )
+                            for index, (name, content) in enumerate(sorted(self.assets.items()), 1)
                         ],
                     }
                 ),
@@ -213,9 +209,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         engine,
         current,
         {
-            "docs/PRODUCT_REQUIREMENTS.md": _doc(
-                "Requirements", ("范围", "成功标准", "验收标准")
-            ),
+            "docs/PRODUCT_REQUIREMENTS.md": _doc("Requirements", ("范围", "成功标准", "验收标准")),
             "docs/USER_STORY.md": _doc("User Stories", ("用户", "场景", "验收")),
             "docs/BUSINESS_RULES.md": _doc("Business Rules", ("规则", "异常", "验收")),
         },
@@ -228,42 +222,69 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         engine,
         current,
         {
-            "docs/OPEN_SOURCE_RESEARCH.md": _doc(
-                "Research", ("来源", "版本", "License", "风险")
-            ),
+            "docs/OPEN_SOURCE_RESEARCH.md": _doc("Research", ("来源", "版本", "License", "风险")),
             "docs/TECH_STACK.md": _doc("Stack", ("Python", "SQLite", "Podman")),
         },
     )
-    current, design_commit = _complete(
+    current, _ = _complete(
         engine,
         current,
         {
-            "docs/ARCHITECTURE.md": _doc(
-                "Architecture", ("定位", "组件", "信任边界", "恢复")
-            ),
+            "docs/ARCHITECTURE.md": _doc("Architecture", ("定位", "组件", "信任边界", "恢复")),
             "docs/API_SPEC.md": _doc("API", ("接口", "错误", "兼容")),
             "docs/DATABASE.md": _doc("Database", ("迁移", "事务", "恢复")),
             "docs/MIGRATION_SPEC.md": _doc("Migration", ("迁移", "回滚", "校验")),
             "docs/SECURITY.md": _doc("Security", ("信任", "威胁", "风险")),
             "docs/ADR/README.md": _doc("ADR Index", ("Decision", "Status", "Owner")),
             "docs/PRODUCT_DESIGN.md": _doc("Product Design", ("用户", "范围", "验收")),
-            "docs/INTERACTION_DESIGN.md": _doc(
-                "Interaction Design", ("流程", "状态", "错误")
-            ),
+            "docs/INTERACTION_DESIGN.md": _doc("Interaction Design", ("流程", "状态", "错误")),
             "docs/UI_DESIGN.md": _doc("UI Design", ("布局", "组件", "无障碍")),
             "docs/RISK_REGISTER.md": _doc("Risk Register", ("风险", "影响", "处置")),
             "docs/AGENT_HANDOFF.md": _doc("Agent Handoff", ("任务", "证据", "审核")),
         },
     )
+    assert current.next_action is not None
+    assert current.next_action.skill == "html-prototype"
+    prototype_action = current.next_action
+    prototype_path = "docs/prototypes/governed/index.html"
+    prototype_commit = _commit_files(
+        prototype_action,
+        {prototype_path: _prototype()},
+    )
+    current = _complete_committed_action(
+        engine,
+        current,
+        prototype_action,
+        prototype_commit,
+        {prototype_path: "html-prototype"},
+    )
+    prototype_hash = hashlib.sha256(
+        _git_bytes(
+            Path(str(prototype_action.worktree)), "show", f"{prototype_commit}:{prototype_path}"
+        )
+    ).hexdigest()
+    PrototypeReviewService(root).submit(
+        run_id=current.run.id,
+        task_id=str(prototype_action.task_id),
+        expected_task_version=engine.store.get_task(str(prototype_action.task_id)).state_version,
+        expected_state_version=current.run.state_version,
+        idempotency_key="e2e-prototype-review",
+        prototype_path=prototype_path,
+        prototype_hash=prototype_hash,
+        reviewed_commit=prototype_commit,
+        decision=ReviewDecision.ACCEPTED,
+        reviewer="ux-owner",
+        reason="offline interaction states confirmed",
+        invocation=InvocationContext.local(InvocationSource.CLI),
+    )
+    current = engine.status(current.run.id)
     current = engine.submit_approval(
         current.run.id, gate=Gate.G2, approved=True, reviewer="owner", reason="G2 verified"
     )
     assert current.next_action is not None
     assert current.next_action.kind is ActionKind.HOST_OPERATION
     assert current.run.integration_head is None
-    assert engine.operations.get(str(current.next_action.operation_id)).status.value == (
-        "pending"
-    )
+    assert engine.operations.get(str(current.next_action.operation_id)).status.value == ("pending")
     current = engine.execute_host_operation(
         str(current.next_action.operation_id),
         expected_operation_version=int(current.next_action.expected_operation_version or 0),
@@ -272,7 +293,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         ).idempotency_key,
         invocation=InvocationContext.local(InvocationSource.CLI),
     )
-    assert current.run.integration_head == design_commit
+    assert current.run.integration_head == prototype_commit
     assert len(current.next_actions) == 3
 
     initial_actions = current.next_actions
@@ -361,9 +382,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     with engine.store.database.connection() as connection:
         connection.execute("DELETE FROM release_records WHERE run_id = ?", (current.run.id,))
         connection.commit()
-    recovered_candidate = ReleaseCandidateService(
-        root, execution_service=execution
-    ).create(
+    recovered_candidate = ReleaseCandidateService(root, execution_service=execution).create(
         current.run.id,
         operation=succeeded_prepare.model_copy(
             update={"status": HostOperationStatus.RUNNING, "attempt_count": 2}
@@ -392,14 +411,18 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         _doc("Changelog", ("0.2.0", "Governance")), encoding="utf-8"
     )
     release_commit = _git_commit(release_worktree, "feat: assemble governed release")
-    release_checks = VerificationService(root, execution_service=execution).run(
-        run_id=current.run.id,
-        task_id=str(release_action.task_id),
-        checks=tuple(
-            (name, ("python", "--version"))
-            for name in ("release-manifest", "sbom", "checksums", "rollback")
-        ),
-    ).checks
+    release_checks = (
+        VerificationService(root, execution_service=execution)
+        .run(
+            run_id=current.run.id,
+            task_id=str(release_action.task_id),
+            checks=tuple(
+                (name, ("python", "--version"))
+                for name in ("release-manifest", "sbom", "checksums", "rollback")
+            ),
+        )
+        .checks
+    )
     current = _complete_committed_action(
         engine,
         current,
@@ -493,9 +516,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     assert publish_operation.kind.value == "release_publish"
     completed = engine.execute_host_operation(
         publish_operation.operation_id,
-        expected_operation_version=int(
-            authorized.next_action.expected_operation_version or 0
-        ),
+        expected_operation_version=int(authorized.next_action.expected_operation_version or 0),
         idempotency_key=publish_operation.idempotency_key,
         invocation=InvocationContext.local(InvocationSource.CLI),
     )
@@ -510,19 +531,19 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     assert published is not None
     assert published["status"] == "published"
     final_manifest = root / str(published["final_manifest_path"])
-    assert hashlib.sha256(final_manifest.read_bytes()).hexdigest() == published[
-        "final_manifest_hash"
-    ]
+    assert (
+        hashlib.sha256(final_manifest.read_bytes()).hexdigest() == published["final_manifest_hash"]
+    )
     external = json.loads(str(published["external_reconciliation_json"]))
     assert external["release"]["is_draft"] is False
     assert external["assets"]["release-manifest.json"]["sha256"]
 
 
-def _doc(title: str, sections: tuple[str, ...]) -> str:
+def _doc(title: str, sections: tuple[str, ...], *, version: str = "0.1.0") -> str:
     metadata = json.dumps(
         {
             "schema_version": "1.2",
-            "document_version": "0.2.0",
+            "document_version": version,
             "status": "approved",
             "owner": "fixture-owner",
             "requirement_refs": ["REQ-1.6.2"],
@@ -531,6 +552,30 @@ def _doc(title: str, sections: tuple[str, ...]) -> str:
     )
     body = "\n\n".join(f"## {section}\n\nVerified content." for section in sections)
     return f"<!-- codex-os-document: {metadata} -->\n# {title}\n\n{body}\n"
+
+
+def _prototype() -> str:
+    states = "".join(
+        f'<section data-state="{state}">{state}</section>'
+        for state in (
+            "success",
+            "empty",
+            "loading",
+            "validation",
+            "permission",
+            "failure",
+            "retry",
+            "cancel",
+            "resume",
+        )
+    )
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        "<style>button:focus{outline:2px solid}</style></head>"
+        f'<body>{states}<label for="name">Name</label><input id="name">'
+        '<button type="button">Continue</button>'
+        '<script>document.body.dataset.ready="1";</script></body></html>'
+    )
 
 
 def _complete(

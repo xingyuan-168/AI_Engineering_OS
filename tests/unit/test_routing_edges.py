@@ -39,6 +39,14 @@ def test_profile_router_selects_smallest_team_and_large_impact(tmp_path: Path) -
         initialized.config.model_copy(update={"project_type": ProjectType.FULLSTACK}),
     )
     assert fullstack._select_profiles((), ()) == ("backend-project", "frontend-project")
+    assert frontend._select_profiles(("backend-project",), ()) == (
+        "backend-project",
+        "frontend-project",
+    )
+    assert router._select_profiles(("backend-project",), ("src/frontend/App.tsx",)) == (
+        "backend-project",
+        "frontend-project",
+    )
     with pytest.raises(ValueError, match="unknown profiles"):
         router._select_profiles(("mobile",), ())
 
@@ -65,9 +73,7 @@ def test_profile_router_selects_smallest_team_and_large_impact(tmp_path: Path) -
     assert decision.policy_hash
     assert decision.dimension_scores["release"] == 10
     assert decision.dependencies == (("backend-implementation", "database-migrations"),)
-    assert decision.warnings == (
-        "profile alias 'backend' is deprecated; use 'backend-project'",
-    )
+    assert decision.warnings == ("profile alias 'backend' is deprecated; use 'backend-project'",)
     with router.database.read_connection() as connection:
         row = connection.execute(
             """

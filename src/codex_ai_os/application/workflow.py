@@ -146,9 +146,7 @@ class WorkflowEngine:
         self.worktree_store = WorktreeStore(database)
         self.operations = HostOperationStore(database)
         self.git_evidence = git_evidence
-        self.worktrees = worktrees or (
-            None if readonly else WorktreeService(self.config.root)
-        )
+        self.worktrees = worktrees or (None if readonly else WorktreeService(self.config.root))
         self.g4_publisher = g4_publisher or (
             None if readonly else GitHubReleaseGovernanceService(self.config.root)
         )
@@ -189,9 +187,7 @@ class WorkflowEngine:
 
         selected_target = target_branch or self.config.target_branch
         selected_document_version = (
-            document_version_target
-            or self.config.document_version
-            or RUNTIME_VERSIONS.software
+            document_version_target or self.config.document_version or RUNTIME_VERSIONS.software
         )
         if not re.fullmatch(
             r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?",
@@ -210,9 +206,9 @@ class WorkflowEngine:
             raise WorkflowError("CONFIG_INVALID", "profiles exceed max_parallel_agents", 2)
         if self.config.schema_version != "1.0":
             try:
-                RepositoryGovernanceService(
-                    self.config.root, config=self.config
-                ).require_ready(target_branch=selected_target)
+                RepositoryGovernanceService(self.config.root, config=self.config).require_ready(
+                    target_branch=selected_target
+                )
             except RepositoryGovernanceError as exc:
                 raise WorkflowError(exc.code, str(exc), 40) from exc
 
@@ -324,10 +320,7 @@ class WorkflowEngine:
                 retryable=exc.retryable,
             ) from exc
         task_id = run.checkpoint.get("last_completed_task")
-        repair_actions = [
-            {**action, "task_id": task_id}
-            for action in bundle.repair_actions
-        ]
+        repair_actions = [{**action, "task_id": task_id} for action in bundle.repair_actions]
         if repair_actions:
             repair_actions.append(
                 {
@@ -430,9 +423,7 @@ class WorkflowEngine:
                     assignment = self.worktree_store.get_for_task(task.id)
                     verifier = GitEvidenceService(
                         Path(task.worktree) if task.worktree is not None else self.config.root,
-                        require_push=(
-                            self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
-                        ),
+                        require_push=(self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED),
                         base_commit=(assignment.base_commit if assignment is not None else None),
                         allowed_paths=action.allowed_paths,
                     )
@@ -502,7 +493,7 @@ class WorkflowEngine:
 
         next_version = run.state_version + 1
         next_task: TaskRecord | None = None
-        if gate := GATE_AFTER_PHASE.get(run.workflow_phase):
+        if gate := _gate_after_action_phase(run.workflow_phase, run.profiles):
             next_action = NextAction(
                 kind=ActionKind.APPROVAL,
                 gate=gate,
@@ -519,7 +510,7 @@ class WorkflowEngine:
                 last_commit_sha=completion.commit_sha,
                 evidence_refs=tuple(completion.artifact_paths_and_hashes),
             )
-        elif next_phase := AUTOMATIC_NEXT_PHASE.get(run.workflow_phase):
+        elif next_phase := _next_phase_after_action(run.workflow_phase, run.profiles):
             next_task, next_action = self._task_and_action(
                 run.id,
                 next_phase,
@@ -672,9 +663,7 @@ class WorkflowEngine:
         try:
             evidence = GitEvidenceService(
                 worktree,
-                require_push=(
-                    self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
-                ),
+                require_push=(self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED),
                 base_commit=task.head_commit,
                 allowed_paths=allowed_paths,
             ).verify(completion)
@@ -821,9 +810,7 @@ class WorkflowEngine:
                     40,
                 )
             try:
-                publication_intent = self.g4_publisher.verify_publication_intent(
-                    run, g4_evidence
-                )
+                publication_intent = self.g4_publisher.verify_publication_intent(run, g4_evidence)
             except ReleaseGovernanceError as exc:
                 raise WorkflowError(exc.code, str(exc), 50) from exc
 
@@ -945,9 +932,7 @@ class WorkflowEngine:
             self._allocate_or_block(updated, next_task, base_ref=base_ref)
         return self._result(self.store.get_run(updated.id))
 
-    def review_handoff(
-        self, review: HandoffReviewInput
-    ) -> WorkflowResult:
+    def review_handoff(self, review: HandoffReviewInput) -> WorkflowResult:
         handoff_task = self._task_for_handoff(review.handoff_id)
         run = self._get_run(handoff_task.run_id)
         self._require_migration_revalidation(run)
@@ -1084,12 +1069,11 @@ class WorkflowEngine:
             )
         try:
             tasks = tuple(
-                TaskBlueprint.model_validate(item)
-                for item in cast(list[object], tasks_value)
+                TaskBlueprint.model_validate(item) for item in cast(list[object], tasks_value)
             )
-            integration_path = CoordinationService(
-                self.config.root
-            ).ensure_integration_worktree(operation.run_id, base_commit=source_commit)
+            integration_path = CoordinationService(self.config.root).ensure_integration_worktree(
+                operation.run_id, base_commit=source_commit
+            )
             group = self._ensure_task_group(
                 run_id=operation.run_id,
                 name="implementation",
@@ -1143,9 +1127,7 @@ class WorkflowEngine:
         self, operation: HostOperation, *, lease_owner: str
     ) -> WorkflowResult:
         try:
-            integration = CoordinationService(self.config.root).execute_merge_operation(
-                operation
-            )
+            integration = CoordinationService(self.config.root).execute_merge_operation(operation)
         except CoordinationError as exc:
             if exc.code == "REMOTE_UNREACHABLE":
                 self.operations.mark_outcome_unknown(
@@ -1190,9 +1172,7 @@ class WorkflowEngine:
                 lease_owner=lease_owner,
                 error_code="RECOVERY_UNAVAILABLE",
             )
-            raise WorkflowError(
-                "RECOVERY_UNAVAILABLE", "release prepare has no Workflow run", 40
-            )
+            raise WorkflowError("RECOVERY_UNAVAILABLE", "release prepare has no Workflow run", 40)
         source_commit = operation.request.get("integration_source_commit")
         if not isinstance(source_commit, str) or not source_commit:
             self.operations.mark_failed(
@@ -1201,9 +1181,7 @@ class WorkflowEngine:
                 lease_owner=lease_owner,
                 error_code="RECOVERY_UNAVAILABLE",
             )
-            raise WorkflowError(
-                "RECOVERY_UNAVAILABLE", "release prepare request is incomplete", 40
-            )
+            raise WorkflowError("RECOVERY_UNAVAILABLE", "release prepare request is incomplete", 40)
         definition = PHASE_DEFINITIONS[WorkflowPhase.RELEASE]
         blueprint = TaskBlueprint(
             key="release-governed",
@@ -1295,17 +1273,13 @@ class WorkflowEngine:
                 lease_owner=lease_owner,
                 error_code="RECOVERY_UNAVAILABLE",
             )
-            raise WorkflowError(
-                "RECOVERY_UNAVAILABLE", "release publish approval is missing", 40
-            )
+            raise WorkflowError("RECOVERY_UNAVAILABLE", "release publish approval is missing", 40)
         try:
             approval = G4ApprovalInput.model_validate(approval_value)
             run = self._get_run(operation.run_id)
             publication = self.g4_publisher.authorize_and_publish(run, approval)
         except (ReleaseGovernanceError, ValidationError) as exc:
-            code = (
-                exc.code if isinstance(exc, ReleaseGovernanceError) else "CONFIG_INVALID"
-            )
+            code = exc.code if isinstance(exc, ReleaseGovernanceError) else "CONFIG_INVALID"
             if code in {
                 "GITHUB_RELEASE_BLOCKED",
                 "REMOTE_UNREACHABLE",
@@ -1405,15 +1379,11 @@ class WorkflowEngine:
         if integration.task_group.status == "completed":
             phase = WorkflowPhase(integration.task_group.phase)
             if phase is WorkflowPhase.IMPLEMENTATION:
-                return self._advance_to_coordinated_phase(
-                    run, WorkflowPhase.VERIFY, integration
-                )
+                return self._advance_to_coordinated_phase(run, WorkflowPhase.VERIFY, integration)
             if phase is WorkflowPhase.VERIFY:
                 return self._advance_group_to_gate(run, Gate.G3, integration)
             if phase is WorkflowPhase.RELEASE:
-                return self._advance_to_coordinated_phase(
-                    run, WorkflowPhase.MEMORY, integration
-                )
+                return self._advance_to_coordinated_phase(run, WorkflowPhase.MEMORY, integration)
             if phase is WorkflowPhase.MEMORY:
                 return self._advance_group_to_gate(run, Gate.G4, integration)
             raise WorkflowError(
@@ -1421,9 +1391,11 @@ class WorkflowEngine:
             )
 
         if integration.status == "rejected":
-            task = self._get_task(integration.task_group.ready_task_ids[0]) if (
-                integration.task_group.ready_task_ids
-            ) else self._task_for_handoff(integration.handoff_id)
+            task = (
+                self._get_task(integration.task_group.ready_task_ids[0])
+                if (integration.task_group.ready_task_ids)
+                else self._task_for_handoff(integration.handoff_id)
+            )
             actions = (self._action_for_coordinated_task(task),)
             status = RunStatus.RUNNING
         elif integration.status in {"blocked", "conflicted"}:
@@ -1554,9 +1526,7 @@ class WorkflowEngine:
                 evidence_bundle_id=evidence_bundle_id,
                 evidence_bundle_hash=evidence_bundle_hash,
                 host_operation_kind=HostOperationKind.RELEASE_PREPARE,
-                host_operation_idempotency_key=(
-                    f"{run.id}:{run.state_version}:release_prepare"
-                ),
+                host_operation_idempotency_key=(f"{run.id}:{run.state_version}:release_prepare"),
                 host_operation_request={
                     "schema_version": RUNTIME_VERSIONS.api,
                     "run_id": run.id,
@@ -1591,9 +1561,7 @@ class WorkflowEngine:
             )
         result_value: object = json.loads(str(row["result_json"]))
         if not isinstance(result_value, dict):
-            raise WorkflowError(
-                "DEPENDENCY_UNVERIFIED", "verification cache result is invalid", 40
-            )
+            raise WorkflowError("DEPENDENCY_UNVERIFIED", "verification cache result is invalid", 40)
         result = cast(dict[str, object], result_value)
         lock_hash = result.get("uv_lock_hash")
         if not isinstance(lock_hash, str):
@@ -1727,9 +1695,7 @@ class WorkflowEngine:
                     evidence_bundle_ids=bundle_ids,
                 )
             except (RepositoryGovernanceError, EvidenceError) as exc:
-                raise WorkflowError(
-                    "MIGRATION_REVALIDATION_REQUIRED", str(exc), 40
-                ) from exc
+                raise WorkflowError("MIGRATION_REVALIDATION_REQUIRED", str(exc), 40) from exc
             except WorkflowConflictError as exc:
                 raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
         if run.run_status in {RunStatus.RUNNING, RunStatus.NEEDS_APPROVAL}:
@@ -1737,13 +1703,10 @@ class WorkflowEngine:
         if run.run_status in {RunStatus.COMPLETED, RunStatus.CANCELLED}:
             raise WorkflowError("RECOVERY_UNAVAILABLE", "terminal workflow cannot resume", 30)
 
-        recoverable_operations = self.operations.recoverable(
-            run.id, limit=run.max_parallel_agents
-        )
+        recoverable_operations = self.operations.recoverable(run.id, limit=run.max_parallel_agents)
         if recoverable_operations:
             actions = tuple(
-                self._action_for_host_operation(operation)
-                for operation in recoverable_operations
+                self._action_for_host_operation(operation) for operation in recoverable_operations
             )
             checkpoint = _operations_checkpoint(
                 run.checkpoint,
@@ -1834,13 +1797,9 @@ class WorkflowEngine:
             if action.kind is ActionKind.HOST_OPERATION and action.operation_id is not None:
                 operation = self.operations.get(action.operation_id)
                 updates["expected_operation_version"] = operation.state_version
-            target_gate = action.gate or _gate_after_action_phase(
-                run.workflow_phase, run.profiles
-            )
+            target_gate = action.gate or _gate_after_action_phase(run.workflow_phase, run.profiles)
             if target_gate is not None:
-                updates["gate_requirements"] = self._gate_requirements(
-                    run, target_gate
-                )
+                updates["gate_requirements"] = self._gate_requirements(run, target_gate)
             action = action.model_copy(update=updates)
             hydrated.append(action)
         next_actions = tuple(hydrated)
@@ -1862,9 +1821,7 @@ class WorkflowEngine:
         return policy.gate_contract(
             gate,
             document_version=self._document_version_target(run),
-            push_required=(
-                self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
-            ),
+            push_required=(self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED),
         )
 
     @staticmethod
@@ -1907,9 +1864,7 @@ class WorkflowEngine:
         )
 
     def _schedule_group(self, run: WorkflowRun, group_id: str) -> tuple[NextAction, ...]:
-        planned = self.coordination_store.ready_tasks(
-            group_id, limit=run.max_parallel_agents
-        )
+        planned = self.coordination_store.ready_tasks(group_id, limit=run.max_parallel_agents)
         actions: list[NextAction] = []
         base_ref = run.integration_head or run.base_commit or "HEAD"
         for item in planned:
@@ -2184,18 +2139,23 @@ def _checkpoint(
         "resumed_from": resumed_from,
         "release_publication": release_publication,
         "document_version_target": (
-            document_version_target
-            or (previous or {}).get("document_version_target")
+            document_version_target or (previous or {}).get("document_version_target")
         ),
     }
 
 
-def _gate_after_action_phase(
-    phase: WorkflowPhase, profiles: tuple[str, ...]
-) -> Gate | None:
+def _gate_after_action_phase(phase: WorkflowPhase, profiles: tuple[str, ...]) -> Gate | None:
     if phase is WorkflowPhase.DESIGN and "frontend-project" in profiles:
         return None
     return GATE_AFTER_PHASE.get(phase)
+
+
+def _next_phase_after_action(
+    phase: WorkflowPhase, profiles: tuple[str, ...]
+) -> WorkflowPhase | None:
+    if phase is WorkflowPhase.DESIGN and "frontend-project" in profiles:
+        return WorkflowPhase.PROTOTYPE
+    return AUTOMATIC_NEXT_PHASE.get(phase)
 
 
 def _action_from_checkpoint(checkpoint: dict[str, Any]) -> NextAction | None:
@@ -2224,9 +2184,7 @@ def _actions_from_checkpoint(checkpoint: dict[str, Any]) -> tuple[NextAction, ..
         try:
             actions.append(NextAction.model_validate(cast(dict[str, Any], raw)))
         except ValidationError as exc:
-            raise WorkflowError(
-                "RECOVERY_UNAVAILABLE", f"invalid next action: {exc}", 30
-            ) from exc
+            raise WorkflowError("RECOVERY_UNAVAILABLE", f"invalid next action: {exc}", 30) from exc
     return tuple(actions)
 
 
@@ -2248,9 +2206,7 @@ def _coordination_checkpoint(
         "task_group_id": task_group_id,
         "waiting_handoff": waiting_handoff,
         "last_commit_sha": last_commit_sha or previous.get("last_commit_sha"),
-        "integration_worktree": (
-            integration_worktree or previous.get("integration_worktree")
-        ),
+        "integration_worktree": (integration_worktree or previous.get("integration_worktree")),
         "blocker": blocker,
         "pending_gate": None,
     }
@@ -2312,6 +2268,11 @@ def _input_artifacts_for(phase: WorkflowPhase) -> tuple[str, ...]:
         WorkflowPhase.REQUIREMENTS: ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"),
         WorkflowPhase.RESEARCH: ("docs/PRODUCT_REQUIREMENTS.md", "docs/SCOPE.md"),
         WorkflowPhase.DESIGN: ("docs/OPEN_SOURCE_RESEARCH.md", "docs/PRODUCT_REQUIREMENTS.md"),
+        WorkflowPhase.PROTOTYPE: (
+            "docs/PRODUCT_DESIGN.md",
+            "docs/INTERACTION_DESIGN.md",
+            "docs/UI_DESIGN.md",
+        ),
         WorkflowPhase.IMPLEMENTATION: (
             "docs/ARCHITECTURE.md",
             "docs/API_SPEC.md",

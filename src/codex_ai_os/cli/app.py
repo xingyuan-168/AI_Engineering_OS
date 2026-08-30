@@ -17,6 +17,7 @@ from codex_ai_os.application.maintenance import (
     VerificationPrepareService,
 )
 from codex_ai_os.application.project import ProjectInitializer
+from codex_ai_os.application.prototype import PrototypeReviewService
 from codex_ai_os.application.release import ReleaseCandidateService
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.application.verification import VerificationService
@@ -35,6 +36,7 @@ from codex_ai_os.domain.governance import (
     G4ApprovalInput,
     ReleaseAuthority,
     ReviewDecision,
+    ReviewFinding,
 )
 from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
 from codex_ai_os.domain.operations import ReconciliationOutcome
@@ -55,15 +57,14 @@ handoff_app = typer.Typer(help="Review structured Agent Handoffs.", no_args_is_h
 host_operation_app = typer.Typer(
     help="Execute persisted host-side operations.", no_args_is_help=True
 )
-verification_app = typer.Typer(
-    help="Prepare governed verification caches.", no_args_is_help=True
-)
+verification_app = typer.Typer(help="Prepare governed verification caches.", no_args_is_help=True)
 database_app = typer.Typer(help="Run explicit database maintenance.", no_args_is_help=True)
 release_app = typer.Typer(help="Create governed release candidates.", no_args_is_help=True)
 memory_app = typer.Typer(help="Submit, review, and search governed Memory.", no_args_is_help=True)
 worktree_app = typer.Typer(help="Manage governed Worktree lifecycle.", no_args_is_help=True)
 task_app = typer.Typer(help="Complete governed task actions.", no_args_is_help=True)
 gate_app = typer.Typer(help="Validate declarative Gate requirements.", no_args_is_help=True)
+prototype_app = typer.Typer(help="Validate and review HTML prototypes.", no_args_is_help=True)
 app.add_typer(run_app, name="run")
 app.add_typer(handoff_app, name="handoff")
 app.add_typer(host_operation_app, name="host-operation")
@@ -74,6 +75,7 @@ app.add_typer(memory_app, name="memory")
 app.add_typer(worktree_app, name="worktree")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
+app.add_typer(prototype_app, name="prototype")
 
 
 @app.command("doctor")
@@ -155,9 +157,7 @@ def repository_check_command(
     """Check GitHub readiness, repository hygiene, and blocking findings."""
 
     try:
-        report = RepositoryGovernanceService(project_root).check(
-            target_branch=target_branch
-        )
+        report = RepositoryGovernanceService(project_root).check(target_branch=target_branch)
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
         return
@@ -238,9 +238,7 @@ def check_docs_command(
     project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
     run_id: Annotated[str | None, typer.Option("--run-id")] = None,
     gate: Annotated[Gate | None, typer.Option("--gate")] = None,
-    expected_state_version: Annotated[
-        int | None, typer.Option("--expected-state-version")
-    ] = None,
+    expected_state_version: Annotated[int | None, typer.Option("--expected-state-version")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
     """Check required documents, headings, local links, and copy directories."""
@@ -302,9 +300,7 @@ def check_docs_command(
 def gate_validate_command(
     run_id: Annotated[str, typer.Argument(help="Workflow run ID.")],
     gate: Annotated[Gate, typer.Option("--gate")],
-    expected_state_version: Annotated[
-        int | None, typer.Option("--expected-state-version")
-    ] = None,
+    expected_state_version: Annotated[int | None, typer.Option("--expected-state-version")] = None,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
@@ -474,21 +470,15 @@ def approve_command(
     gate: Annotated[Gate, typer.Option("--gate")],
     reason: Annotated[str, typer.Option("--reason")],
     reviewer: Annotated[str, typer.Option("--reviewer")] = "user",
-    expected_state_version: Annotated[
-        int | None, typer.Option("--expected-state-version")
-    ] = None,
+    expected_state_version: Annotated[int | None, typer.Option("--expected-state-version")] = None,
     idempotency_key: Annotated[str | None, typer.Option("--idempotency-key")] = None,
-    evidence_bundle_hash: Annotated[
-        str | None, typer.Option("--evidence-bundle-hash")
-    ] = None,
+    evidence_bundle_hash: Annotated[str | None, typer.Option("--evidence-bundle-hash")] = None,
     pr_number: Annotated[int | None, typer.Option("--pr-number")] = None,
     pr_url: Annotated[str | None, typer.Option("--pr-url")] = None,
     merge_commit: Annotated[str | None, typer.Option("--merge-commit")] = None,
     version: Annotated[str | None, typer.Option("--version")] = None,
     release_authorized: Annotated[bool, typer.Option("--release-authorized")] = False,
-    release_authorized_by: Annotated[
-        str | None, typer.Option("--release-authorized-by")
-    ] = None,
+    release_authorized_by: Annotated[str | None, typer.Option("--release-authorized-by")] = None,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
@@ -520,13 +510,9 @@ def reject_command(
     gate: Annotated[Gate, typer.Option("--gate")],
     reason: Annotated[str, typer.Option("--reason")],
     reviewer: Annotated[str, typer.Option("--reviewer")] = "user",
-    expected_state_version: Annotated[
-        int | None, typer.Option("--expected-state-version")
-    ] = None,
+    expected_state_version: Annotated[int | None, typer.Option("--expected-state-version")] = None,
     idempotency_key: Annotated[str | None, typer.Option("--idempotency-key")] = None,
-    evidence_bundle_hash: Annotated[
-        str | None, typer.Option("--evidence-bundle-hash")
-    ] = None,
+    evidence_bundle_hash: Annotated[str | None, typer.Option("--evidence-bundle-hash")] = None,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
@@ -647,13 +633,9 @@ def task_complete_command(
                 "remote_name": remote_name,
                 "push_status": push_status,
                 "artifacts": tuple(
-                    ArtifactEvidenceInput.model_validate(item)
-                    for item in artifacts
+                    ArtifactEvidenceInput.model_validate(item) for item in artifacts
                 ),
-                "checks": tuple(
-                    CheckEvidenceInput.model_validate(item)
-                    for item in checks
-                ),
+                "checks": tuple(CheckEvidenceInput.model_validate(item) for item in checks),
             }
         )
         result = WorkflowEngine(project_root).complete_task(
@@ -734,6 +716,61 @@ def task_amend_evidence_command(
     _emit_workflow(result, json_output=json_output)
 
 
+@prototype_app.command("review")
+def prototype_review_command(
+    run_id: Annotated[str, typer.Argument(help="Workflow run ID.")],
+    task_id: Annotated[str, typer.Option("--task-id")],
+    expected_task_version: Annotated[int, typer.Option("--expected-task-version")],
+    expected_state_version: Annotated[int, typer.Option("--expected-state-version")],
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
+    prototype_path: Annotated[str, typer.Option("--prototype-path")],
+    prototype_hash: Annotated[str, typer.Option("--prototype-hash")],
+    reviewed_commit: Annotated[str, typer.Option("--reviewed-commit")],
+    decision: Annotated[ReviewDecision, typer.Option("--decision")],
+    reason: Annotated[str, typer.Option("--reason")],
+    reviewer: Annotated[str, typer.Option("--reviewer")] = "user",
+    findings_json: Annotated[str, typer.Option("--findings-json")] = "[]",
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Validate and record an independent UX decision for the prototype Commit."""
+
+    context = InvocationContext.local(InvocationSource.CLI)
+    try:
+        raw: object = json.loads(findings_json)
+        if not isinstance(raw, list):
+            raise ValueError("findings_json must contain a JSON array")
+        findings = tuple(ReviewFinding.model_validate(item) for item in cast(list[object], raw))
+        PrototypeReviewService(project_root).submit(
+            run_id=run_id,
+            task_id=task_id,
+            expected_task_version=expected_task_version,
+            expected_state_version=expected_state_version,
+            idempotency_key=idempotency_key,
+            prototype_path=prototype_path,
+            prototype_hash=prototype_hash,
+            reviewed_commit=reviewed_commit,
+            decision=decision,
+            reviewer=reviewer,
+            reason=reason,
+            findings=findings,
+            invocation=context,
+        )
+        result = WorkflowEngine(project_root, readonly=True).status(run_id)
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_workflow(
+        result,
+        json_output=json_output,
+        context=context,
+        warnings=_trusted_reviewer_warnings(reviewer, context),
+    )
+
+
 @verification_app.command("prepare")
 def verification_prepare_command(
     run_id: Annotated[str, typer.Argument()],
@@ -741,12 +778,8 @@ def verification_prepare_command(
     idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
     network_approval_ref: Annotated[str, typer.Option("--network-approval-ref")],
     expires_at: Annotated[str, typer.Option("--expires-at")],
-    target_python: Annotated[
-        str, typer.Option("--target-python")
-    ] = DEFAULT_VERIFICATION_PYTHON,
-    platform: Annotated[
-        str, typer.Option("--platform")
-    ] = DEFAULT_VERIFICATION_PLATFORM,
+    target_python: Annotated[str, typer.Option("--target-python")] = DEFAULT_VERIFICATION_PYTHON,
+    platform: Annotated[str, typer.Option("--platform")] = DEFAULT_VERIFICATION_PLATFORM,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
@@ -886,9 +919,7 @@ def host_operation_reconcile_command(
 @database_app.command("migrate")
 def database_migrate_command(
     expected_schema_version: Annotated[str, typer.Option("--expected-schema-version")],
-    target_schema_version: Annotated[
-        str, typer.Option("--target-schema-version")
-    ] = "0007",
+    target_schema_version: Annotated[str, typer.Option("--target-schema-version")] = "0007",
     idempotency_key: Annotated[str, typer.Option("--idempotency-key")] = "database-migrate",
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -928,9 +959,7 @@ def database_migrate_command(
 @release_app.command("candidate")
 def release_candidate_command(
     run_id: Annotated[str, typer.Argument()],
-    expected_task_version: Annotated[
-        int | None, typer.Option("--expected-task-version")
-    ] = None,
+    expected_task_version: Annotated[int | None, typer.Option("--expected-task-version")] = None,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
@@ -1190,17 +1219,13 @@ def _emit_workflow(
     context: InvocationContext | None = None,
     warnings: tuple[str, ...] = (),
 ) -> None:
-    action = (
-        result.next_action.model_dump(mode="json") if result.next_action is not None else None
-    )
+    action = result.next_action.model_dump(mode="json") if result.next_action is not None else None
     data: dict[str, Any] = {
         "project_id": result.run.project_id,
         "workflow_name": result.run.workflow_name,
         "goal": result.run.goal,
         "active_task": (
-            result.active_task.model_dump(mode="json")
-            if result.active_task is not None
-            else None
+            result.active_task.model_dump(mode="json") if result.active_task is not None else None
         ),
         "next_actions": [
             next_action.model_dump(mode="json") for next_action in result.next_actions
@@ -1226,8 +1251,7 @@ def _emit_workflow(
             workflow_phase=result.run.workflow_phase.value,
             state_version=result.run.state_version,
             next_actions=[
-                next_action.model_dump(mode="json")
-                for next_action in result.next_actions
+                next_action.model_dump(mode="json") for next_action in result.next_actions
             ]
             or ([action] if action is not None else []),
             warnings=warnings,

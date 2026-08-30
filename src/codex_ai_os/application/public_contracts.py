@@ -59,6 +59,13 @@ PUBLIC_TOOL_CONTRACTS: tuple[PublicToolContract, ...] = (
         ("expected_task_version", "expected_state_version", "idempotency_key"),
     ),
     PublicToolContract(
+        "prototype_review_submit",
+        ("prototype review",),
+        "PrototypeReviewService",
+        True,
+        ("expected_task_version", "expected_state_version", "idempotency_key"),
+    ),
+    PublicToolContract(
         "handoff_review",
         ("handoff review",),
         "WorkflowEngine",

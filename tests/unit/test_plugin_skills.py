@@ -21,6 +21,7 @@ def test_plugin_contains_complete_v1_skill_set_without_scaffold_placeholders() -
         "execution-manager",
         "feature-development-orchestrator",
         "frontend-implementation",
+        "html-prototype",
         "interaction-design",
         "memory-manager",
         "new-project-orchestrator",
