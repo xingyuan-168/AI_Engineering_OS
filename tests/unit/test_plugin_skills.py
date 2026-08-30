@@ -53,7 +53,10 @@ def test_plugin_manifest_version_matches_runtime_matrix() -> None:
     manifest_path = REPO_ROOT / "plugins" / "ai-engineering-os" / ".codex-plugin" / "plugin.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    assert manifest["version"] == RUNTIME_VERSIONS.plugin
+    plugin_version, separator, build_metadata = manifest["version"].partition("+")
+    assert plugin_version == RUNTIME_VERSIONS.plugin
+    if separator:
+        assert build_metadata.startswith("codex.")
     assert RUNTIME_VERSIONS.api == "1.2"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert manifest["skills"] == "./skills/"
