@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import subprocess
 import zipfile
@@ -13,6 +14,7 @@ from codex_ai_os.application import release
 from codex_ai_os.application.plugin_packaging import (
     PluginPackageError,
     validate_candidate_plugin_package,
+    validate_plugin_archive,
 )
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.release import ReleaseCandidateService
@@ -24,6 +26,43 @@ from codex_ai_os.domain.operations import (
     HostOperationKind,
     HostOperationStatus,
 )
+
+
+def _packaged_manifest() -> dict[str, object]:
+    return {
+        "name": "ai-engineering-os",
+        "version": "0.2.0",
+        "description": "Plugin package fixture",
+        "skills": "./skills/",
+        "mcpServers": "./.mcp.json",
+    }
+
+
+def _zip_bytes(entries: list[tuple[str, bytes, int]]) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as bundle:
+        for name, content, mode in entries:
+            info = zipfile.ZipInfo(name)
+            info.external_attr = mode << 16
+            bundle.writestr(info, content)
+    return output.getvalue()
+
+
+def _source_zip(
+    *,
+    manifest: dict[str, object] | None = None,
+    manifest_bytes: bytes | None = None,
+) -> bytes:
+    content = manifest_bytes
+    if content is None:
+        content = (json.dumps(manifest or _packaged_manifest()) + "\n").encode()
+    return _zip_bytes(
+        [
+            ("plugins/ai-engineering-os/.codex-plugin/plugin.json", content, 0o100644),
+            ("plugins/ai-engineering-os/skills/README.md", b"# Skills\n", 0o100644),
+            ("plugins/ai-engineering-os/.mcp.json", b"{}\n", 0o100644),
+        ]
+    )
 
 
 def test_release_build_runner_is_valid_python() -> None:
@@ -188,6 +227,198 @@ def test_plugin_staging_rejects_a_wrong_source_base_version(tmp_path: Path) -> N
         service._stage_plugin_source(root, source_commit=commit, staging=staging)
 
     assert mismatch.value.code == "VERSION_MISMATCH"
+
+
+def test_plugin_package_validator_rejects_metadata_and_archive_drift(tmp_path: Path) -> None:
+    valid_manifest = _packaged_manifest()
+    valid_bytes = (json.dumps(valid_manifest, sort_keys=True) + "\n").encode()
+    valid_hash = hashlib.sha256(valid_bytes).hexdigest()
+    archive = tmp_path / "valid.zip"
+    archive.write_bytes(
+        _zip_bytes(
+            [
+                ("ai-engineering-os/.codex-plugin/plugin.json", valid_bytes, 0o100644),
+                ("ai-engineering-os/.mcp.json", b"{}\n", 0o100644),
+            ]
+        )
+    )
+    candidate = {
+        "source_plugin_manifest_version": "0.2.0+codex.fixture",
+        "packaged_plugin_version": "0.2.0",
+        "packaged_plugin_manifest_hash": valid_hash,
+    }
+    for key, value, message in (
+        ("source_plugin_manifest_version", "0.1.0", "source Plugin"),
+        ("packaged_plugin_version", "0.1.0", "packaged Plugin version"),
+        ("packaged_plugin_manifest_hash", "short", "manifest hash is invalid"),
+    ):
+        drifted = {**candidate, key: value}
+        with pytest.raises(PluginPackageError, match=message):
+            validate_candidate_plugin_package(
+                drifted,
+                archive,
+                expected_version="0.2.0",
+            )
+
+    cases = (
+        (
+            _zip_bytes(
+                [
+                    ("../escape", b"unsafe", 0o100644),
+                    ("ai-engineering-os/.codex-plugin/plugin.json", valid_bytes, 0o100644),
+                ]
+            ),
+            "member is unsafe",
+        ),
+        (_zip_bytes([("ai-engineering-os/README.md", b"missing", 0o100644)]), "missing"),
+        (b"not-a-zip", "cannot be read"),
+        (
+            _zip_bytes(
+                [("ai-engineering-os/.codex-plugin/plugin.json", b"{", 0o100644)]
+            ),
+            "invalid JSON",
+        ),
+        (
+            _zip_bytes(
+                [("ai-engineering-os/.codex-plugin/plugin.json", b"[]", 0o100644)]
+            ),
+            "not an object",
+        ),
+        (
+            _zip_bytes(
+                [
+                    (
+                        "ai-engineering-os/.codex-plugin/plugin.json",
+                        (json.dumps({**valid_manifest, "name": "wrong"}) + "\n").encode(),
+                        0o100644,
+                    )
+                ]
+            ),
+            "name is invalid",
+        ),
+        (
+            _zip_bytes(
+                [
+                    (
+                        "ai-engineering-os/.codex-plugin/plugin.json",
+                        (json.dumps({**valid_manifest, "version": "0.1.0"}) + "\n").encode(),
+                        0o100644,
+                    )
+                ]
+            ),
+            "wrong version",
+        ),
+    )
+    for index, (content, message) in enumerate(cases):
+        invalid = tmp_path / f"invalid-{index}.zip"
+        invalid.write_bytes(content)
+        with pytest.raises(PluginPackageError, match=message):
+            validate_plugin_archive(invalid, expected_version="0.2.0")
+
+
+@pytest.mark.parametrize(
+    ("archive_bytes", "returncode", "code"),
+    [
+        (b"", 1, "GIT_EVIDENCE_INVALID"),
+        (b"not-a-zip", 0, "GIT_EVIDENCE_INVALID"),
+        (_zip_bytes([("outside.txt", b"outside", 0o100644)]), 0, "GIT_EVIDENCE_INVALID"),
+        (
+            _zip_bytes(
+                [("plugins/ai-engineering-os/../escape", b"escape", 0o100644)]
+            ),
+            0,
+            "GIT_EVIDENCE_INVALID",
+        ),
+        (
+            _zip_bytes(
+                [("plugins/ai-engineering-os/link", b"target", 0o120000)]
+            ),
+            0,
+            "GIT_EVIDENCE_INVALID",
+        ),
+        (
+            _zip_bytes(
+                [("plugins/ai-engineering-os/README.md", b"missing manifest", 0o100644)]
+            ),
+            0,
+            "RELEASE_INCOMPLETE",
+        ),
+        (
+            _source_zip(manifest_bytes=b"{"),
+            0,
+            "RELEASE_INCOMPLETE",
+        ),
+        (
+            _source_zip(manifest_bytes=b"[]"),
+            0,
+            "RELEASE_INCOMPLETE",
+        ),
+        (
+            _source_zip(manifest={"name": "wrong", "version": "0.2.0"}),
+            0,
+            "RELEASE_INCOMPLETE",
+        ),
+        (
+            _source_zip(
+                manifest={
+                    "name": "ai-engineering-os",
+                    "version": "0.2.0",
+                    "skills": 42,
+                    "mcpServers": "./.mcp.json",
+                }
+            ),
+            0,
+            "RELEASE_INCOMPLETE",
+        ),
+        (
+            _source_zip(
+                manifest={
+                    "name": "ai-engineering-os",
+                    "version": "0.2.0",
+                    "skills": "./missing/",
+                    "mcpServers": "./.mcp.json",
+                }
+            ),
+            0,
+            "RELEASE_INCOMPLETE",
+        ),
+    ],
+)
+def test_plugin_source_staging_fails_closed_on_untrusted_git_archives(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    archive_bytes: bytes,
+    returncode: int,
+    code: str,
+) -> None:
+    root = _project(tmp_path)
+    service = ReleaseCandidateService(root)
+
+    def archive_runner(
+        *_args: object, **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess([], returncode, archive_bytes, b"failure")
+
+    monkeypatch.setattr(
+        release.subprocess,
+        "run",
+        archive_runner,
+    )
+    staging = root / ".codex-os" / "artifacts" / "staging"
+    staging.mkdir(parents=True)
+
+    with pytest.raises(WorkflowError) as failure:
+        service._stage_plugin_source(root, source_commit="a" * 40, staging=staging)
+
+    assert failure.value.code == code
+
+
+def test_plugin_manifest_hash_rejects_an_invalid_archive(tmp_path: Path) -> None:
+    invalid = tmp_path / "invalid.zip"
+    invalid.write_bytes(b"not-a-zip")
+
+    with pytest.raises(PluginPackageError, match="manifest is missing"):
+        ReleaseCandidateService._plugin_manifest_hash(invalid)
 
 
 def _project(tmp_path: Path) -> Path:
