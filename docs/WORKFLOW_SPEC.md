@@ -48,7 +48,16 @@ blocked -> running | cancelled
 failed -> running | cancelled
 ```
 
-阶段与运行状态必须在同一 `state_version` 事务中更新。禁止跳过顺序进入 `implementation`、`release` 或 `completed`。`bug-fix` 可从 `intake` 进入 `requirements` 的精简分支，但仍必须完成影响检查和 G3 质量验证。
+阶段与运行状态必须在同一 `state_version` 事务中更新。Workflow 注册时允许以下显式入口：
+
+| Workflow | 入口阶段 | 必须先持久化的输入 |
+| --- | --- | --- |
+| `new-project` | `intake` | 业务目标、Routing Input |
+| `feature-development` | `requirements` | 现有需求引用、Routing Decision、impact paths |
+| `bug-fix` | `implementation` | 缺陷复现、影响检查、Routing Decision、impact paths |
+| `release` | `verify` | 已完成的候选 Commit 与验证证据引用 |
+
+“禁止跳阶段”约束 Workflow 从其登记入口开始后的顺序推进，不否定上述显式入口。任何入口都不能绕过适用 Gate；`bug-fix` 涉及 API、数据库、安全、架构或前端页面时必须升级到对应设计/原型门禁，并始终完成 G3 质量验证。
 
 ## 3. G0-G4 门禁
 

@@ -51,7 +51,7 @@ default_agent_profile: standard
 schema_version: "1.0"
 name: new-project
 version: "1.0.0"
-states: [intake, requirements, research, design, implementation, verify, release, memory]
+states: [intake, requirements, research, design, prototype, implementation, verify, release, memory, completed]
 initial_state: intake
 max_retries: 2
 checkpoint: after_transition
@@ -122,7 +122,7 @@ redaction_profile: strict
 cross_project_reuse: approval_required
 ```
 
-`storage` 只能使用已登记的 SQLite 存储；`default_scope` 必须为 `project` 或更严格范围。配置不得关闭来源 hash、脱敏、审计或项目隔离；`retention_days: 0` 表示按 `expires_at` 和人工失效规则管理，而不是立即删除历史。
+`storage` 只能使用已登记的 SQLite 存储；0.2.x 的 `default_scope` 必须精确为 `project`，`organization` 和 `public` 留待后续 ADR。配置不得关闭来源 hash、脱敏、审计或项目隔离；`retention_days: 0` 表示按 `expires_at` 和人工失效规则管理，而不是立即删除历史。
 
 ## 8. Plugin 配置 `plugin.yaml`
 

@@ -72,7 +72,7 @@ approval_policy: critical-gates-human
 
 ```yaml
 name: new-project
-states: [intake, requirements, research, design, implementation, verify, release, memory]
+states: [intake, requirements, research, design, prototype, implementation, verify, release, memory, completed]
 transitions:
   - from: intake
     to: requirements
@@ -85,8 +85,8 @@ checkpoint: sqlite
 ### 任务事件
 
 ```yaml
-task_id: TASK-001
-workflow_id: WF-001
+task_id: TASK-20260831090001000000-B2C3D4E5
+workflow_id: RUN-20260831090000000000-A1B2C3D4
 from: project-manager
 to: architect
 type: artifact-request

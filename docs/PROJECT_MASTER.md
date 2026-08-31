@@ -92,6 +92,8 @@ V1 支持 `new-project`、`feature-development`、`bug-fix`、`release`；路由
 
 禁止使用复制项目和目录重命名实现版本管理。版本、变更和回滚使用 Git Branch、Commit、Tag 和 CHANGELOG。
 
+治理文档自身也受治理：修改指令优先级、Gate、执行/安全策略、角色权限、生命周期、ID 契约或审计留存等语义，必须由 maintenance authority 发起，关联 accepted ADR、独立 Review 和受保护路径证据。仅修复 metadata、链接、错别字或排版且不改变语义时，仍需文档检查和 Review，但不强制新增 ADR。
+
 ## 6. 开源复用治理
 
 任何能力板块必须先完成开源候选分析，提取其核心抽象、流程、扩展点和边界，再选择直接使用、二次开发、提取设计思想或自研。详细矩阵见 [OPEN_SOURCE_RESEARCH.md](OPEN_SOURCE_RESEARCH.md)。未核验 License、版本和安全风险的项目不得进入正式技术栈。

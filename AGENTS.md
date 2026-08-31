@@ -16,12 +16,10 @@ When facts conflict, stop the affected transition, record the conflict, and upda
 
 ## Required reading order
 
-Before changing a subsystem, read:
-
-1. `docs/PROJECT_MASTER.md`, `docs/SCOPE.md`, and `docs/ARCHITECTURE.md`.
-2. The subsystem specification and its linked contracts.
-3. `docs/EXECUTION_POLICY.md`, `docs/SECURITY.md`, and `docs/TEST_PLAN.md` for changes that write files, execute commands, or alter interfaces.
-4. Accepted ADRs in `docs/ADR/`.
+The single authoritative implementation-contract reading order is
+`docs/PROJECT_MASTER.md` section 3. `docs/README.md` is its navigation index;
+neither this file nor archived entry material defines a second ordering. After
+following that order, read the task-specific linked contracts and accepted ADRs.
 
 ## Implementation boundaries
 
@@ -53,11 +51,9 @@ If the remote is unavailable or a push fails, keep the local commit and record t
 
 ## Verification
 
-- Python changes: Ruff, Pyright, pytest, and relevant integration tests.
-- Schema changes: migration, rollback, foreign-key, checksum, and recovery tests.
-- Workflow changes: transition, approval, idempotency, pause/resume, concurrency, and failure tests.
-- Plugin changes: plugin validator, Skill validator, Hook fixture tests, and MCP schema tests.
-- Execution changes: path escape, junction/symlink, dirty worktree, command policy, sandbox unavailable, network disabled, and resource-limit tests.
-- Documentation changes: links, required files, status metadata, ADR/CHANGELOG impact, and `git diff --check`.
+`docs/TEST_PLAN.md` is the authoritative verification contract. Run the
+narrowest checks mapped to the changed requirements, then the repository-wide
+release checks when preparing G3. Every logical change must also pass
+`git diff --check` and the repository Secret Scan.
 
 No task is complete when code, documentation, tests, Git evidence, or required approval is missing.

@@ -1,0 +1,34 @@
+from pathlib import Path
+
+from codex_ai_os.domain.workflow import WORKFLOW_START_PHASE, WorkflowPhase
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_workflow_spec_declares_runtime_entry_phases() -> None:
+    specification = (ROOT / "docs" / "WORKFLOW_SPEC.md").read_text(encoding="utf-8")
+
+    for workflow_name, phase in WORKFLOW_START_PHASE.items():
+        assert f"| `{workflow_name}` | `{phase.value}` |" in specification
+
+
+def test_configuration_examples_list_every_workflow_phase() -> None:
+    expected = "states: [" + ", ".join(phase.value for phase in WorkflowPhase) + "]"
+
+    assert expected in (ROOT / "docs" / "CONFIG_SPEC.md").read_text(encoding="utf-8")
+    assert expected in (ROOT / "docs" / "TECH_STACK.md").read_text(encoding="utf-8")
+
+
+def test_agents_delegates_reading_order_and_verification_sources() -> None:
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "`docs/PROJECT_MASTER.md` section 3" in agents
+    assert "`docs/TEST_PLAN.md` is the authoritative verification contract" in agents
+    assert "Before changing a subsystem, read:" not in agents
+
+
+def test_deployment_does_not_duplicate_release_checklist() -> None:
+    deployment = (ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "## 发布检查清单" not in deployment
+    assert "[RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)" in deployment
