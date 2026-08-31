@@ -1,6 +1,9 @@
 from pathlib import Path
 
+import yaml
+
 from codex_ai_os.domain.workflow import WORKFLOW_START_PHASE, WorkflowPhase
+from codex_ai_os.infrastructure.documents import DocumentManager
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,7 +26,7 @@ def test_agents_delegates_reading_order_and_verification_sources() -> None:
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
     assert "`docs/PROJECT_MASTER.md` section 3" in agents
-    assert "`docs/TEST_PLAN.md` is the authoritative verification contract" in agents
+    assert "`docs/TEST_PLAN.md` is the human-readable verification contract" in agents
     assert "Before changing a subsystem, read:" not in agents
 
 
@@ -64,3 +67,17 @@ def test_agent_spec_matches_packaged_agent_profiles() -> None:
         "security-reviewer",
     }
     assert "HTML 原型" in specification
+
+
+def test_repository_documents_and_traceability_are_governed() -> None:
+    report = DocumentManager(ROOT).check(
+        "backend",
+        expected_document_version="0.2.0",
+    )
+
+    assert report.ok, report
+    traceability = yaml.safe_load(
+        (ROOT / ".codex-os" / "test-traceability.yaml").read_text(encoding="utf-8")
+    )
+    assert traceability["schema_version"] == "1.2"
+    assert len(traceability["entries"]) >= 8

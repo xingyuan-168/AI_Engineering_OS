@@ -1,5 +1,7 @@
 # ERP 采购试点实施报告
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"qa","requirement_refs":["REQ-1.6.2","RELEASE-001"]} -->
+
 日期：2026-08-21
 
 实施分支：`codex/m5-erp-pilot`

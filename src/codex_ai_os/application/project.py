@@ -96,7 +96,10 @@ class ProjectInitializer:
             idempotency_key=f"project.initialize:{config.project_id}:{config_hash}",
         )
 
-        report = documents.check(config.project_type.value)
+        report = documents.check(
+            config.project_type.value,
+            expected_document_version=config.document_version,
+        )
         repository_ready, repository_blockers = self._repository_readiness(root, config)
         return ProjectInitResult(
             config=config,

@@ -1,5 +1,7 @@
 # Codex AI Engineering OS 实施计划
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
+
 版本：V2.0-derived
 状态：M0-M6 实现完成；V1 发布候选受环境门禁阻塞
 实施方式：个人本地 MVP，纵向闭环优先，关键门禁人工确认，每个逻辑变更提交并立即推送。

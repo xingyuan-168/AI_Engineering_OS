@@ -1,5 +1,7 @@
 # ADR-0002：V1 运行契约收敛
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001"]} -->
+
 - 状态：Accepted
 - 日期：2026-08-21
 - 范围：Workflow、Codex Plugin、配置、执行隔离和 SQLite 迁移

@@ -1,5 +1,7 @@
 # 设计 Token
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"frontend-engineer","requirement_refs":["REQ-1.6.2","FRONTEND-001"]} -->
+
 状态：可执行设计基线
 主题：中性、工作台式、强调证据和状态；不使用装饰性渐变。
 

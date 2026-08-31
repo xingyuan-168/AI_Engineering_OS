@@ -25,7 +25,10 @@ def check_documents(root: Path) -> None:
     # This internal, commit-bound G3 action checks the registered source
     # Worktree. Public runtime calls must continue rejecting managed Worktrees.
     config = load_yaml_model(root.resolve() / ".codex-os" / "project.yaml", ProjectConfig)
-    report = DocumentManager(root).check(config.project_type.value)
+    report = DocumentManager(root).check(
+        config.project_type.value,
+        expected_document_version=config.document_version,
+    )
     if not report.ok:
         raise FormalCheckError(
             "document governance failed: "

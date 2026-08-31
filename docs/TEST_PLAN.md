@@ -75,6 +75,21 @@
 5. G3 后才能以 PR 合入 `main`；只有独立 G4 授权后才能由持久化 publish operation 创建 `v0.2.0` 和 GitHub Release。
 6. 缺少 Podman、`gh`、网络审批、GitHub 权限或独立 G4 授权时，开发验证可以继续，但相应 Gate 必须明确保持 blocked。
 
-## 9. 完成定义
+## 9. 需求与测试追溯
 
-测试完成必须提供 Branch、Commit、remote/push、命令、退出码、报告路径/hash、开始/结束时间、跳过数和覆盖率。任何 required check 缺失、跳过、来源 Commit 不一致或证据不可复算，都不能将 0.2.0 标记为发布完成。
+`.codex-os/test-traceability.yaml` 是机器可校验的追溯事实源。每项记录必须包含唯一 ID、Requirement refs、规格路径和真实测试文件；文档治理扫描会拒绝缺失文件、重复 ID和未映射 Requirement。
+
+| 追溯组 | 覆盖范围 | 主要测试层 |
+| --- | --- | --- |
+| `TRACE-CORE-GOVERNANCE` | 总体、配置、文档和版本治理 | 规格一致性、文档、配置单元测试 |
+| `TRACE-REPOSITORY-HYGIENE` | 仓库准备度、卫生和 Secret | 治理与 Secret 负向测试 |
+| `TRACE-GATE-EVIDENCE` | G0-G4、Evidence、审批 | Evidence、正式检查和 Workflow 集成测试 |
+| `TRACE-AGENT-COORDINATION` | Routing、Agent、Handoff、Worktree | 协调、路由和 Worktree 测试 |
+| `TRACE-FRONTEND-PROTOTYPE` | 前端 Profile、原型与 UX Review | Prototype/Profile 测试 |
+| `TRACE-EXECUTION-SANDBOX` | Execution 和真实 OCI | Execution/Podman 测试 |
+| `TRACE-RELEASE` | Candidate、G4 与发布对账 | Release/G4 故障注入 |
+| `TRACE-MEMORY` | Memory 生命周期和隔离 | Memory 集成测试 |
+
+## 10. 完成定义
+
+测试完成必须提供 Branch、Commit、remote/push、命令、退出码、报告路径/hash、开始/结束时间、跳过数和覆盖率。所有活跃规格的完成定义和 Requirement 必须有有效追溯记录；任何 required check 缺失、跳过、来源 Commit 不一致或证据不可复算，都不能将 0.2.0 标记为发布完成。

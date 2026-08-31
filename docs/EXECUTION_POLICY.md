@@ -1,5 +1,7 @@
 # 执行策略
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"security-reviewer","requirement_refs":["REQ-1.6.2","EXEC-001"]} -->
+
 版本：V2.0-derived-execution
 状态：可执行实现规格基线
 默认：由 `.codex-os/execution-policy.yaml` 选择 Docker 或 Podman OCI 沙箱；当前仓库选择 Podman。Windows 宿主机不直接承载高风险 Agent 命令。

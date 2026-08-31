@@ -1,5 +1,7 @@
 # 变更记录
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","VERSION-001","RELEASE-001"]} -->
+
 ## [Unreleased] - 2026-08-26
 
 ### Added
@@ -70,6 +72,7 @@
 
 ### Governance
 
+- 所有活跃 `docs/**/*.md` 现在强制完整治理 metadata，版本目标来自项目配置；归档文档明确豁免活跃 metadata。新增机器可校验的 Requirement/规格/测试追溯表和公共文档检查错误字段。
 - 将 Skill 规格回写为实际交付的 21 个 Plugin Skills，补齐 Product/Frontend 的设计、原型与实现职责及 Handoff 链，并统一任务执行超时和 Runtime ID 示例。
 - 接受 ADR-0005，将实现契约读取顺序收敛到 `PROJECT_MASTER.md` 第 3 节，明确 Workflow 显式入口、治理文档自修改、统一 ID、事件保留和发布清单事实源，并用规格一致性测试防止再次漂移。
 - 接受 ADR-0004，冻结 `REQ-1.6.2` / 软件与 Plugin `0.2.0` / API、配置、文档与 Profile `1.2` / SQLite `0007`，并规定 1.0/1.1 在 0.2.x 的弃用兼容期。

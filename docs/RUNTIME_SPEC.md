@@ -1,5 +1,7 @@
 # 运行时实现规格
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001"]} -->
+
 版本：V2.0-derived-runtime
 状态：可执行实现规格基线
 范围：Windows 本地 CLI、Codex 宿主适配、Workflow、Skill、Agent、执行沙箱和本地状态。

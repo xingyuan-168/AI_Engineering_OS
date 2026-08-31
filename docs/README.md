@@ -1,5 +1,7 @@
 # Codex AI Engineering OS 文档中心
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","DOC-001"]} -->
+
 状态：可执行文档基线
 基线：Codex AI Engineering OS 最终需求规格说明书 V2.0（完整会话整理 + 文档治理增强版）
 

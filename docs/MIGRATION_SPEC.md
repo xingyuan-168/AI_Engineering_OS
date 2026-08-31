@@ -1,5 +1,7 @@
 # 数据迁移规格
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"database-engineer","requirement_refs":["REQ-1.6.2","CFG-001","VERSION-001"]} -->
+
 版本：V2.0-derived-migration
 状态：可执行实现规格基线
 存储：SQLite；事实文档仍由 Markdown + Git 保存。

@@ -1,5 +1,7 @@
 # Architecture Decision Records
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001"]} -->
+
 本目录保存已接受或已拒绝的重大技术决策、替代方案、证据、后果和后续复核条件。
 
 当前决策：

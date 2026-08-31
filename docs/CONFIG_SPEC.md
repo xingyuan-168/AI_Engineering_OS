@@ -1,5 +1,7 @@
 # 配置规格
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","CFG-001"]} -->
+
 版本：V2.0-derived-config
 状态：可执行实现规格基线
 格式：YAML；所有配置文件 UTF-8 编码，禁止未知字段静默忽略。

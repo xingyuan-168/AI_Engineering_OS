@@ -213,7 +213,10 @@ def status_command(
         config = load_project_config(project_root.resolve())
         database = Database(config.root / ".codex-os" / "state" / "state.db")
         version = database.current_version()
-        report = DocumentManager(config.root).check(config.project_type.value)
+        report = DocumentManager(config.root).check(
+            config.project_type.value,
+            expected_document_version=config.document_version,
+        )
         with database.read_connection() as connection:
             event_count = int(connection.execute("SELECT COUNT(*) FROM events").fetchone()[0])
             workflow_count = int(
@@ -271,7 +274,10 @@ def check_docs_command(
             )
             return
         config = load_project_config(project_root.resolve())
-        report = DocumentManager(config.root).check(config.project_type.value)
+        report = DocumentManager(config.root).check(
+            config.project_type.value,
+            expected_document_version=config.document_version,
+        )
     except (ConfigError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
         return
@@ -287,6 +293,7 @@ def check_docs_command(
         "version_mismatches": list(report.version_mismatches),
         "stale_documents": list(report.stale_documents),
         "impact_findings": list(report.impact_findings),
+        "traceability_errors": list(report.traceability_errors),
     }
     if report.ok:
         emit(

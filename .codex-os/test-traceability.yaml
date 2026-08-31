@@ -1,0 +1,34 @@
+schema_version: '1.2'
+entries:
+  - id: TRACE-CORE-GOVERNANCE
+    requirement_refs: [REQ-1.6.2, GOV-001, CFG-001, DOC-001, VERSION-001]
+    specification_paths: [docs/PROJECT_MASTER.md, docs/CONFIG_SPEC.md, docs/TEST_PLAN.md]
+    test_paths: [tests/unit/test_spec_consistency.py, tests/unit/test_documents.py, tests/unit/test_config.py]
+  - id: TRACE-REPOSITORY-HYGIENE
+    requirement_refs: [REPO-001, HYGIENE-001]
+    specification_paths: [docs/SCOPE.md, docs/SECURITY.md]
+    test_paths: [tests/unit/test_v11_governance.py, tests/unit/test_secret_scan.py]
+  - id: TRACE-GATE-EVIDENCE
+    requirement_refs: [GATE-001]
+    specification_paths: [docs/WORKFLOW_SPEC.md, docs/TEST_PLAN.md]
+    test_paths: [tests/unit/test_evidence_edges.py, tests/unit/test_formal_checks.py, tests/integration/test_workflow_engine.py]
+  - id: TRACE-AGENT-COORDINATION
+    requirement_refs: [AGENT-001, HANDOFF-001, WORKTREE-001, ROUTING-001]
+    specification_paths: [docs/AGENT_SPEC.md, docs/AGENT_HANDOFF.md, docs/WORKTREE_SPEC.md, docs/WORKFLOW_ROUTING_RULES.md]
+    test_paths: [tests/unit/test_coordination_v11.py, tests/unit/test_routing_edges.py, tests/integration/test_worktree_service.py]
+  - id: TRACE-FRONTEND-PROTOTYPE
+    requirement_refs: [FRONTEND-001, FRONTEND-002]
+    specification_paths: [docs/WORKFLOW_SPEC.md, docs/design/UX_RESEARCH.md]
+    test_paths: [tests/unit/test_prototype.py, tests/unit/test_project_profiles.py]
+  - id: TRACE-EXECUTION-SANDBOX
+    requirement_refs: [EXEC-001]
+    specification_paths: [docs/EXECUTION_POLICY.md, docs/SECURITY.md]
+    test_paths: [tests/integration/test_execution_service.py, tests/integration/test_real_podman_sandbox.py]
+  - id: TRACE-RELEASE
+    requirement_refs: [RELEASE-001]
+    specification_paths: [docs/RELEASE_CHECKLIST.md, docs/DEPLOYMENT.md]
+    test_paths: [tests/unit/test_release_candidate_edges.py, tests/unit/test_g4_governance.py]
+  - id: TRACE-MEMORY
+    requirement_refs: [MEMORY-001]
+    specification_paths: [docs/MEMORY_SPEC.md]
+    test_paths: [tests/integration/test_memory_store.py]

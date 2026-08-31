@@ -86,19 +86,34 @@ def test_formal_document_and_build_checks_cover_success_and_fail_closed(
         def __init__(self, root: Path) -> None:
             assert root == tmp_path
 
-        def check(self, project_type: str) -> DocumentCheckReport:
+        def check(
+            self,
+            project_type: str,
+            *,
+            expected_document_version: str | None = None,
+        ) -> DocumentCheckReport:
             assert project_type == "backend"
+            assert expected_document_version == "0.2.0"
             return valid_report
 
     def load_config(_path: Path, _model: type[Any]) -> Any:
-        return SimpleNamespace(project_type=SimpleNamespace(value="backend"))
+        return SimpleNamespace(
+            project_type=SimpleNamespace(value="backend"),
+            document_version="0.2.0",
+        )
 
     monkeypatch.setattr(formal_checks, "load_yaml_model", load_config)
     monkeypatch.setattr(formal_checks, "DocumentManager", _Documents)
     check_documents(tmp_path)
 
     class _InvalidDocuments(_Documents):
-        def check(self, project_type: str) -> DocumentCheckReport:
+        def check(
+            self,
+            project_type: str,
+            *,
+            expected_document_version: str | None = None,
+        ) -> DocumentCheckReport:
+            assert expected_document_version == "0.2.0"
             return replace(valid_report, ok=False, missing=("docs/API_SPEC.md",))
 
     monkeypatch.setattr(formal_checks, "DocumentManager", _InvalidDocuments)

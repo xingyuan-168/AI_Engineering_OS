@@ -1,5 +1,7 @@
 # 控制台线框基线
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"frontend-engineer","requirement_refs":["REQ-1.6.2","FRONTEND-001"]} -->
+
 状态：可执行设计基线
 目标视口：桌面优先 1280x800；移动端按 390x844 验证信息不被裁切。
 

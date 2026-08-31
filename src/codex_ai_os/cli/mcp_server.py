@@ -582,7 +582,10 @@ def docs_check(
                 )
             )
         config = load_project_config(Path(project_root).resolve())
-        report = DocumentManager(config.root).check(config.project_type.value)
+        report = DocumentManager(config.root).check(
+            config.project_type.value,
+            expected_document_version=config.document_version,
+        )
         return _success(
             valid=report.ok,
             checked_files=report.checked_files,
@@ -595,6 +598,7 @@ def docs_check(
             version_mismatches=list(report.version_mismatches),
             stale_documents=list(report.stale_documents),
             impact_findings=list(report.impact_findings),
+            traceability_errors=list(report.traceability_errors),
         )
 
     return _invoke(operation)
@@ -625,7 +629,10 @@ def verification_run(
         database = Database(config.root / ".codex-os" / "state" / "state.db")
         database.migrate()
         database.integrity_check()
-        report = DocumentManager(config.root).check(config.project_type.value)
+        report = DocumentManager(config.root).check(
+            config.project_type.value,
+            expected_document_version=config.document_version,
+        )
         checks = [
             {"name": "sqlite_integrity", "ok": True},
             {"name": "document_governance", "ok": report.ok},

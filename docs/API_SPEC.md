@@ -357,7 +357,7 @@ Runtime 验证 content/source 路径、hash、项目范围与 Secret 扫描，�
 
 ## 10. 文档接口
 
-`docs_check` / `codex-os check-docs` 输出缺失文件、断链、非法目录、元数据错误、缺少章节、未批准占位、过期、版本不一致和影响分析缺口。接口只读；修复由独立任务执行。
+`docs_check` / `codex-os check-docs` 输出缺失文件、断链、非法目录、元数据错误、缺少章节、未批准占位、过期、项目目标版本不一致、影响分析缺口和 `traceability_errors`。除 `docs/archive/**` 外的活跃 Markdown 必须有完整治理 metadata；存在追溯文件时，Requirement、规格和测试路径必须可复算。接口只读；修复由独立任务执行。
 
 ## 11. CLI 映射
 

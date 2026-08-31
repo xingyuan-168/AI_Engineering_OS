@@ -1,5 +1,7 @@
 # UX Research 设计依据
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"frontend-engineer","requirement_refs":["REQ-1.6.2","FRONTEND-001"]} -->
+
 版本：V2.0-derived-ux
 状态：可执行设计基线
 适用：未来控制台、桌面端或 Web/App；当前 CLI MVP 使用其信息架构结论。

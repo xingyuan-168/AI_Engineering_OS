@@ -51,9 +51,10 @@ If the remote is unavailable or a push fails, keep the local commit and record t
 
 ## Verification
 
-`docs/TEST_PLAN.md` is the authoritative verification contract. Run the
-narrowest checks mapped to the changed requirements, then the repository-wide
-release checks when preparing G3. Every logical change must also pass
-`git diff --check` and the repository Secret Scan.
+`docs/TEST_PLAN.md` is the human-readable verification contract and
+`.codex-os/test-traceability.yaml` is its machine-readable requirement/spec/test
+mapping. Run the narrowest mapped checks for the changed requirements, then the
+repository-wide release checks when preparing G3. Every logical change must
+also pass `git diff --check` and the repository Secret Scan.
 
 No task is complete when code, documentation, tests, Git evidence, or required approval is missing.

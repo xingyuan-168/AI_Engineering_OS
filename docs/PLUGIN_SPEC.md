@@ -1,5 +1,7 @@
 # Codex Plugin 规范
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","VERSION-001"]} -->
+
 版本：V2.0-derived-plugin
 状态：可执行实现规格基线
 当前宿主：Codex Host；DeepSeek Harness 仅作为未来适配器。

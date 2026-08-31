@@ -1,5 +1,7 @@
 # Codex AI Engineering OS 项目总文档
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001"]} -->
+
 版本：V2.0-derived
 状态：可执行文档基线
 目标：建设一个个人 AI 软件研发团队式操作系统。
