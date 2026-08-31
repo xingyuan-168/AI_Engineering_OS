@@ -36,7 +36,7 @@ Plugin 不得直接绕过 CLI Runtime 修改项目文件、SQLite 状态或执�
 
 ## 4. Host Hook 与内部事件
 
-Codex Host Hook 使用宿主支持的生命周期事件，包括 `SessionStart`、`SessionEnd`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`PreCompact`、`PostCompact`、`UserPromptSubmit` 和 `Stop`。V1 插件只注册 `SessionStart`、`PreToolUse` 和 `PostToolUse`：加载项目上下文、在工具调用前执行只读策略检查、在调用后记录审计引用。
+Codex Host Hook 使用宿主支持的生命周期事件，包括 `SessionStart`、`SessionEnd`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`PreCompact`、`PostCompact`、`UserPromptSubmit` 和 `Stop`。V1 插件只注册 `SessionStart` 和 `PreToolUse`：加载项目上下文，并在工具调用前执行只读、尽力而为的策略提示和明显破坏命令过滤。Runtime 审计来自结构化应用服务和 Host Operation，不依赖未注册的 `PostToolUse` Hook。
 
 `workflow.started`、`workflow.paused`、`task.completed`、`approval.requested` 和 `release.candidate` 等名称属于 OS 内部事件总线，追加写入 SQLite 后可由 MCP 查询；不得写入 Codex Hook 配置并冒充 Host 事件。
 

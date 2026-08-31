@@ -99,6 +99,7 @@ def test_yaml_loader_rejects_unknown_fields(tmp_path: Path) -> None:
     ("override", "message"),
     [
         ({"allowed_commands": ["git", "curl"]}, "allowed_commands"),
+        ({"allowed_commands": ["git", "cmd", "powershell"]}, "allowed_commands"),
         ({"allowed_mounts": ["worktree", "host-root"]}, "allowed_mounts"),
         ({"network": NetworkMode.ALLOWLIST}, "network"),
         ({"allow_host_execution": True}, "host execution"),

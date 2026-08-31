@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 PLUGIN_ROOT = Path(__file__).parents[2] / "plugins" / "ai-engineering-os"
 
 
@@ -53,6 +55,62 @@ def test_pre_tool_use_denies_force_push_and_advises_normal_changes(tmp_path: Pat
     advice = _json_output(advised.stdout)["hookSpecificOutput"]
     assert advice["hookEventName"] == "PreToolUse"
     assert "allowed paths" in advice["additionalContext"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c rmdir /s /q C:\\unsafe",
+        "cmd /c rd /q /s C:\\unsafe",
+        "cmd /c del /f /s C:\\unsafe\\*",
+        "cmd /c erase /s /f C:\\unsafe\\*",
+        "powershell -NoProfile Remove-Item C:\\unsafe -Recurse -Force",
+        "git push --delete origin obsolete",
+        "git push origin :obsolete",
+        "git branch -D obsolete",
+        "git update-ref -d refs/heads/obsolete",
+    ],
+)
+def test_pre_tool_use_denies_obvious_windows_and_git_deletion_commands(
+    tmp_path: Path, command: str
+) -> None:
+    denied = _run_hook(
+        PLUGIN_ROOT / "hooks" / "pre_tool_use.py",
+        {
+            "cwd": str(tmp_path),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+        },
+    )
+
+    denial = _json_output(denied.stdout)["hookSpecificOutput"]
+    assert denial["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status --short",
+        "git branch --show-current",
+        "powershell -NoProfile Get-ChildItem -LiteralPath .",
+        "powershell -NoProfile Remove-Item -LiteralPath temp.txt",
+    ],
+)
+def test_pre_tool_use_does_not_block_read_only_or_narrow_commands(
+    tmp_path: Path, command: str
+) -> None:
+    allowed = _run_hook(
+        PLUGIN_ROOT / "hooks" / "pre_tool_use.py",
+        {
+            "cwd": str(tmp_path),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+        },
+    )
+
+    assert allowed.stdout == ""
 
 
 def _run_hook(script: Path, payload: dict[str, Any]) -> subprocess.CompletedProcess[str]:

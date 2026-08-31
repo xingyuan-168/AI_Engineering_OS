@@ -304,6 +304,30 @@ def _validate_command(command: tuple[str, ...], policy: ExecutionPolicy) -> None
                 "SANDBOX_POLICY_VIOLATION",
                 f"Git subcommand is blocked in the offline sandbox: {subcommand}",
             )
+        subcommand_arguments = command[command.index(subcommand) + 1 :] if subcommand else ()
+        destructive_options = {
+            "branch": {"-d", "-D", "--delete"},
+            "tag": {"-d", "--delete"},
+            "update-ref": {"-d", "--delete"},
+        }
+        if any(
+            argument in destructive_options.get(subcommand, set())
+            for argument in subcommand_arguments
+        ):
+            raise DockerSandboxError(
+                "SANDBOX_POLICY_VIOLATION",
+                f"Destructive Git ref mutation is blocked in the offline sandbox: {subcommand}",
+            )
+        if subcommand == "checkout" and "--" in subcommand_arguments:
+            raise DockerSandboxError(
+                "SANDBOX_POLICY_VIOLATION",
+                "Destructive Git checkout is blocked in the offline sandbox",
+            )
+        if subcommand == "restore":
+            raise DockerSandboxError(
+                "SANDBOX_POLICY_VIOLATION",
+                "Git restore is blocked in the offline sandbox",
+            )
 
 
 def _validate_mount_source(
