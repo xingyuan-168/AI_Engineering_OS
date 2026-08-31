@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Protocol, cast
 from urllib.parse import urlsplit
 
+from codex_ai_os.application.plugin_packaging import (
+    PluginPackageError,
+    validate_candidate_plugin_package,
+)
 from codex_ai_os.domain.governance import G4ApprovalInput
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import WorkflowRun
@@ -433,8 +437,28 @@ class GitHubReleaseGovernanceService:
             raise ReleaseGovernanceError("RELEASE_INCOMPLETE", "wheel asset is missing")
         if not any(name.endswith(".tar.gz") for name in assets):
             raise ReleaseGovernanceError("RELEASE_INCOMPLETE", "sdist asset is missing")
-        if not any(name.endswith("plugin-0.2.0.zip") for name in assets):
+        plugin_name = f"ai-engineering-os-plugin-{RUNTIME_VERSIONS.plugin}.zip"
+        if plugin_name not in assets:
             raise ReleaseGovernanceError("RELEASE_INCOMPLETE", "Plugin asset is missing")
+        try:
+            candidate_value: object = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ReleaseGovernanceError(
+                "RELEASE_SOURCE_CHANGED", "candidate Manifest is invalid"
+            ) from exc
+        if not isinstance(candidate_value, dict):
+            raise ReleaseGovernanceError(
+                "RELEASE_SOURCE_CHANGED", "candidate Manifest is not an object"
+            )
+        plugin_archive = assets[plugin_name]
+        try:
+            validate_candidate_plugin_package(
+                cast(dict[str, object], candidate_value),
+                plugin_archive,
+                expected_version=RUNTIME_VERSIONS.plugin,
+            )
+        except PluginPackageError as exc:
+            raise ReleaseGovernanceError("RELEASE_SOURCE_CHANGED", str(exc)) from exc
         return assets
 
     def _reconcile_assets(

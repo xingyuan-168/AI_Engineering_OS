@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sqlite3
 import subprocess
 import tomllib
 import uuid
+import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from codex_ai_os.adapters.docker import MountKind, SandboxMount, SandboxRequest
 from codex_ai_os.application.execution import ExecutionService, ExecutionServiceError
+from codex_ai_os.application.plugin_packaging import (
+    PluginPackageError,
+    validate_candidate_plugin_package,
+)
 from codex_ai_os.application.verification_cache import (
     VerificationCachePrepareError,
     validate_verification_cache,
@@ -51,8 +57,16 @@ class ReleaseCandidate:
     created: bool
 
 
+@dataclass(frozen=True, slots=True)
+class PluginPackageMetadata:
+    source_manifest_version: str
+    packaged_version: str
+    packaged_manifest_hash: str
+
+
 _RELEASE_BUILD_RUNNER = """
 import datetime
+import json
 import os
 import pathlib
 import subprocess
@@ -82,20 +96,37 @@ built = subprocess.run(
 )
 if built.returncode != 0:
     raise SystemExit(built.returncode)
-plugin = pathlib.Path("plugins/ai-engineering-os")
-if not plugin.is_dir():
-    raise SystemExit("plugin source is missing")
-archive = pathlib.Path("/artifacts/ai-engineering-os-plugin-0.2.0.zip")
+plugin_version = sys.argv[2]
+plugin_source = pathlib.Path("/artifacts/.plugin-source.zip")
+if not plugin_source.is_file():
+    raise SystemExit("staged plugin source archive is missing")
+archive = pathlib.Path(f"/artifacts/ai-engineering-os-plugin-{plugin_version}.zip")
 stamp = datetime.datetime.fromtimestamp(max(epoch, 315532800), datetime.UTC)
 date_time = (stamp.year, stamp.month, stamp.day, stamp.hour, stamp.minute, stamp.second)
-with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
-    for path in sorted(plugin.rglob("*")):
-        if not path.is_file():
+with zipfile.ZipFile(plugin_source) as source, zipfile.ZipFile(
+    archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+) as bundle:
+    for source_info in sorted(source.infolist(), key=lambda item: item.filename):
+        if source_info.is_dir():
             continue
-        info = zipfile.ZipInfo(path.relative_to(plugin.parent).as_posix(), date_time=date_time)
+        prefix = "plugins/ai-engineering-os/"
+        if not source_info.filename.startswith(prefix):
+            raise SystemExit("staged plugin archive entry escaped its source root")
+        relative = source_info.filename[len(prefix):]
+        if not relative or ".." in pathlib.PurePosixPath(relative).parts:
+            raise SystemExit("staged plugin archive entry is invalid")
+        content = source.read(source_info)
+        if relative == ".codex-plugin/plugin.json":
+            manifest = json.loads(content.decode("utf-8"))
+            manifest["version"] = plugin_version
+            content = (json.dumps(
+                manifest, ensure_ascii=False, indent=2, sort_keys=True
+            ) + "\\n").encode("utf-8")
+        info = zipfile.ZipInfo(f"ai-engineering-os/{relative}", date_time=date_time)
         info.compress_type = zipfile.ZIP_DEFLATED
         info.external_attr = 0o100644 << 16
-        bundle.writestr(info, path.read_bytes())
+        bundle.writestr(info, content)
+plugin_source.unlink()
 """.strip()
 
 
@@ -190,10 +221,9 @@ class ReleaseCandidateService:
         source_date_epoch = self._git_epoch(assignment.path, source_commit)
         release_root = self.root / ".codex-os" / "artifacts" / run_id / "release"
         candidate_root = release_root / "candidate"
-        staging = release_root / (
-            f".staging-{operation.operation_id}-{operation.attempt_count}"
-        )
-        stale_staging = tuple(release_root.glob(f".staging-{operation.operation_id}-*"))
+        operation_token = hashlib.sha256(operation.operation_id.encode()).hexdigest()[:12]
+        staging = release_root / f".staging-{operation_token}-{operation.attempt_count}"
+        stale_staging = tuple(release_root.glob(f".staging-{operation_token}-*"))
         if stale_staging:
             raise WorkflowError(
                 "OPERATION_RECONCILE_REQUIRED",
@@ -218,12 +248,37 @@ class ReleaseCandidateService:
             )
             return recovered
         staging.mkdir(parents=True)
+        source_plugin_version = self._stage_plugin_source(
+            assignment.path,
+            source_commit=source_commit,
+            staging=staging,
+        )
         self._build(
             result.active_task.id,
             assignment.to_spec(),
             staging,
             wheelhouse=wheelhouse,
             source_date_epoch=source_date_epoch,
+        )
+        plugin_archive = staging / f"ai-engineering-os-plugin-{self.VERSION}.zip"
+        try:
+            plugin_evidence = validate_candidate_plugin_package(
+                {
+                    "source_plugin_manifest_version": source_plugin_version,
+                    "packaged_plugin_version": RUNTIME_VERSIONS.plugin,
+                    "packaged_plugin_manifest_hash": self._plugin_manifest_hash(
+                        plugin_archive
+                    ),
+                },
+                plugin_archive,
+                expected_version=RUNTIME_VERSIONS.plugin,
+            )
+        except PluginPackageError as exc:
+            raise WorkflowError("RELEASE_INCOMPLETE", str(exc), 40) from exc
+        plugin_metadata = PluginPackageMetadata(
+            source_manifest_version=source_plugin_version,
+            packaged_version=plugin_evidence.version,
+            packaged_manifest_hash=plugin_evidence.manifest_hash,
         )
         built = {
             path.name: _sha256(path)
@@ -286,6 +341,9 @@ class ReleaseCandidateService:
             "requirement_baseline": self.REQUIREMENT_BASELINE,
             "software_version": self.VERSION,
             "plugin_version": RUNTIME_VERSIONS.plugin,
+            "source_plugin_manifest_version": plugin_metadata.source_manifest_version,
+            "packaged_plugin_version": plugin_metadata.packaged_version,
+            "packaged_plugin_manifest_hash": plugin_metadata.packaged_manifest_hash,
             "plugin_api_version": self.PLUGIN_API,
             "config_schema_version": self.CONFIG_SCHEMA,
             "document_schema_version": RUNTIME_VERSIONS.document_schema,
@@ -497,7 +555,13 @@ class ReleaseCandidateService:
             execution_id=new_id("EXEC-RELEASE"),
             task_id=task_id,
             worktree=worktree,
-            command=("python", "-c", _RELEASE_BUILD_RUNNER, str(source_date_epoch)),
+            command=(
+                "python",
+                "-c",
+                _RELEASE_BUILD_RUNNER,
+                str(source_date_epoch),
+                RUNTIME_VERSIONS.plugin,
+            ),
             risk_level=RiskLevel.HIGH,
             mounts=(
                 (SandboxMount(MountKind.ARTIFACTS, root),)
@@ -512,6 +576,133 @@ class ReleaseCandidateService:
             self.execution.execute(request)
         except ExecutionServiceError as exc:
             raise WorkflowError(exc.code, str(exc), 50) from exc
+
+    def _stage_plugin_source(
+        self,
+        worktree: Path,
+        *,
+        source_commit: str,
+        staging: Path,
+    ) -> str:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(worktree),
+                "archive",
+                "--format=zip",
+                source_commit,
+                "plugins/ai-engineering-os",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        if completed.returncode != 0:
+            raise WorkflowError(
+                "GIT_EVIDENCE_INVALID",
+                "cannot extract Plugin source from the authorized Commit",
+                40,
+            )
+        try:
+            with zipfile.ZipFile(io.BytesIO(completed.stdout)) as bundle:
+                names: set[str] = set()
+                manifest_bytes: bytes | None = None
+                for info in bundle.infolist():
+                    if info.is_dir():
+                        continue
+                    member = PurePosixPath(info.filename)
+                    prefix = PurePosixPath("plugins/ai-engineering-os")
+                    try:
+                        relative = member.relative_to(prefix)
+                    except ValueError as exc:
+                        raise WorkflowError(
+                            "GIT_EVIDENCE_INVALID",
+                            "Plugin archive entry escaped its committed source root",
+                            40,
+                        ) from exc
+                    if not relative.parts or ".." in relative.parts:
+                        raise WorkflowError(
+                            "GIT_EVIDENCE_INVALID",
+                            "Plugin archive entry is invalid",
+                            40,
+                        )
+                    file_type = (info.external_attr >> 16) & 0o170000
+                    if file_type not in {0, 0o100000}:
+                        raise WorkflowError(
+                            "GIT_EVIDENCE_INVALID",
+                            "Plugin archive contains a non-regular file",
+                            40,
+                        )
+                    relative_name = relative.as_posix()
+                    if relative_name in names:
+                        raise WorkflowError(
+                            "GIT_EVIDENCE_INVALID", "Plugin archive contains duplicates", 40
+                        )
+                    names.add(relative_name)
+                    if relative_name == ".codex-plugin/plugin.json":
+                        manifest_bytes = bundle.read(info)
+        except zipfile.BadZipFile as exc:
+            raise WorkflowError(
+                "GIT_EVIDENCE_INVALID", "committed Plugin archive is invalid", 40
+            ) from exc
+        if not names or manifest_bytes is None:
+            raise WorkflowError("RELEASE_INCOMPLETE", "Plugin source is empty", 40)
+        try:
+            value: object = json.loads(manifest_bytes.decode("utf-8", errors="strict"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise WorkflowError(
+                "RELEASE_INCOMPLETE", "Plugin source manifest is invalid", 40
+            ) from exc
+        if not isinstance(value, dict):
+            raise WorkflowError(
+                "RELEASE_INCOMPLETE", "Plugin source manifest is not an object", 40
+            )
+        manifest = cast(dict[str, object], value)
+        source_version = manifest.get("version")
+        if manifest.get("name") != "ai-engineering-os" or not isinstance(
+            source_version, str
+        ):
+            raise WorkflowError(
+                "RELEASE_INCOMPLETE", "Plugin source identity is invalid", 40
+            )
+        if source_version.partition("+")[0] != RUNTIME_VERSIONS.plugin:
+            raise WorkflowError(
+                "VERSION_MISMATCH",
+                "Plugin source base version does not match RuntimeVersions.plugin",
+                40,
+            )
+        for reference in (manifest.get("skills"), manifest.get("mcpServers")):
+            if not isinstance(reference, str):
+                raise WorkflowError(
+                    "RELEASE_INCOMPLETE",
+                    "staged Plugin manifest references a missing companion asset",
+                    40,
+                )
+            reference_name = PurePosixPath(reference.removeprefix("./")).as_posix()
+            if reference.endswith("/"):
+                prefix_name = f"{reference_name.rstrip('/')}/"
+                present = any(name.startswith(prefix_name) for name in names)
+            else:
+                present = reference_name in names
+            if not present:
+                raise WorkflowError(
+                    "RELEASE_INCOMPLETE",
+                    "staged Plugin manifest references a missing companion asset",
+                    40,
+                )
+        (staging / ".plugin-source.zip").write_bytes(completed.stdout)
+        return source_version
+
+    @staticmethod
+    def _plugin_manifest_hash(archive: Path) -> str:
+        try:
+            with zipfile.ZipFile(archive) as bundle:
+                content = bundle.read("ai-engineering-os/.codex-plugin/plugin.json")
+        except (OSError, KeyError, zipfile.BadZipFile) as exc:
+            raise PluginPackageError("packaged Plugin manifest is missing") from exc
+        return hashlib.sha256(content).hexdigest()
 
     def _sbom(
         self, worktree: Path, source_commit: str, artifacts: dict[str, str]
@@ -612,6 +803,17 @@ class ReleaseCandidateService:
             raise WorkflowError(
                 "RELEASE_SOURCE_CHANGED", "candidate manifest hash drifted", 40
             )
+        try:
+            manifest_value: object = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise WorkflowError(
+                "RELEASE_SOURCE_CHANGED", "candidate manifest is invalid", 40
+            ) from exc
+        if not isinstance(manifest_value, dict):
+            raise WorkflowError(
+                "RELEASE_SOURCE_CHANGED", "candidate manifest is not an object", 40
+            )
+        manifest = cast(dict[str, object], manifest_value)
         artifact_root = Path(candidate.artifact_root)
         for name, expected in candidate.artifacts.items():
             path = artifact_root / name
@@ -619,6 +821,23 @@ class ReleaseCandidateService:
                 raise WorkflowError(
                     "RELEASE_SOURCE_CHANGED", f"candidate artifact hash drifted: {name}", 40
                 )
+        plugin_archives = [
+            artifact_root / name
+            for name in candidate.artifacts
+            if name == f"ai-engineering-os-plugin-{RUNTIME_VERSIONS.plugin}.zip"
+        ]
+        if len(plugin_archives) != 1:
+            raise WorkflowError(
+                "RELEASE_INCOMPLETE", "candidate must contain one versioned Plugin archive", 40
+            )
+        try:
+            validate_candidate_plugin_package(
+                manifest,
+                plugin_archives[0],
+                expected_version=RUNTIME_VERSIONS.plugin,
+            )
+        except PluginPackageError as exc:
+            raise WorkflowError("RELEASE_SOURCE_CHANGED", str(exc), 40) from exc
         for path_value, expected in (
             (candidate.sbom_path, candidate.sbom_hash),
             (candidate.checksums_path, candidate.checksums_hash),

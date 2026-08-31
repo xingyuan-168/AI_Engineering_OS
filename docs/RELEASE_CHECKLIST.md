@@ -14,6 +14,7 @@
 - [ ] SBOM、依赖 hash 和构建环境信息已生成。
 - [ ] 重大技术变化有 ADR，用户可见变化已写入 CHANGELOG。
 - [ ] `RuntimeVersions` 输出与 pyproject、Plugin manifest、MCP、配置、文档、Profile、数据库及 manifests 完全一致。
+- [ ] Plugin 源 manifest 的基础版本等于 `0.2.0`；候选 ZIP 内 manifest 为精确 `0.2.0`，且 `source_plugin_manifest_version`、`packaged_plugin_version`、`packaged_plugin_manifest_hash` 已由 G4 重算核对。
 
 ## 2. Windows 安装与升级
 

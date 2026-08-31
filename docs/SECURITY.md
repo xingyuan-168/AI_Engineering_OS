@@ -120,7 +120,7 @@ Memory 默认按 `project_id` 查询；跨项目复用必须创建带来源、sc
 
 1. Release task 只在 G3 approved 后创建，并使用 release Worktree。
 2. 可提交发布文件必须位于该 Worktree；二进制制品只位于受管 artifacts 目录并被 Git 忽略。
-3. Manifest、SBOM、checksums、rollback、CHANGELOG、ADR 和 Memory 从 Commit 或受管审计区重读；candidate manifest 区分 integration source Commit 与 candidate Commit，final manifest 记录远端发布对账。
+3. Manifest、SBOM、checksums、rollback、CHANGELOG、ADR 和 Memory 从 Commit 或受管审计区重读；candidate manifest 区分 integration source Commit 与 candidate Commit，并区分本地 cachebuster Plugin 源版本与精确发行包版本/hash。Plugin 源从授权 Commit 归档，OCI 在不展开 Windows 深目录的情况下流式生成 ZIP；G4 必须重新打开 ZIP 校验内嵌 manifest。final manifest 记录远端发布对账。
 4. G4 先持久化授权和 publish operation，再使用 GitHub API 验证 PR number/URL、head/base、approved/merged 状态和 merge Commit；用 Git 验证目标分支包含 PR merge Commit。
 5. release authority scope 必须精确为 `tag-and-github-release`；不接受空 reason、过期 state version 或预先批准其他 Commit。
 6. annotated tag message 包含 version、run ID、Manifest hash、merge Commit；现有不同目标同名 tag 返回冲突，不覆盖。

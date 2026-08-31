@@ -335,7 +335,7 @@ Runtime 从 task 找 Worktree，通过 ExecutionService 建立一个或多个锁
 
 前置：G3 approved 已持久化并成功执行 `release_prepare` Host Operation、当前任务角色 release-manager、Worktree 类型 release、integration HEAD 与任务 base 一致。新候选只能由 operation executor 在离线 OCI 中创建；本接口读取并复核已有候选的全部 hash。输出 Manifest path/hash、可提交文件、制品目录与 required checks。重复调用相同 version/source Commit 返回同一候选；不同 source 返回 `RELEASE_SOURCE_CHANGED`。
 
-Tag 与 GitHub Release 不由该接口创建，只在 G4 授权已持久化且 PR 已合并后的 `release_publish` Host Operation 中执行。候选响应保留兼容 `source_commit`，并明确返回 `integration_source_commit` 与提交候选文件的 `candidate_commit`；发布完成后返回 final manifest hash 与远端资产对账结果。
+Tag 与 GitHub Release 不由该接口创建，只在 G4 授权已持久化且 PR 已合并后的 `release_publish` Host Operation 中执行。候选响应保留兼容 `source_commit`，并明确返回 `integration_source_commit` 与提交候选文件的 `candidate_commit`；candidate manifest 还记录带本机 cachebuster 的 `source_plugin_manifest_version`、精确发行版 `packaged_plugin_version` 和从 ZIP 内嵌 manifest 重算的 `packaged_plugin_manifest_hash`。发布完成后返回 final manifest hash 与远端资产对账结果。
 
 ## 9. Memory 接口
 

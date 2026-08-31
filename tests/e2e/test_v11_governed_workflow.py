@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -50,9 +52,32 @@ class _SuccessfulSandbox:
                 (mount.source / "codex_ai_engineering_os-0.2.0.tar.gz").write_bytes(
                     b"governed-sdist"
                 )
-                (mount.source / "ai-engineering-os-plugin-0.2.0.zip").write_bytes(
-                    b"governed-plugin"
-                )
+                source = mount.source / ".plugin-source.zip"
+                archive = mount.source / "ai-engineering-os-plugin-0.2.0.zip"
+                with zipfile.ZipFile(source) as source_bundle, zipfile.ZipFile(
+                    archive, "w"
+                ) as bundle:
+                    for info in source_bundle.infolist():
+                        if info.is_dir():
+                            continue
+                        relative = info.filename.removeprefix(
+                            "plugins/ai-engineering-os/"
+                        )
+                        content = source_bundle.read(info)
+                        if relative == ".codex-plugin/plugin.json":
+                            manifest = json.loads(content.decode("utf-8"))
+                            manifest["version"] = "0.2.0"
+                            content = (
+                                json.dumps(
+                                    manifest,
+                                    ensure_ascii=False,
+                                    indent=2,
+                                    sort_keys=True,
+                                )
+                                + "\n"
+                            ).encode()
+                        bundle.writestr(f"ai-engineering-os/{relative}", content)
+                source.unlink()
         now = datetime.now(UTC).isoformat()
         return SandboxResult(
             execution_id=request.execution_id,
@@ -165,6 +190,10 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         project_type=ProjectType.FULLSTACK,
         git_push_policy=GitPushPolicy.FIXTURE_LOCAL_ONLY,
         schema_version="1.2",
+    )
+    shutil.copytree(
+        Path(__file__).parents[2] / "plugins" / "ai-engineering-os",
+        root / "plugins" / "ai-engineering-os",
     )
     _git(root, "add", ".")
     _git(root, "commit", "-m", "chore: initialize governed fixture")
@@ -405,6 +434,9 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     assert candidate_manifest["candidate_commit"] is None
     assert isinstance(candidate_manifest["source_date_epoch"], int)
     assert candidate_manifest["verification_cache_manifest_hash"] is None
+    assert candidate_manifest["source_plugin_manifest_version"].startswith("0.2.0+")
+    assert candidate_manifest["packaged_plugin_version"] == "0.2.0"
+    assert len(candidate_manifest["packaged_plugin_manifest_hash"]) == 64
     sbom = json.loads((root / candidate.sbom_path).read_text(encoding="utf-8"))
     assert str(sbom["serialNumber"]).startswith("urn:uuid:")
     (release_worktree / "docs" / "CHANGELOG.md").write_text(
