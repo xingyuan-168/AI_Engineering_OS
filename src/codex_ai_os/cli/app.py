@@ -66,6 +66,7 @@ worktree_app = typer.Typer(help="Manage governed Worktree lifecycle.", no_args_i
 task_app = typer.Typer(help="Complete governed task actions.", no_args_is_help=True)
 gate_app = typer.Typer(help="Validate declarative Gate requirements.", no_args_is_help=True)
 prototype_app = typer.Typer(help="Validate and review HTML prototypes.", no_args_is_help=True)
+workflow_app = typer.Typer(help="Create, begin, or cancel workflows.", no_args_is_help=True)
 app.add_typer(run_app, name="run")
 app.add_typer(handoff_app, name="handoff")
 app.add_typer(host_operation_app, name="host-operation")
@@ -77,6 +78,7 @@ app.add_typer(worktree_app, name="worktree")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(prototype_app, name="prototype")
+app.add_typer(workflow_app, name="workflow")
 
 
 @app.command("doctor")
@@ -376,7 +378,13 @@ def run_new_project_command(
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
         return
-    _emit_workflow(result, json_output=json_output)
+    _emit_workflow(
+        result,
+        json_output=json_output,
+        warnings=(
+            "run commands are deprecated in API 1.2; use workflow create then workflow begin",
+        ),
+    )
 
 
 def _run_named_workflow(
@@ -395,6 +403,99 @@ def _run_named_workflow(
             profiles=profiles,
             target_branch=target_branch,
             impact_paths=impact_paths,
+        )
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_workflow(
+        result,
+        json_output=json_output,
+        warnings=(
+            "run commands are deprecated in API 1.2; use workflow create then workflow begin",
+        ),
+    )
+
+
+@workflow_app.command("create")
+def workflow_create_command(
+    goal: Annotated[str, typer.Option("--goal")],
+    workflow_name: Annotated[str, typer.Option("--workflow-name")] = "new-project",
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")] = "",
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    profile: Annotated[list[str] | None, typer.Option("--profile")] = None,
+    target_branch: Annotated[str | None, typer.Option("--target-branch")] = None,
+    impact_path: Annotated[list[str] | None, typer.Option("--impact-path")] = None,
+    document_version_target: Annotated[
+        str | None, typer.Option("--document-version-target")
+    ] = None,
+) -> None:
+    """Create a routed workflow without allocating a task or Worktree."""
+
+    try:
+        result = WorkflowEngine(project_root).create(
+            goal,
+            workflow_name=workflow_name,
+            profiles=tuple(profile or ()),
+            target_branch=target_branch,
+            impact_paths=tuple(impact_path or ()),
+            document_version_target=document_version_target,
+            idempotency_key=idempotency_key,
+        )
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_workflow(result, json_output=json_output)
+
+
+@workflow_app.command("begin")
+def workflow_begin_command(
+    run_id: Annotated[str, typer.Argument()],
+    expected_state_version: Annotated[int, typer.Option("--expected-state-version")],
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Begin a created workflow and allocate its first task."""
+
+    try:
+        result = WorkflowEngine(project_root).begin(
+            run_id,
+            expected_state_version=expected_state_version,
+            idempotency_key=idempotency_key,
+        )
+    except WorkflowError as exc:
+        _workflow_fail(exc, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    _emit_workflow(result, json_output=json_output)
+
+
+@workflow_app.command("cancel")
+def workflow_cancel_command(
+    run_id: Annotated[str, typer.Argument()],
+    reason: Annotated[str, typer.Option("--reason")],
+    expected_state_version: Annotated[int, typer.Option("--expected-state-version")],
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Cancel a workflow while preserving external-side-effect reconciliation."""
+
+    try:
+        result = WorkflowEngine(project_root).cancel(
+            run_id,
+            reason=reason,
+            expected_state_version=expected_state_version,
+            idempotency_key=idempotency_key,
         )
     except WorkflowError as exc:
         _workflow_fail(exc, json_output)
@@ -1256,6 +1357,7 @@ def _emit_workflow(
             if result.integration_result is not None
             else None
         ),
+        "cancellation": result.run.checkpoint.get("cancel_request"),
     }
     emit(
         success_envelope(

@@ -155,6 +155,224 @@ class WorkflowEngine:
         )
         self.release_execution_service = release_execution_service
 
+    def create(
+        self,
+        goal: str,
+        *,
+        workflow_name: str = "new-project",
+        profiles: tuple[str, ...] = (),
+        target_branch: str | None = None,
+        impact_paths: tuple[str, ...] = (),
+        dependency_count: int = 0,
+        release_required: bool = False,
+        override_reason: str | None = None,
+        document_version_target: str | None = None,
+        idempotency_key: str,
+    ) -> WorkflowResult:
+        """Persist a routed workflow without allocating execution resources."""
+
+        normalized_goal = goal.strip()
+        if not normalized_goal or not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "goal and idempotency_key are required", 2)
+        start_phase = WORKFLOW_START_PHASE.get(workflow_name)
+        if start_phase is None:
+            raise WorkflowError("CONFIG_INVALID", f"unsupported workflow: {workflow_name}", 2)
+        selected_target = target_branch or self.config.target_branch
+        selected_document_version = (
+            document_version_target or self.config.document_version or RUNTIME_VERSIONS.software
+        )
+        if not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?",
+            selected_document_version,
+        ):
+            raise WorkflowError(
+                "CONFIG_INVALID", "document_version_target is not a valid version", 2
+            )
+        requested_profile_input = profiles or _default_profiles(self.config.project_type.value)
+        router = ProfileRouter(self.store.database, self.config)
+        try:
+            selected_profiles = router.select_profiles(requested_profile_input, impact_paths)
+        except ValueError as exc:
+            raise WorkflowError("CONFIG_INVALID", str(exc), 2) from exc
+        if len(selected_profiles) > self.config.max_parallel_agents:
+            raise WorkflowError("CONFIG_INVALID", "profiles exceed max_parallel_agents", 2)
+        request_hash = _request_hash(
+            {
+                "operation": "workflow_create",
+                "goal": normalized_goal,
+                "workflow_name": workflow_name,
+                "profiles": requested_profile_input,
+                "target_branch": selected_target,
+                "impact_paths": impact_paths,
+                "dependency_count": dependency_count,
+                "release_required": release_required,
+                "override_reason": override_reason,
+                "document_version_target": selected_document_version,
+            }
+        )
+        replay_hash = self.store.idempotency_request_hash(idempotency_key)
+        if replay_hash is not None:
+            if replay_hash != request_hash:
+                raise WorkflowError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "idempotency key was already used with a different workflow request",
+                    30,
+                )
+            replay_id = self.store.run_id_for_idempotency(idempotency_key)
+            if replay_id is None:
+                raise WorkflowError("RECOVERY_UNAVAILABLE", "workflow replay is missing", 30)
+            return self._result(self._get_run(replay_id))
+        if self.config.schema_version != "1.0":
+            try:
+                RepositoryGovernanceService(self.config.root, config=self.config).require_ready(
+                    target_branch=selected_target
+                )
+            except RepositoryGovernanceError as exc:
+                raise WorkflowError(exc.code, str(exc), 40) from exc
+        now = _utc_now()
+        run = WorkflowRun(
+            id=new_id("RUN"),
+            project_id=self.config.project_id,
+            workflow_name=workflow_name,
+            goal=normalized_goal,
+            workflow_phase=start_phase,
+            run_status=RunStatus.CREATED,
+            state_version=0,
+            risk_level=self.config.risk_level,
+            checkpoint={
+                "next_action": None,
+                "next_actions": [],
+                "document_version_target": selected_document_version,
+            },
+            config_hash=self.store.project_config_hash(self.config.project_id),
+            created_at=now,
+            updated_at=now,
+            profiles=selected_profiles,
+            target_branch=selected_target,
+            max_parallel_agents=self.config.max_parallel_agents,
+        )
+        created = self.store.create_run(
+            run, None, idempotency_key=idempotency_key, request_hash=request_hash
+        )
+        if self.config.schema_version != "1.0":
+            router.route(
+                run_id=created.id,
+                requested_profiles=requested_profile_input,
+                impact_paths=impact_paths,
+                source_commit=None,
+                workflow_name=workflow_name,
+                dependency_count=dependency_count,
+                release_required=release_required,
+                override_reason=override_reason,
+            )
+        return self._result(created)
+
+    def begin(
+        self,
+        run_id: str,
+        *,
+        expected_state_version: int,
+        idempotency_key: str,
+    ) -> WorkflowResult:
+        """Atomically create the first task for a persisted created workflow."""
+
+        if not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "idempotency_key is required", 2)
+        request_hash = _request_hash(
+            {
+                "operation": "workflow_begin",
+                "run_id": run_id,
+                "expected_state_version": expected_state_version,
+            }
+        )
+        replay_hash = self.store.idempotency_request_hash(idempotency_key)
+        if replay_hash is not None:
+            if replay_hash != request_hash:
+                raise WorkflowError("IDEMPOTENCY_CONFLICT", "begin request changed", 30)
+            return self._result(self._get_run(run_id))
+        run = self._get_run(run_id)
+        if run.state_version != expected_state_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT", "workflow state version changed before begin", 30
+            )
+        if run.run_status is not RunStatus.CREATED:
+            raise WorkflowError("STATE_CONFLICT", "only a created workflow can begin", 30)
+        task, action = self._task_and_action(
+            run.id,
+            run.workflow_phase,
+            state_version=run.state_version + 1,
+            goal=run.goal,
+        )
+        checkpoint = _checkpoint(
+            action,
+            previous=run.checkpoint,
+            document_version_target=str(run.checkpoint.get("document_version_target") or ""),
+        )
+        try:
+            begun = self.store.begin_run(
+                run=run,
+                task=task,
+                checkpoint=checkpoint,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+            )
+        except WorkflowConflictError as exc:
+            raise WorkflowError("STATE_VERSION_CONFLICT", str(exc), 30) from exc
+        self._allocate_or_block(begun, task, base_ref="HEAD")
+        return self._result(self._get_run(run.id))
+
+    def cancel(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        requested_by: str = "local-user",
+    ) -> WorkflowResult:
+        """Request auditable cancellation without hiding external side effects."""
+
+        normalized_reason = reason.strip()
+        if not normalized_reason or not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "reason and idempotency_key are required", 2)
+        request_hash = _request_hash(
+            {
+                "operation": "workflow_cancel",
+                "run_id": run_id,
+                "reason": normalized_reason,
+                "expected_state_version": expected_state_version,
+                "requested_by": requested_by,
+            }
+        )
+        replay_hash = self.store.idempotency_request_hash(idempotency_key)
+        if replay_hash is not None:
+            if replay_hash != request_hash:
+                raise WorkflowError("IDEMPOTENCY_CONFLICT", "cancel request changed", 30)
+            return self._result(self._get_run(run_id))
+        run = self._get_run(run_id)
+        if run.state_version != expected_state_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT", "workflow state version changed before cancel", 30
+            )
+        if run.run_status in {RunStatus.COMPLETED, RunStatus.CANCELLED}:
+            raise WorkflowError("STATE_CONFLICT", "terminal workflow cannot be cancelled", 30)
+        try:
+            cancelled = self.store.cancel_transition(
+                run=run,
+                reason=normalized_reason,
+                requested_by=requested_by,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+            )
+        except WorkflowConflictError as exc:
+            code = (
+                "CANCELLATION_BLOCKED_EXTERNAL_COMMITMENT"
+                if "published release" in str(exc)
+                else "STATE_VERSION_CONFLICT"
+            )
+            raise WorkflowError(code, str(exc), 40) from exc
+        return self._result(cancelled)
+
     def start(
         self,
         goal: str,
@@ -2302,3 +2520,9 @@ def _artifact_path_allowed(raw_path: str, allowed_paths: tuple[str, ...]) -> boo
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _request_hash(payload: dict[str, object]) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=list).encode("utf-8")
+    ).hexdigest()

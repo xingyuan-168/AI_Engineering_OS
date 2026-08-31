@@ -334,6 +334,7 @@ class HostOperationMaintenanceService:
         self.database = Database(self.config.root / ".codex-os" / "state" / "state.db")
         self.database.migrate()
         self.operations = HostOperationStore(self.database)
+        self.workflows = WorkflowStore(self.database)
 
     def reconcile(
         self,
@@ -362,6 +363,11 @@ class HostOperationMaintenanceService:
                 outcome=outcome,
                 error_code=error_code,
             )
+            if reconciled.run_id is not None and reconciled.status in {
+                HostOperationStatus.SUCCEEDED,
+                HostOperationStatus.FAILED,
+            }:
+                self.workflows.finalize_cancellation_if_ready(reconciled.run_id)
         except HostOperationError as exc:
             raise MaintenanceOperationError(
                 exc.code, str(exc), retryable=exc.retryable

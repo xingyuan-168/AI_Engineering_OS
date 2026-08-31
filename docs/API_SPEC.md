@@ -152,7 +152,14 @@ Reviewer/Security Reviewer 只能通过该接口写 Review 元数据，不拥有
 
 ## 4. Workflow 与任务接口
 
-### 4.1 `workflow_start`
+### 4.1 `workflow_create`、`workflow_begin`、`workflow_cancel`
+
+- `workflow_create` 要求稳定 `idempotency_key`，只持久化 `created` Workflow 与 Routing Decision；不创建 Task、Worktree 或 Host Operation。
+- `workflow_begin` 要求 `expected_state_version` 与稳定幂等键，原子创建首个 Task 并进入 `running`，随后才允许分配受管 Worktree。
+- `workflow_cancel` 要求原因、期望版本与稳定幂等键。`created/needs_approval/paused/blocked/failed` 可直接取消；运行中的逻辑 Task 停止调度，正在执行或待对账的 Host Operation 必须安全结束或 reconcile 后才进入 `cancelled`。已成功发布的 Release 不能用取消掩盖。
+- 响应 `data.cancellation` 固定返回请求状态、原因、时间以及未完成 task/operation IDs。
+
+### 4.2 `workflow_start`（兼容）
 
 输入：
 
@@ -172,13 +179,13 @@ Reviewer/Security Reviewer 只能通过该接口写 Review 元数据，不拥有
 
 规则：
 
-1. 标准化目标、Profile、目标分支和七维 Routing Input，计算 start idempotency key。
+1. 兼容执行 create+begin，并返回弃用 warning；新调用方必须使用分阶段接口。
 2. 在首个 `requires_repository_change=true` action 分配前验证与当前 HEAD/config hash 绑定的 passing repository audit。
 3. 建立 `workflow/<run-id>/integration` 分支与 Worktree，保存 base/integration head。
 4. 返回一个或多个 `next_actions`；最多 4 个写任务，且必须通过路径冲突检查。
 5. API 1.2 的实现任务允许路径只来自批准的 `impact_paths`；未映射路径返回 `ROUTING_PATH_UNMAPPED`。Profile alias 仅兼容读取并返回弃用 warning。
 
-### 4.2 `workflow_status`
+### 4.3 `workflow_status`
 
 输入：`project_root`、`run_id`。
 
@@ -204,12 +211,12 @@ Reviewer/Security Reviewer 只能通过该接口写 Review 元数据，不拥有
 
 status 严格只读，不获取写租约，不推进 Workflow。
 
-### 4.3 `workflow_step`、`workflow_resume`
+### 4.4 `workflow_step`、`workflow_resume`
 
 - `workflow_step` 只重算并返回 `next_actions`，不分配新任务或推进状态。
 - `workflow_resume` 需要 `expected_state_version`，重新校验 repository/config/HEAD/证据和过期租约；`MIGRATION_REVALIDATION_REQUIRED` 未完成时返回该 blocker。
 
-### 4.4 `task_complete`
+### 4.5 `task_complete`
 
 Plugin API 1.2 输入：
 
@@ -230,13 +237,13 @@ Plugin API 1.2 输入：
 
 重复提交相同 task/version/commit 返回原结果；Commit 或证据不同返回 `IDEMPOTENCY_CONFLICT`。
 
-### 4.5 `task_amend_evidence`
+### 4.6 `task_amend_evidence`
 
 仅在 Gate 尚未通过时，允许当前 Gate 的产出任务提交同一分支上的后继 Commit，修正文档 metadata、版本、placeholder 或结构化 Evidence。输入必须包含 `expected_task_version`、`expected_state_version`、稳定幂等键和完整的 artifacts/checks/Git evidence。Runtime 重新校验 clean Worktree、allowed paths、Commit ancestry 与远端推送状态；存在 accepted Handoff、Integration Merge 或后续 Host Operation 时 fail closed。
 
 成功后旧 Evidence 保留审计，新 Evidence、Task head、Workflow `last_commit_sha`、ready Handoff 和 `task.evidence_amended` 事件在同一事务更新，旧 Gate bundle 标记 stale。普通项目不得 amend/rewrite 已推送 Commit；仅 `fixture_local_only` 且旧、新 Commit 均不在远端 ref 时允许本地 Commit 替换。
 
-### 4.6 `prototype_review_submit`
+### 4.7 `prototype_review_submit`
 
 含 `frontend-project` 的 Workflow 在 design 后进入 prototype 阶段。输入包含 `run_id`、`task_id`、`expected_task_version`、`expected_state_version`、稳定幂等键、`docs/prototypes/<prototype-id>/index.html`、原型 SHA-256、reviewed Commit、decision、reason 和结构化 findings。
 
@@ -366,6 +373,9 @@ Runtime 验证 content/source 路径、hash、项目范围与 Secret 扫描，�
 | `project_init` | `codex-os init` |
 | `repository_check` | `codex-os repo-check` |
 | `workflow_start` | `codex-os run <workflow>` |
+| `workflow_create` | `codex-os workflow create` |
+| `workflow_begin` | `codex-os workflow begin` |
+| `workflow_cancel` | `codex-os workflow cancel` |
 | `workflow_status` | `codex-os status` |
 | `workflow_step` | `codex-os step` |
 | `gate_preflight` | `codex-os gate validate` |

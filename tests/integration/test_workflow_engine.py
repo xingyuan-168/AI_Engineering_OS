@@ -17,6 +17,7 @@ from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
 from codex_ai_os.application.worktree import WorktreeServiceError
 from codex_ai_os.domain.config import ProjectType
+from codex_ai_os.domain.operations import HostOperationKind
 from codex_ai_os.domain.workflow import (
     ChangeKind,
     Gate,
@@ -129,6 +130,166 @@ def test_start_is_idempotent_for_same_active_goal(tmp_path: Path) -> None:
     assert first.run.workflow_phase is WorkflowPhase.INTAKE
     assert first.run.run_status is RunStatus.RUNNING
     assert first.active_task == second.active_task
+
+
+def test_create_begin_and_cancel_are_staged_and_idempotent(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+
+    created = engine.create(
+        "Build staged ERP procurement API",
+        idempotency_key="create-staged-workflow",
+    )
+    replayed = engine.create(
+        "Build staged ERP procurement API",
+        idempotency_key="create-staged-workflow",
+    )
+
+    assert created.run.id == replayed.run.id
+    assert created.run.run_status is RunStatus.CREATED
+    assert created.run.state_version == 0
+    assert created.active_task is None
+    assert created.next_actions == ()
+
+    begun = engine.begin(
+        created.run.id,
+        expected_state_version=0,
+        idempotency_key="begin-staged-workflow",
+    )
+    begin_replay = engine.begin(
+        created.run.id,
+        expected_state_version=0,
+        idempotency_key="begin-staged-workflow",
+    )
+    assert begun.run.run_status is RunStatus.RUNNING
+    assert begun.active_task is not None
+    assert begin_replay.active_task is not None
+    assert begun.active_task.id == begin_replay.active_task.id
+
+    cancelled = engine.cancel(
+        created.run.id,
+        reason="User withdrew the local workflow",
+        expected_state_version=begun.run.state_version,
+        idempotency_key="cancel-staged-workflow",
+    )
+    cancellation = cancelled.run.checkpoint["cancel_request"]
+    assert cancelled.run.run_status is RunStatus.CANCELLED
+    assert cancelled.active_task is None
+    assert cancelled.next_actions == ()
+    assert cancellation["state"] == "completed"
+    assert cancellation["reason"] == "User withdrew the local workflow"
+
+
+def test_staged_workflow_rejects_conflicting_requests(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    created = engine.create("Create safely", idempotency_key="create-safe")
+
+    with pytest.raises(WorkflowError) as changed_create:
+        engine.create("Different goal", idempotency_key="create-safe")
+    assert changed_create.value.code == "IDEMPOTENCY_CONFLICT"
+
+    with pytest.raises(WorkflowError) as stale_begin:
+        engine.begin(
+            created.run.id,
+            expected_state_version=1,
+            idempotency_key="begin-stale",
+        )
+    assert stale_begin.value.code == "STATE_VERSION_CONFLICT"
+
+    with pytest.raises(WorkflowError) as stale_cancel:
+        engine.cancel(
+            created.run.id,
+            reason="stale",
+            expected_state_version=1,
+            idempotency_key="cancel-stale",
+        )
+    assert stale_cancel.value.code == "STATE_VERSION_CONFLICT"
+
+
+def test_created_workflow_can_cancel_without_allocating_resources(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    created = engine.create("Cancel before begin", idempotency_key="create-before-cancel")
+
+    cancelled = engine.cancel(
+        created.run.id,
+        reason="No longer needed",
+        expected_state_version=created.run.state_version,
+        idempotency_key="cancel-before-begin",
+    )
+
+    assert cancelled.run.run_status is RunStatus.CANCELLED
+    assert cancelled.active_task is None
+    assert cancelled.run.checkpoint["cancel_request"]["state"] == "completed"
+
+
+def test_cancel_waits_for_running_host_operation_reconciliation(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    created = engine.create("Cancel with operation", idempotency_key="create-operation")
+    operation = engine.operations.ensure_pending(
+        project_id=engine.config.project_id,
+        run_id=created.run.id,
+        kind=HostOperationKind.INTEGRATION_PREPARE,
+        idempotency_key="operation-to-cancel",
+        request={"source_commit": "a" * 40},
+    )
+    running = engine.operations.acquire(
+        operation.operation_id,
+        expected_version=operation.state_version,
+        lease_owner="test",
+    )
+
+    cancelling = engine.cancel(
+        created.run.id,
+        reason="Wait for host operation",
+        expected_state_version=created.run.state_version,
+        idempotency_key="cancel-running-operation",
+    )
+    assert cancelling.run.run_status is RunStatus.PAUSED
+    assert cancelling.run.checkpoint["cancel_request"]["state"] == "requested"
+    assert cancelling.run.checkpoint["cancel_request"]["outstanding_operation_ids"] == [
+        operation.operation_id
+    ]
+
+    engine.operations.mark_failed(
+        operation.operation_id,
+        expected_version=running.state_version,
+        lease_owner="test",
+        error_code="SAFE_STOP",
+    )
+    finalized = engine.store.finalize_cancellation_if_ready(created.run.id)
+    assert finalized.run_status is RunStatus.CANCELLED
+    assert finalized.checkpoint["cancel_request"]["state"] == "completed"
+
+
+def test_cancel_cannot_hide_published_release(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    created = engine.create("Published workflow", idempotency_key="create-published")
+    operation = engine.operations.ensure_pending(
+        project_id=engine.config.project_id,
+        run_id=created.run.id,
+        kind=HostOperationKind.RELEASE_PUBLISH,
+        idempotency_key="published-operation",
+        request={"tag": "v0.2.0"},
+    )
+    running = engine.operations.acquire(
+        operation.operation_id,
+        expected_version=operation.state_version,
+        lease_owner="test",
+    )
+    engine.operations.mark_succeeded(
+        operation.operation_id,
+        expected_version=running.state_version,
+        lease_owner="test",
+        result={"tag": "v0.2.0"},
+    )
+
+    with pytest.raises(WorkflowError) as blocked:
+        engine.cancel(
+            created.run.id,
+            reason="Cannot erase publication",
+            expected_state_version=created.run.state_version,
+            idempotency_key="cancel-published",
+        )
+    assert blocked.value.code == "CANCELLATION_BLOCKED_EXTERNAL_COMMITMENT"
 
 
 def test_start_and_gate_concurrency_inputs_fail_closed(tmp_path: Path) -> None:

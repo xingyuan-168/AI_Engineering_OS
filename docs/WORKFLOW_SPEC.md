@@ -44,6 +44,7 @@ implementation -> verify -> release -> memory -> completed
 
 run_status: created -> running
 running -> needs_approval | paused | blocked | failed | completed
+created -> cancelled
 needs_approval -> running | blocked | cancelled
 paused -> running | blocked | cancelled
 blocked -> running | cancelled
@@ -115,6 +116,8 @@ G4 审批调用只执行只读 PR、merge Commit、target ancestry、候选 mani
 - `resume` 重新校验配置、Worktree、容器、数据库版本和产物 hash。
 - 自动重试最多 2 次，仅适用于临时执行失败；权限、审批、License 和配置错误不得自动重试。
 - 恢复失败进入 `blocked`，输出明确的人工动作和证据位置。
+- `workflow_create` 只写入 `created` 与 Routing Decision；`workflow_begin` 才原子建立首个 Task 并分配执行资源。兼容 `workflow_start` 是 create+begin 包装。
+- 取消使用期望版本与幂等键。运行中的逻辑 Task 进入 `cancelled` 并停止后继调度；`running/reconcile_required` Host Operation 保持可对账，全部终止后 Workflow 自动进入 `cancelled`。已发布 Release 不能以取消替代审计或回滚。
 
 ## 8. 幂等与并发
 

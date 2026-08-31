@@ -30,6 +30,7 @@
 
 ```text
 created -> running -> needs_approval -> running
+   |\------------------------------> cancelled
               |  \-> paused ---------> running
               |  \-> blocked --------> running
               |  \-> failed ---------> running
@@ -47,6 +48,8 @@ needs_approval | paused | blocked | failed -> cancelled
 - `failed`：步骤失败或超过重试上限，必须保留失败事件和恢复建议。
 - `completed`：所有产物、验证、审批和记忆记录齐全。
 - `cancelled`：用户明确取消；与失败不同，不自动重试。
+
+创建、开始和取消均为独立 API 1.2 写事务，要求稳定幂等键；开始和取消还要求 `expected_state_version`。`created` 不得存在 Task、Worktree 或 Host Operation。取消请求保存在 checkpoint 与追加事件中；不可逆外部副作用必须完成 reconcile，不能通过取消隐藏。
 
 `run_status` 只描述上述生命周期；业务进度单独保存在 `workflow_phase`，取值和 Gate 位置以 [WORKFLOW_SPEC.md](WORKFLOW_SPEC.md) 为准。两者共享单调递增的 `state_version`。
 

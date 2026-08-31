@@ -150,8 +150,93 @@ def workflow_start(
                 override_reason=override_reason,
             ),
             Path(project_root),
+            warnings=(
+                "workflow_start is deprecated in API 1.2; use workflow_create then workflow_begin",
+            ),
         )
     )
+
+
+@mcp.tool()
+def workflow_create(
+    project_root: str,
+    goal: str,
+    idempotency_key: str,
+    workflow_name: str = "new-project",
+    profiles: list[str] | None = None,
+    target_branch: str | None = None,
+    impact_paths: list[str] | None = None,
+    dependency_count: int = 0,
+    release_required: bool = False,
+    override_reason: str | None = None,
+    document_version_target: str | None = None,
+) -> dict[str, Any]:
+    """Create a routed workflow without allocating a task or Worktree."""
+
+    return _invoke(
+        lambda: _workflow_payload(
+            WorkflowEngine(Path(project_root)).create(
+                goal,
+                workflow_name=workflow_name,
+                profiles=tuple(profiles or ()),
+                target_branch=target_branch,
+                impact_paths=tuple(impact_paths or ()),
+                dependency_count=dependency_count,
+                release_required=release_required,
+                override_reason=override_reason,
+                document_version_target=document_version_target,
+                idempotency_key=idempotency_key,
+            ),
+            Path(project_root),
+        )
+    )
+
+
+@mcp.tool()
+def workflow_begin(
+    project_root: str,
+    run_id: str,
+    expected_state_version: int,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Begin a created workflow and allocate its first task."""
+
+    return _invoke(
+        lambda: _workflow_payload(
+            WorkflowEngine(Path(project_root)).begin(
+                run_id,
+                expected_state_version=expected_state_version,
+                idempotency_key=idempotency_key,
+            ),
+            Path(project_root),
+        )
+    )
+
+
+@mcp.tool()
+def workflow_cancel(
+    project_root: str,
+    run_id: str,
+    reason: str,
+    expected_state_version: int,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Cancel a workflow without hiding running or published host side effects."""
+
+    def operation() -> dict[str, Any]:
+        context = _current_context()
+        return _workflow_payload(
+            WorkflowEngine(Path(project_root)).cancel(
+                run_id,
+                reason=reason,
+                expected_state_version=expected_state_version,
+                idempotency_key=idempotency_key,
+                requested_by=context.principal,
+            ),
+            Path(project_root),
+        )
+
+    return _invoke(operation)
 
 
 @mcp.tool()
@@ -995,6 +1080,7 @@ def _workflow_payload(
             if result.integration_result is not None
             else None
         ),
+        cancellation=result.run.checkpoint.get("cancel_request"),
         warnings=warnings,
     )
 

@@ -25,6 +25,9 @@ def test_mcp_lists_the_public_runtime_tools() -> None:
     assert asyncio.run(exercise()) == {
         "project_init",
         "workflow_start",
+        "workflow_create",
+        "workflow_begin",
+        "workflow_cancel",
         "workflow_status",
         "workflow_step",
         "workflow_resume",

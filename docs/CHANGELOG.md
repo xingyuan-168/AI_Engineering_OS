@@ -6,6 +6,7 @@
 
 ### Added
 
+- 增加 API 1.2 分阶段 `workflow_create`、`workflow_begin`、`workflow_cancel`：创建不分配资源，开始受版本与幂等约束，取消保留 Host Operation 对账并暴露结构化 cancellation 状态；旧 `workflow_start` 保留为带弃用提示的兼容包装。
 - Release prepare now archives Plugin source from the authorized Commit, normalizes only the OCI staging copy to exact `0.2.0`, records source/packaged manifest versions and hash, and makes G4 reopen the ZIP before publication; the streaming archive path avoids Windows deep-directory expansion.
 - Windows 路径状态统一使用 resolved POSIX-form Unicode 文本，Plugin CLI/MCP 固定 UTF-8 stdio；新写入拒绝 `U+FFFD`，Doctor 可用 `PATH_ENCODING_CORRUPT` 精确报告历史损坏字段，并增加中文项目根、Worktree、SQLite、CLI JSON 和真实 stdio MCP 回归测试。
 - 含前端页面的 Routing 现在不可移除 `frontend-project`；Workflow 在 design 与 G2 之间强制进入 prototype 阶段，要求离线自包含 HTML、`html-prototype-validator` 和独立 accepted UX Review，原型 Commit/hash 变化会使旧确认失效。

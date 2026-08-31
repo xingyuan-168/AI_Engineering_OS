@@ -27,6 +27,27 @@ PUBLIC_TOOL_CONTRACTS: tuple[PublicToolContract, ...] = (
         "WorkflowEngine",
         True,
     ),
+    PublicToolContract(
+        "workflow_create",
+        ("workflow create",),
+        "WorkflowEngine",
+        True,
+        ("idempotency_key",),
+    ),
+    PublicToolContract(
+        "workflow_begin",
+        ("workflow begin",),
+        "WorkflowEngine",
+        True,
+        ("expected_state_version", "idempotency_key"),
+    ),
+    PublicToolContract(
+        "workflow_cancel",
+        ("workflow cancel",),
+        "WorkflowEngine",
+        True,
+        ("expected_state_version", "idempotency_key"),
+    ),
     PublicToolContract("workflow_status", ("status",), "WorkflowEngine", False),
     PublicToolContract("workflow_step", ("step",), "WorkflowEngine", False),
     PublicToolContract(

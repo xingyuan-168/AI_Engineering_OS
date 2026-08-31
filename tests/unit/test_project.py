@@ -29,7 +29,10 @@ def test_project_initialization_is_idempotent_and_preserves_user_content(tmp_pat
     assert second.created_paths == ()
     assert product_requirements.read_text(encoding="utf-8") == "# User-owned requirements\n"
     assert first.document_report.ok
-    assert second.document_report.ok
+    assert not second.document_report.ok
+    assert second.document_report.metadata_errors == (
+        "docs/PRODUCT_REQUIREMENTS.md: missing governance metadata",
+    )
     assert first.context_path.is_file()
     assert load_execution_policy(tmp_path).sandbox.value == "docker"
     assert Database(first.database_path).current_version() == "0007"
