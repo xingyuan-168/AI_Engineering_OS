@@ -24,7 +24,7 @@
 
 - 绑定并审计 GitHub 远端，建立 `main` 文档基线和里程碑分支。
 - 明确 `workflow_phase`/`run_status`、G0-G4、Host Hook/内部事件、Skill 路径和迁移语义。
-- 固定 Python 3.12、uv 和 Docker Desktop 前置条件；环境缺失必须由 `doctor` 明确阻塞。
+- 固定 Python 3.12、uv 和策略所选 Docker/Podman OCI Adapter 前置条件；环境缺失必须由 `doctor` 明确阻塞。
 - 新增 `AGENTS.md` 与 ADR-0002，固化事实源和 Git 交付规则。
 
 产物：可推送仓库基线、收敛后的规格、仓库指令、环境预检和 ADR。

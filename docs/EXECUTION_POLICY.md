@@ -2,11 +2,11 @@
 
 版本：V2.0-derived-execution
 状态：可执行实现规格基线
-默认：Docker/Podman 沙箱；Windows 宿主机不直接承载高风险 Agent 命令。
+默认：由 `.codex-os/execution-policy.yaml` 选择 Docker 或 Podman OCI 沙箱；当前仓库选择 Podman。Windows 宿主机不直接承载高风险 Agent 命令。
 
 ## 1. 沙箱前置条件
 
-- Docker Desktop 或 Podman machine 已安装、启动并可由当前用户调用。
+- 策略所选的 Docker Desktop 或 Podman machine 已安装、启动并可由当前用户调用；两种 Adapter 必须执行相同安全契约。
 - 镜像必须来自已批准的来源，并使用固定 digest 或锁定版本。
 - 容器不可用时，低风险只读检查可报告环境问题；代码写入、网络访问、迁移、删除和发布全部进入 `blocked`。
 - Plugin 和项目配置不能改变上述降级规则；Codex Host 也必须经 Runtime 进入执行策略。

@@ -42,11 +42,11 @@ codex-os mcp
 
 ## 事实源
 
-- [执行入口](<AI_Engineering_OS_Codex_执行入口文档（1）(2).md>)：文档读取和项目启动顺序。
+- [实施规格索引](docs/README.md)：规范读取顺序和全部领域契约。
 - [项目总文档](docs/PROJECT_MASTER.md)：目标、范围与治理总览。
 - [系统架构](docs/ARCHITECTURE.md)：组件边界和数据流。
-- [实施规格索引](docs/README.md)：全部领域规范。
 - [仓库指令](AGENTS.md)：Codex 实现、验证和 Git 纪律。
+- [历史执行入口](docs/archive/AI_Engineering_OS_Codex_历史执行入口.md)：仅供追溯早期建设过程，不是现行指令。
 - [组合 Profiles](profiles/)：frontend、backend 与 large 项目的增量能力和证据要求。
 
 `input/` 保存原始需求，只作为参考；冲突以当前接受的 ADR 和领域规格为准。
@@ -72,6 +72,6 @@ SQLite state + Markdown/Git facts + Docker/Podman execution
 ## 支持边界
 
 - Windows 本地运行，Python 3.12。
-- Docker Desktop 是默认沙箱；项目级基础策略可显式选择兼容同一安全契约的 Podman。
+- 沙箱后端由 `.codex-os/execution-policy.yaml` 选择；V1 支持遵循同一安全契约的 Docker 与 Podman，当前仓库选择 Podman。
 - Codex Host/MCP 是模型编排主路径；`codex exec` 仅为环境验证后的可选叶子适配器。
 - 0.2.0 不包含 Web 控制台、DeepSeek Harness、公共插件市场、远程多租户或生产部署能力。

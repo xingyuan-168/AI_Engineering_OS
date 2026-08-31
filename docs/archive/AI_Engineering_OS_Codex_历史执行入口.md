@@ -1,8 +1,10 @@
-# AI Engineering OS Codex 执行入口文档
+# AI Engineering OS Codex 历史执行入口文档
+
+> **历史资料，不是现行执行指令。** 本文保留早期“构建 AI Engineering OS”阶段的目录设想和推进记录，仅用于审计追溯。当前仓库行为以根目录 `AGENTS.md`、`docs/PROJECT_MASTER.md`、`docs/SCOPE.md` 和 `docs/README.md` 的读取顺序与已接受 ADR 为准；本文中的 Plan Mode、旧目录、DeepSeek Harness 或阶段命令不得覆盖这些事实源。
 
 ## 文档目的
 
-本文档是 AI Engineering OS 项目的唯一执行入口。
+本文档曾作为 AI Engineering OS 项目的建设入口，现已归档。
 
 用途：
 

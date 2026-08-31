@@ -4,6 +4,7 @@
 - 日期：2026-08-21
 - 范围：Workflow、Codex Plugin、配置、执行隔离和 SQLite 迁移
 - 取代：ADR-0001 第 2 条中“优先评估 LangGraph 作为实现依赖”的部分
+- 后续决策：第 6 条“Docker Desktop 是默认沙箱”的单一后端表述已由 [ADR-0003](ADR-0003-governance-runtime-boundary.md) 取代；现行规则由项目策略选择 Docker 或 Podman，安全约束不变。
 
 ## 背景
 
