@@ -28,9 +28,9 @@ max_concurrency: 1
 
 | Agent | 主要产物 | 允许修改 | 必须 Review |
 | --- | --- | --- | --- |
-| Product Manager | 需求、用户故事、范围 | 产品和业务文档 | 是 |
+| Product Manager | 需求、用户故事、范围、产品设计 | 产品和业务文档、`PRODUCT_DESIGN.md` | 是 |
 | Architect | 架构、API、数据库、ADR | 设计文档 | 是 |
-| Frontend Engineer | UI 实现和组件 | 前端授权目录 | 是 |
+| Frontend Engineer | 交互设计、UI 规格、HTML 原型、UI 实现和组件 | `INTERACTION_DESIGN.md`、`UI_DESIGN.md`、受管原型和前端授权目录 | 是 |
 | Backend Engineer | 服务和接口实现 | 后端授权目录 | 是 |
 | Database Engineer | Schema、迁移、索引 | 数据库授权目录 | 是 |
 | QA Engineer | 测试和质量报告 | 测试目录、报告目录 | 是 |
@@ -40,17 +40,19 @@ max_concurrency: 1
 ## 4. 任务契约
 
 ```yaml
-task_id: TASK-001
-workflow_id: WF-001
+task_id: TASK-20260831090001000000-B2C3D4E5
+workflow_id: RUN-20260831090000000000-A1B2C3D4
 agent: architect
 input_artifacts: [docs/SCOPE.md]
 expected_outputs: [docs/ARCHITECTURE.md]
 allowed_paths: [docs/ARCHITECTURE.md, docs/ADR/]
-worktree: .worktrees/WF-001/architect/TASK-001
-branch: agent/architect/TASK-001
+worktree: .worktrees/RUN-20260831090000000000-A1B2C3D4/architect/TASK-20260831090001000000-B2C3D4E5
+branch: agent/architect/TASK-20260831090001000000-B2C3D4E5
 review_required: true
-deadline_seconds: 1800
+execution_timeout_seconds: 1800
 ```
+
+`execution_timeout_seconds` 是单次 ExecutionRequest 的请求超时，必须在 `1..execution-policy.max_duration_seconds` 内；它不是 Task 的墙钟截止时间。Task 生命周期上限由 Workflow 调度策略控制，当前策略上限为 2 小时。
 
 任务完成必须提交输出产物、变更文件、测试结果、命令日志和假设列表，并按 [AGENT_HANDOFF.md](AGENT_HANDOFF.md) 生成结构化交接包。交接包必须包含生产者、消费者、Workflow/Task、产物路径和 hash、Commit、测试、风险及开放问题；聊天文本不能替代交接产物。
 
@@ -59,9 +61,9 @@ deadline_seconds: 1800
 Agent 之间只传递结构化事件：
 
 ```yaml
-event_id: EVT-001
-task_id: TASK-001
-workflow_id: WF-001
+event_id: EVENT-20260831090002000000-C3D4E5F6
+task_id: TASK-20260831090001000000-B2C3D4E5
+workflow_id: RUN-20260831090000000000-A1B2C3D4
 from: project-manager
 to: architect
 type: task.created | task.completed | task.failed | review.requested

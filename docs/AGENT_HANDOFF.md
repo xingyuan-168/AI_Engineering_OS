@@ -10,9 +10,9 @@ Agent 之间通过结构化产物和事件交接，不以聊天文本作为唯�
 ## 2. 统一交接包
 
 ```yaml
-handoff_id: HANDOFF-001
-workflow_id: WF-001
-task_id: TASK-001
+handoff_id: HANDOFF-20260831090003000000-D4E5F607
+workflow_id: RUN-20260831090000000000-A1B2C3D4
+task_id: TASK-20260831090001000000-B2C3D4E5
 producer: architect
 consumer: backend-engineer
 status: ready | accepted | rejected | blocked
@@ -37,6 +37,10 @@ created_at: RFC3339
 | 生产者 -> 消费者 | 最小交付 |
 | --- | --- |
 | Product Manager -> Architect | `PRODUCT_REQUIREMENTS.md`、`USER_STORY.md`、`BUSINESS_RULES.md`、`SCOPE.md` |
+| Product Manager -> Frontend Engineer | `PRODUCT_DESIGN.md`、已批准需求、用户与验收状态 |
+| Frontend Engineer（设计） -> Frontend Engineer（原型） | `INTERACTION_DESIGN.md`、`UI_DESIGN.md`、状态/可访问性要求 |
+| Frontend Engineer（原型） -> 用户/Reviewer | 离线 HTML 原型、入口文件、Commit/hash、`html-prototype-validator` 证据 |
+| 用户/Reviewer -> Frontend Engineer（实现） | accepted `ux-prototype` Review、绑定 Commit/hash、允许实现路径 |
 | Architect -> Backend/Frontend/Database | `ARCHITECTURE.md`、`API_SPEC.md`、`DATABASE.md`、相关 ADR |
 | Backend/Frontend/Database -> QA | 修改文件、Commit、测试命令/结果、已知风险、迁移说明 |
 | QA/Security -> Reviewer | 测试报告、安全报告、未解决问题、阻塞建议 |

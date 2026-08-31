@@ -47,7 +47,7 @@ Host Hook 必须幂等、可超时、可失败隔离。Plugin Hook 未经用户�
 Plugin 向 CLI Runtime 提交结构化请求：
 
 ```yaml
-request_id: REQ-001
+request_id: REQ-20260831090004000000-E5F60718
 api_version: "1.2"
 operation: project.init | workflow.start | workflow.status | workflow.step
            | workflow.resume | approval.submit | task.complete
@@ -56,7 +56,7 @@ operation: project.init | workflow.start | workflow.status | workflow.step
            | database.migrate | release.candidate.create
            | memory.submit | memory.review | memory.search
 project_id: PROJECT-001
-workflow_id: WF-001
+workflow_id: RUN-20260831090000000000-A1B2C3D4
 payload: {}
 idempotency_key: string
 ```

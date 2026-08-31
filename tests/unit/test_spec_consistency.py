@@ -32,3 +32,35 @@ def test_deployment_does_not_duplicate_release_checklist() -> None:
 
     assert "## 发布检查清单" not in deployment
     assert "[RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)" in deployment
+
+
+def test_skill_spec_matches_packaged_skill_directories() -> None:
+    specification = (ROOT / "docs" / "SKILL_SPEC.md").read_text(encoding="utf-8")
+    skill_names = {
+        path.name
+        for path in (ROOT / "plugins" / "ai-engineering-os" / "skills").iterdir()
+        if path.is_dir()
+    }
+
+    assert len(skill_names) == 21
+    assert all(f"`{name}`" in specification for name in skill_names)
+
+
+def test_agent_spec_matches_packaged_agent_profiles() -> None:
+    specification = (ROOT / "docs" / "AGENT_SPEC.md").read_text(encoding="utf-8")
+    profiles = {
+        path.stem
+        for path in (ROOT / ".codex" / "agents").glob("*.toml")
+    }
+
+    assert profiles == {
+        "architect",
+        "backend-engineer",
+        "database-engineer",
+        "frontend-engineer",
+        "product-manager",
+        "qa",
+        "reviewer",
+        "security-reviewer",
+    }
+    assert "HTML 原型" in specification
