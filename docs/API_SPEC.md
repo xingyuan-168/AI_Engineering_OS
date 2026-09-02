@@ -366,6 +366,15 @@ Runtime 验证 content/source 路径、hash、项目范围与 Secret 扫描，�
 
 `docs_check` / `codex-os check-docs` 输出缺失文件、断链、非法目录、元数据错误、缺少章节、未批准占位、过期、项目目标版本不一致、影响分析缺口和 `traceability_errors`。除 `docs/archive/**` 外的活跃 Markdown 必须有完整治理 metadata；存在追溯文件时，Requirement、规格和测试路径必须可复算。接口只读；修复由独立任务执行。
 
+### 10.1 项目环境接口
+
+- `environment_check(project_root)` / `codex-os environment check` 是只读审计，返回环境模式、所选后端、Compose/镜像/存储 findings、分类磁盘占用和 repair actions，不启动容器、不写库、不 prune。
+- `environment_adopt` 要求 `run_id`、`task_id`、expected state/task version 和 idempotency key；只在活动治理任务 Worktree 创建缺失环境文件，绝不覆盖既有 Docker/Compose 配置。
+- `environment_prepare` 额外要求 `network_approval_ref` 和 `expires_at`，先持久化 Host Operation 再联网构建；结果绑定 source Commit、后端、lock、Compose 与镜像 digest。
+- `environment_verify` 使用相同绑定断网重建，要求 prepare 已成功且未漂移，记录健康、测试、重建、持久化和洁净度证据。
+
+所有写接口保持 API 1.2 envelope。所选 OCI backend 不可用时返回 `OCI_BACKEND_UNAVAILABLE`，禁止切换到另一后端继续执行。
+
 ## 11. CLI 映射
 
 | MCP | CLI |
@@ -396,6 +405,10 @@ Runtime 验证 content/source 路径、hash、项目范围与 Secret 扫描，�
 | `memory_review` | `codex-os memory review` |
 | `memory_search` | `codex-os memory search` |
 | `docs_check` | `codex-os check-docs` |
+| `environment_check` | `codex-os environment check` |
+| `environment_adopt` | `codex-os environment adopt` |
+| `environment_prepare` | `codex-os environment prepare` |
+| `environment_verify` | `codex-os environment verify` |
 
 CLI `--json` stdout 只输出一个通用响应；日志写 stderr。MCP 与 CLI 必须产生相同业务错误码和状态变化。
 
@@ -418,6 +431,7 @@ CLI `--json` stdout 只输出一个通用响应；日志写 stderr。MCP 与 CLI
 | 文档/依赖 | `DOCS_INCOMPLETE`、`DOCS_STALE`、`DOCUMENT_VERSION_MISMATCH`、`DEPENDENCY_UNVERIFIED`、`SECRET_DETECTED` |
 | 迁移/发布 | `MIGRATION_FAILED`、`BACKUP_INVALID`、`RELEASE_INCOMPLETE`、`RELEASE_SOURCE_CHANGED`、`GITHUB_PR_INVALID`、`RELEASE_AUTHORITY_REQUIRED`、`GITHUB_RELEASE_FAILED` |
 | Memory | `MEMORY_SOURCE_CHANGED`、`MEMORY_SCOPE_DENIED`、`MEMORY_REVIEW_REQUIRED`、`MEMORY_STATE_INVALID` |
+| 项目环境 | `ENVIRONMENT_ADOPTION_REQUIRED`、`ENVIRONMENT_CONTRACT_MISSING`、`OCI_BACKEND_UNAVAILABLE`、`COMPOSE_INVALID`、`HOST_DEPENDENCY_PRESENT`、`PERSISTENCE_UNDECLARED`、`SHARED_ASSET_POLICY_VIOLATION`、`ENVIRONMENT_NOT_REBUILDABLE`、`VOLUME_DELETE_APPROVAL_REQUIRED` |
 
 所有错误 `details` 只含脱敏标识、预期/实际版本和可操作恢复步骤，不返回 token、完整凭据 URL 或未脱敏日志。
 

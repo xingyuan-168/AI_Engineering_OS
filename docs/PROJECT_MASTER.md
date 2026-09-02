@@ -63,10 +63,11 @@ Codex Host 负责模型、Session、Tool Runtime 和宿主交互；AI Engineerin
 | Approval Manager | 管理 G0-G4 审批和高风险确认 | 审批记录、阻塞/放行决定 |
 | Release Manager | 汇总证据并生成发布候选物 | 候选物、校验和、回滚包 |
 | Host Operation Manager | 持久化并对账 Git、OCI 与 GitHub 外部副作用 | intent、租约、尝试、结果和恢复证据 |
+| Environment Governance | 编译项目 OCI 环境契约，审计 Compose、依赖、存储和宿主占用 | environment manifest、镜像 digest、重建和持久化证据 |
 
 ### 版本矩阵
 
-0.2.0 固定使用需求 `REQ-1.6.2`、软件/CLI/Plugin `0.2.0`、Plugin API/配置/文档/Profile Schema `1.2` 和 SQLite `0007`。1.0/1.1 兼容入口在 0.2.x 内保留并返回弃用 warning；最早只可在 0.3.0 经 ADR 移除。版本事实由 Runtime 唯一版本对象提供，禁止各模块散落硬编码。
+0.2.1 固定使用需求 `REQ-1.6.2`、软件/CLI/Plugin `0.2.1`、Plugin API/配置/文档/Profile Schema `1.2` 和 SQLite `0007`。1.0/1.1 兼容入口在 0.2.x 内保留并返回弃用 warning；最早只可在 0.3.0 经 ADR 移除。版本事实由 Runtime 唯一版本对象提供，禁止各模块散落硬编码。
 
 ## 3. 项目事实来源
 

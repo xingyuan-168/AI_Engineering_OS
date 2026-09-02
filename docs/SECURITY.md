@@ -23,6 +23,7 @@
 | `THR-001` | 非 GitHub/不可追溯仓库产生写任务 | 正式仓库预检绑定 HEAD/config/target；测试例外能力隔离 | `GITHUB_REMOTE_REQUIRED` 等 blocker |
 | `THR-002` | 路径遍历、symlink/junction 或挂载逃逸 | realpath、祖先检查、逐段 reparse point 检查、Worktree 注册表和受管 mount kind | `PATH_ESCAPE`，不执行/不清理 |
 | `THR-003` | 恶意/破坏性命令 | argv allowlist、风险分级、审批、锁定 OCI、无 shell 拼接 | `COMMAND_DENIED`/`APPROVAL_REQUIRED` |
+| `THR-009` | 宿主依赖/缓存污染与 Volume 误删 | OCI-first、宿主洁净度审计、只读共享资产、禁止 volume 删除 | `HOST_DEPENDENCY_PRESENT`/`VOLUME_DELETE_APPROVAL_REQUIRED` |
 | `THR-004` | 容器访问网络、Host、凭据或 daemon | network none、只读根、非 root、cap-drop、no-new-privileges、无 socket/凭据挂载 | execution failed/blocked |
 | `THR-005` | 伪造测试/Review/Handoff | execution/review 数据库反查、source Commit/hash、Reviewer 分离、bundle hash | `EVIDENCE_INCOMPLETE`/`REVIEW_STALE` |
 | `THR-006` | 并行写冲突或恶意覆盖 | 规范路径冲突检查、任务 Worktree、并发上限 4、集成锁、`--no-ff`、禁止 force/rebase | 串行化或 `MERGE_CONFLICT` |
@@ -106,6 +107,7 @@ ExecutionService 检查 task lease、Commit 和 clean baseline，写 execution i
 - 依赖与扫描缓存只能由经网络审批的 verification prepare 生成，分别绑定 `uv.lock` hash、Linux OCI 平台、Python 版本、执行镜像、时间和来源；正式 Gate 只离线消费逐文件 hash 校验且无 symlink/junction 的只读 wheelhouse、pip-audit snapshot 和非空 Trivy DB snapshot。
 - `.codex/` Hook 必须由人复核信任；Hook 只能调用受限入口，不携带 Secret，不把内部 Workflow 事件冒充 Host 生命周期事件。
 - Plugin `PreToolUse` Hook 是防御纵深和即时提示，不是权限、路径或命令安全边界。它拦截直接出现的 force push、Git ref 删除及 Windows/Unix 宽范围递归删除，但不承诺解释变量拼接、别名、splatting 或间接脚本；最终控制必须由 Runtime 的结构化 argv allowlist、风险分级、路径校验、审批和 OCI 隔离执行。项目 `.codex/hooks.json` 有意不复制插件规则；插件未启用或 Hook 未经信任时，Runtime 仍必须 fail closed。
+- OCI-first 项目禁止宿主依赖安装、编译和服务运行。共享模型/数据集必须位于批准的外部根并只读挂载；Compose build context、symlink 和 junction 必须在解析后保持项目边界。Runtime 从不自动 prune，也不删除真实 Volume。
 - 项目 `.agents/skills/` 不得创建 Plugin 同名 override；Runtime 拒绝歧义 Skill resolution。
 
 ## 9. Memory 与 Secret

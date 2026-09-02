@@ -1,10 +1,10 @@
-# AI Engineering OS 0.2.0 修复范围
+# AI Engineering OS 0.2.1 OCI-first 迭代范围
 
 <!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
 
 需求基线：`REQ-1.6.2`
 
-目标软件版本：`0.2.0`
+目标软件版本：`0.2.1`
 目标形态：Windows 本地、面向 Codex 的可审计工程治理与执行层。
 
 ## 1. 修复目标
@@ -65,6 +65,12 @@
 - 所有 Gate、Review、文档和发布证据从登记 Commit 或受管审计区重新读取并校验。
 - 增加 verification cache prepare、可复现离线构建、官方 Bookworm digest/SBOM/Trivy 证据和 final manifest。
 - 统一 CLI/MCP 应用模型，补齐 Release Candidate、Memory、Migration、Verification Prepare 与 Host Operation 映射。
+
+### 2.8 0.2.1：OCI-first 项目环境治理
+
+- 新项目默认 Podman 的 OCI-first 契约，存量项目显式 adoption，支持 Docker/Podman 双适配且禁止静默回退。
+- 将依赖、构建、测试和服务迁出宿主项目目录；治理 Compose、lockfile、digest、共享只读资产、Volume、备份恢复和磁盘占用。
+- 增加环境检查、准备、断网验证与 Gate 证据，不提供自动 prune 或真实 Volume 删除能力。
 - 以 [RELEASE_CLOSURE_MATRIX.md](RELEASE_CLOSURE_MATRIX.md) 作为缺陷、测试和 Gate 的关闭索引。
 
 ## 3. 明确不在本轮范围

@@ -88,6 +88,12 @@ G3 批准同样只在事务中写入审批、验证缓存绑定和 `release_prep
 
 G4 审批调用只执行只读 PR、merge Commit、target ancestry、候选 manifest 与发布 authority 预检，并在审批事务中写入 `release_publish` Host Operation；不得创建 tag、上传资产或完成 Workflow。executor 重新校验相同意图并完成远端对账，先将 operation 标记 succeeded，再在受约束事务中把 Workflow 置为 `completed`；任一步结果未知都保持 `reconcile_required`。
 
+### OCI-first 环境门禁
+
+新项目的 G0 绑定 `environment_mode=oci-first` 和显式 OCI backend。G2 必须包含 `docs/ENVIRONMENT.md`、`.codex-os/environment.yaml`、`.dockerignore`、`compose.yaml`、实际 Dockerfile 清单和通过的 `environment-contract` Check。空服务、占位 Compose、未锁定基础镜像或未声明依赖锁不能通过。
+
+G3 先在有期 L2 网络批准下完成 `environment_prepare`，再断网运行 `environment_verify`。必需证据为 `environment-prepare-evidence`、`host-cleanliness`、`compose-build`、`container-recreate`、`storage-persistence` 和 `environment-smoke`；G4 审计包归档环境 manifest、镜像 digest、Compose hash、重建报告和恢复说明。存量 `legacy` 项目在显式 adoption 并重新通过 G2/G3 前返回 `ENVIRONMENT_ADOPTION_REQUIRED`。
+
 ## 5. 四条 V1 Workflow
 
 ### `new-project`

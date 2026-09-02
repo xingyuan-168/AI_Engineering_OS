@@ -24,6 +24,7 @@
 | [SKILL_SPEC.md](SKILL_SPEC.md) | Skill 输入、输出、权限和完成定义 | Skill 能力或权限变化时 |
 | [AGENT_SPEC.md](AGENT_SPEC.md) | Agent 角色、任务、Worktree 和 Review 契约 | Agent 角色或协作规则变化时 |
 | [EXECUTION_POLICY.md](EXECUTION_POLICY.md) | Docker/Podman 沙箱、命令、挂载、网络和资源策略 | 执行安全策略变化时 |
+| [ENVIRONMENT.md](ENVIRONMENT.md) | OCI-first 项目环境、Compose、存储和宿主洁净度契约 | 项目环境或重建策略变化时 |
 | [OBSERVABILITY.md](OBSERVABILITY.md) | 日志、事件、指标、诊断和审计保留 | 事件或审计策略变化时 |
 | [MIGRATION_SPEC.md](MIGRATION_SPEC.md) | SQLite Schema、迁移、备份和恢复 | 数据结构或迁移方式变化时 |
 | [MEMORY_SPEC.md](MEMORY_SPEC.md) | 长期记忆分类、来源、检索、失效和跨项目隔离 | Memory 生命周期或索引变化时 |
@@ -65,5 +66,5 @@
 - 需求基线：已从 V2.0 需求文档整理。
 - 文档状态：本批次文档已补齐并通过结构审计；实施前如发生范围变化，必须按变更规则更新。
 - 技术栈状态：见 [TECH_STACK.md](TECH_STACK.md)；运行时基线见 [ADR-0001](ADR/ADR-0001-mvp-runtime-stack.md)，契约收敛见 [ADR-0002](ADR/ADR-0002-v1-runtime-contract-convergence.md)。
-- 实施状态：`ab879c0` 是已验证候选基线；0.2.0 正按 [发布收口矩阵](RELEASE_CLOSURE_MATRIX.md) 补齐 API 1.2、SQLite 0007、持久化 Host Operation、Commit-bound Evidence 与正式发布闭环，尚未完成 G3/G4。
+- 实施状态：0.2.0 收口分支已完成本地候选验证；0.2.1 正按 [ADR-0007](ADR/ADR-0007-oci-first-project-environments.md) 增加 OCI-first 项目环境治理，正式 G3/G4 仍须独立执行和批准。
 - 实现契约：已补齐运行时、配置、Workflow 路由、Skill、Agent 交接、Plugin、Worktree、边界、Memory、执行、可观测性、迁移、发布和试点验收文档。

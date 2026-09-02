@@ -4,6 +4,8 @@
 
 ## [Unreleased] - 2026-08-26
 
+- 0.2.1 adopts OCI-first project environments: new projects scaffold an explicit Podman/Docker contract, legacy projects require governed adoption, and G2-G4 bind Compose, image, persistence, rebuild and host-cleanliness evidence (ADR-0007).
+
 ### Added
 
 - 增加 API 1.2 分阶段 `workflow_create`、`workflow_begin`、`workflow_cancel`：创建不分配资源，开始受版本与幂等约束，取消保留 Host Operation 对账并暴露结构化 cancellation 状态；旧 `workflow_start` 保留为带弃用提示的兼容包装。

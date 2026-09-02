@@ -218,3 +218,27 @@ review_required_by_default: true
 ## 14. 完成定义
 
 配置规格只有在每种配置都有 Schema 版本、字段类型、必填规则、覆盖规则、安全限制、错误处理和示例时才算完成。
+
+## 15. 项目环境配置
+
+`project.yaml` 在 Schema 1.2 增加 `environment_mode: legacy | oci-first`。缺失时只为存量项目兼容成 `legacy`；`project_init` 创建的新项目必须显式写入 `oci-first`。
+
+`.codex-os/environment.yaml` 使用 Schema 1.2，至少包含：
+
+```yaml
+schema_version: '1.2'
+environment_mode: oci-first
+oci_backend: podman
+compose_files: [compose.yaml]
+dockerfiles: []
+dependency_locks: []
+services: []
+persistent_mounts: []
+shared_assets: []
+host_budget:
+  max_project_bytes: 1073741824
+  max_git_bytes: 536870912
+  large_file_bytes: 52428800
+```
+
+`oci_backend` 只能为 `podman` 或 `docker`，默认 Podman，且不能在运行中静默回退。路径必须是项目内规范相对路径；项目外共享资产只允许以受批准环境变量定位并只读挂载。空 `services`、空 Dockerfile 或空 lockfile 允许作为初始化草案，但不能通过 G2。

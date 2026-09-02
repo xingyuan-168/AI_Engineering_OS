@@ -48,9 +48,15 @@
 
 ### 4.1 L2 授权契约
 
-0.2.0 不接受无期限或仅以文本声明的“已批准策略”。每个 L2 操作必须先创建持久化审批或 Host Operation，并将受信 principal、source Commit、操作范围、允许的网络主机、到期时间、幂等键和规范请求 hash 绑定到同一 intent。缺失、过期、Commit/范围漂移或允许主机不匹配时返回 `APPROVAL_REQUIRED` 或对应 blocker，不执行副作用。
+0.2.x 不接受无期限或仅以文本声明的“已批准策略”。每个 L2 操作必须先创建持久化审批或 Host Operation，并将受信 principal、source Commit、操作范围、允许的网络主机、到期时间、幂等键和规范请求 hash 绑定到同一 intent。缺失、过期、Commit/范围漂移或允许主机不匹配时返回 `APPROVAL_REQUIRED` 或对应 blocker，不执行副作用。
 
 长期可复用的预批准策略、撤销列表和跨 Workflow 授权不属于 0.2.0；如在 0.3.0 引入，必须先通过 ADR、明确 scope/expiry/revocation Schema，并提供迁移与负向测试。
+
+### 4.2 OCI-first 项目执行
+
+宿主控制平面只允许 `codex-os`、Codex Plugin、Git 与 OCI 引擎。项目 package manager、编译器、测试和服务必须经专用 Environment Host Operation 进入项目选定的 OCI backend。Runtime 接收结构化 argv，不接收任意 shell，也不在 Podman/Docker 之间回退。
+
+`environment_prepare` 是有期 L2 联网操作；`environment_verify` 必须断网。`compose down -v`、`volume rm` 和带 volume 的 prune 不属于 Agent 可授权命令，0.2.1 没有删除真实持久 Volume 的公共 API。
 
 ## 5. 资源限制
 

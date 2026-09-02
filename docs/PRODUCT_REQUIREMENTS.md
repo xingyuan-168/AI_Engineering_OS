@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 产品需求
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001","FRONTEND-002"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001","FRONTEND-002","ENV-001"]} -->
 
 需求基线：`REQ-1.6.2`
 
@@ -95,15 +95,21 @@ AI Engineering OS 是运行在 Codex Host 周围的工程治理与执行层。Co
 | MIGRATION-001 | 通过追加式 `0007` 安全迁移 | 不改写 0001-0006；迁移前备份，checksum、外键、FTS、Host Operation、幂等、临时库恢复与原子替换测试通过；活动旧 Workflow 进入 `MIGRATION_REVALIDATION_REQUIRED` |
 | COMPAT-001 | 配置与旧调用保持受控兼容 | 配置/API/文档/Profile Schema 1.2 可读取/调用 1.0/1.1 并 warning；旧健康检查和自由文本验证不能满足新 Gate；未配置 GitHub 的旧项目可读但不能执行仓库写任务 |
 
+### 4.8 OCI-first 项目环境
+
+| ID | 要求 | 可观察验收标准 |
+| --- | --- | --- |
+| ENV-001 | 被管理项目可重建、依赖隔离且持久化安全 | 新项目写入 `oci-first` 与显式 Podman/Docker 契约；存量项目显式 adoption；项目依赖/构建/测试/服务不落宿主；Compose、lock、digest、Volume、健康、备份恢复和磁盘占用均有结构化检查；G3 断网重建并验证数据 round-trip；Agent 无法删除真实 Volume |
+
 ## 5. Gate 必需成果
 
 | Gate | 必需成果 | 阻塞条件 |
 | --- | --- | --- |
 | G0 | 目标、范围、成功标准、风险、Routing Decision | 任一字段缺失、范围冲突或路由无来源 |
 | G1 | 产品需求、用户故事、业务规则、范围及可测试验收标准 | 草案状态、未批准占位内容、需求无 ID 或不可映射测试 |
-| G2 | 开源研究、版本/License、技术栈、架构及适用的 API/数据库/安全/迁移/ADR | 必需设计缺失、版本或 License 未核验、重大决策无 ADR |
-| G3 | Ruff、Pyright、pytest+coverage、文档、Secret、依赖、Bandit、Plugin/Skill/Hook/MCP、构建安装、镜像扫描、真实 OCI、安全和代码 Review 的 Commit-bound 证据 | 退出码非零、来源 Commit 不一致、报告缺失、真实 OCI skip 或以自由文本代替证据 |
-| G4 | candidate/final manifest、SBOM、checksums、rollback、release review、CHANGELOG、ADR、Release Memory 与 PR/tag/assets 对账 | PR/merge/tag/版本不一致、发布授权未先持久化、制品 hash 不匹配或资产未复核 |
+| G2 | 开源研究、版本/License、技术栈、架构、OCI 环境契约及适用的 API/数据库/安全/迁移/ADR | 必需设计缺失、版本或 License 未核验、环境不可重建、重大决策无 ADR |
+| G3 | Ruff、Pyright、pytest+coverage、文档、Secret、依赖、Bandit、Plugin/Skill/Hook/MCP、构建安装、环境 prepare/断网重建/持久化、镜像扫描、真实 OCI、安全和代码 Review 的 Commit-bound 证据 | 退出码非零、来源 Commit 不一致、报告缺失、宿主依赖污染、真实 OCI skip 或以自由文本代替证据 |
+| G4 | candidate/final manifest、SBOM、checksums、rollback、environment manifest、release review、CHANGELOG、ADR、Release Memory 与 PR/tag/assets 对账 | PR/merge/tag/版本不一致、发布授权未先持久化、环境/制品 hash 不匹配或资产未复核 |
 
 ## 6. 非功能需求
 

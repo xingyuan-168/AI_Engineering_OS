@@ -75,6 +75,16 @@
 5. G3 后才能以 PR 合入 `main`；只有独立 G4 授权后才能由持久化 publish operation 创建 `v0.2.0` 和 GitHub Release。
 6. 缺少 Podman、`gh`、网络审批、GitHub 权限或独立 G4 授权时，开发验证可以继续，但相应 Gate 必须明确保持 blocked。
 
+### 8.1 OCI-first 环境矩阵
+
+- 新项目初始化、存量 legacy 检测与幂等 adoption；已有 Compose/Dockerfile 不得覆盖。
+- Docker/Podman 共享契约测试，所选后端至少一次真实 OCI；后端缺失时不得静默回退。
+- Compose 解析、build context、Dockerfile、digest、lockfile、健康检查和占位内容负向测试。
+- `.venv`、`node_modules`、`target`、`.next`、build/dist、缓存、模型、大文件、Git 污染和 symlink/junction 逃逸。
+- 有状态服务缺 Volume、共享资产非只读、备份/恢复缺失、无 `-v` 重建和 disposable Volume round-trip。
+- prepare 审批过期、Commit/lock/Compose/image hash 漂移、verify 网络关闭和进程中断恢复。
+- Hook 与 Runtime 同时拒绝宿主 package manager、`compose down -v`、`volume rm` 和危险 prune。
+
 ## 9. 需求与测试追溯
 
 `.codex-os/test-traceability.yaml` 是机器可校验的追溯事实源。每项记录必须包含唯一 ID、Requirement refs、规格路径和真实测试文件；文档治理扫描会拒绝缺失文件、重复 ID和未映射 Requirement。
@@ -87,9 +97,10 @@
 | `TRACE-AGENT-COORDINATION` | Routing、Agent、Handoff、Worktree | 协调、路由和 Worktree 测试 |
 | `TRACE-FRONTEND-PROTOTYPE` | 前端 Profile、原型与 UX Review | Prototype/Profile 测试 |
 | `TRACE-EXECUTION-SANDBOX` | Execution 和真实 OCI | Execution/Podman 测试 |
+| `TRACE-OCI-ENVIRONMENT` | 项目环境、Compose、宿主洁净度、持久化与 adoption | Environment 单元/集成/真实 OCI 测试 |
 | `TRACE-RELEASE` | Candidate、G4 与发布对账 | Release/G4 故障注入 |
 | `TRACE-MEMORY` | Memory 生命周期和隔离 | Memory 集成测试 |
 
 ## 10. 完成定义
 
-测试完成必须提供 Branch、Commit、remote/push、命令、退出码、报告路径/hash、开始/结束时间、跳过数和覆盖率。所有活跃规格的完成定义和 Requirement 必须有有效追溯记录；任何 required check 缺失、跳过、来源 Commit 不一致或证据不可复算，都不能将 0.2.0 标记为发布完成。
+测试完成必须提供 Branch、Commit、remote/push、命令、退出码、报告路径/hash、开始/结束时间、跳过数和覆盖率。所有活跃规格的完成定义和 Requirement 必须有有效追溯记录；任何 required check 缺失、跳过、来源 Commit 不一致或证据不可复算，都不能将 0.2.1 标记为发布完成。

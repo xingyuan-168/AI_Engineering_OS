@@ -24,6 +24,10 @@ entries:
     requirement_refs: [EXEC-001]
     specification_paths: [docs/EXECUTION_POLICY.md, docs/SECURITY.md]
     test_paths: [tests/integration/test_execution_service.py, tests/integration/test_real_podman_sandbox.py]
+  - id: TRACE-OCI-ENVIRONMENT
+    requirement_refs: [ENV-001, EXEC-001, GATE-001]
+    specification_paths: [docs/ENVIRONMENT.md, docs/EXECUTION_POLICY.md, docs/WORKFLOW_SPEC.md]
+    test_paths: [tests/unit/test_project.py, tests/integration/test_execution_service.py, tests/integration/test_real_podman_sandbox.py]
   - id: TRACE-RELEASE
     requirement_refs: [RELEASE-001]
     specification_paths: [docs/RELEASE_CHECKLIST.md, docs/DEPLOYMENT.md]
