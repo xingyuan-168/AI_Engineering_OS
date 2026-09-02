@@ -69,6 +69,18 @@ def test_pre_tool_use_denies_force_push_and_advises_normal_changes(tmp_path: Pat
         "git push origin :obsolete",
         "git branch -D obsolete",
         "git update-ref -d refs/heads/obsolete",
+        "pip install requests",
+        "python -m pip install requests",
+        "npm install",
+        "pnpm build",
+        "yarn add react",
+        "poetry install",
+        "cargo build",
+        "podman compose down -v",
+        "docker compose down --volumes",
+        "podman volume rm project-data",
+        "docker volume prune -f",
+        "podman system prune -a --volumes",
     ],
 )
 def test_pre_tool_use_denies_obvious_windows_and_git_deletion_commands(
@@ -95,6 +107,8 @@ def test_pre_tool_use_denies_obvious_windows_and_git_deletion_commands(
         "git branch --show-current",
         "powershell -NoProfile Get-ChildItem -LiteralPath .",
         "powershell -NoProfile Remove-Item -LiteralPath temp.txt",
+        "podman compose down --remove-orphans",
+        "docker image prune",
     ],
 )
 def test_pre_tool_use_does_not_block_read_only_or_narrow_commands(

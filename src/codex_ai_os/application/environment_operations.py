@@ -664,6 +664,7 @@ class EnvironmentOperationService:
     def _run(
         self, argv: list[str], *, cwd: Path | None = None
     ) -> subprocess.CompletedProcess[bytes]:
+        validate_environment_command(argv)
         try:
             return self.runner(argv, cwd or self.config.root, 1800.0)
         except subprocess.TimeoutExpired as exc:
@@ -674,6 +675,36 @@ class EnvironmentOperationService:
             raise EnvironmentOperationError(
                 "OCI_BACKEND_UNAVAILABLE", str(exc), retryable=True
             ) from exc
+
+
+def validate_environment_command(argv: list[str]) -> None:
+    normalized = [item.casefold() for item in argv]
+    if not normalized or normalized[0] not in {"docker", "podman"}:
+        raise EnvironmentOperationError(
+            "OCI_BACKEND_UNAVAILABLE", "environment operations require an OCI backend argv"
+        )
+    destructive_volume = (
+        "volume" in normalized and any(item in {"rm", "prune"} for item in normalized)
+    ) or (
+        "down" in normalized
+        and any(item in {"-v", "--volume", "--volumes"} for item in normalized)
+    )
+    dangerous_prune = "prune" in normalized and any(
+        item in {"-a", "--all", "--volume", "--volumes"} for item in normalized
+    )
+    if destructive_volume or dangerous_prune:
+        raise EnvironmentOperationError(
+            "VOLUME_DELETE_APPROVAL_REQUIRED",
+            "persistent OCI volume deletion is unavailable from the Agent operation path",
+        )
+    mutation_tokens = {"install", "add", "build", "wheel"}
+    package_managers = {"pip", "pip3", "npm", "pnpm", "yarn", "poetry", "cargo"}
+    for index, item in enumerate(normalized):
+        if item in package_managers and mutation_tokens.intersection(normalized[index + 1 :]):
+            raise EnvironmentOperationError(
+                "HOST_DEPENDENCY_PRESENT",
+                "runtime dependency mutation is forbidden during environment verification",
+            )
 
 
 def _compose_argv(contract: EnvironmentContract, project_ref: str) -> list[str]:

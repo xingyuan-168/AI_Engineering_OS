@@ -63,6 +63,35 @@ _FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"\bgit\s+update-ref\b[^\r\n]*(?:^|\s)(?:-d|--delete)(?:\s|$)", re.I),
         "Deleting a Git ref directly is forbidden.",
     ),
+    (
+        re.compile(
+            r"\b(?:python(?:3)?\s+-m\s+)?pip(?:3)?\s+(?:install|wheel)\b|"
+            r"\b(?:npm|pnpm|yarn)\s+(?:i|install|add|build)\b|"
+            r"\bpoetry\s+install\b|\bcargo\s+(?:install|build)\b",
+            re.I,
+        ),
+        "Project dependency installation and builds must run through the governed OCI environment.",
+    ),
+    (
+        re.compile(
+            r"\b(?:docker|podman)(?:-compose|\s+compose)\b[^\r\n]*\bdown\b"
+            r"[^\r\n]*(?:\s-v(?:\s|$)|--volumes?\b)",
+            re.I,
+        ),
+        "Compose volume deletion is forbidden from the Agent path.",
+    ),
+    (
+        re.compile(r"\b(?:docker|podman)\s+volume\s+(?:rm|prune)\b", re.I),
+        "Persistent OCI volume deletion requires an independent operator workflow.",
+    ),
+    (
+        re.compile(
+            r"\b(?:docker|podman)\s+(?:system|container)\s+prune\b"
+            r"[^\r\n]*(?:-a\b|--all\b|--volumes?\b)",
+            re.I,
+        ),
+        "Broad OCI prune operations are forbidden from the Agent path.",
+    ),
 )
 
 

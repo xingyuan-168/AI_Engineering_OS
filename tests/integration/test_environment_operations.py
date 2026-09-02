@@ -5,9 +5,14 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import yaml
 
-from codex_ai_os.application.environment_operations import EnvironmentOperationService
+from codex_ai_os.application.environment_operations import (
+    EnvironmentOperationError,
+    EnvironmentOperationService,
+    validate_environment_command,
+)
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType, RiskLevel, SandboxBackend
 from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
@@ -257,3 +262,17 @@ def test_legacy_adoption_preserves_existing_compose(tmp_path: Path) -> None:
     adopted = yaml.safe_load((worktree / ".codex-os" / "project.yaml").read_text())
     assert adopted["environment_mode"] == "oci-first"
     assert "compose.yaml" not in result.created_paths
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["podman", "compose", "down", "-v"],
+        ["docker", "volume", "rm", "data"],
+        ["podman", "system", "prune", "--volumes"],
+        ["podman", "compose", "exec", "-T", "app", "pip", "install", "x"],
+    ),
+)
+def test_environment_runtime_rejects_destructive_or_mutating_argv(argv: list[str]) -> None:
+    with pytest.raises(EnvironmentOperationError):
+        validate_environment_command(argv)
