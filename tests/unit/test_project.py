@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from codex_ai_os.application.project import ProjectInitializer
-from codex_ai_os.domain.config import EnvironmentMode, ProjectType
+from codex_ai_os.domain.config import EnvironmentMode, ProjectType, SandboxBackend
 from codex_ai_os.infrastructure.config import load_environment_contract, load_execution_policy
 from codex_ai_os.infrastructure.database import Database
 
@@ -65,3 +65,17 @@ def test_project_registration_and_init_event_are_persisted(tmp_path: Path) -> No
 
     assert project["id"] == "PROJECT-ERP"
     assert event_count == 1
+
+
+def test_project_init_explicitly_selects_docker_without_fallback(tmp_path: Path) -> None:
+    result = ProjectInitializer().initialize(
+        tmp_path,
+        project_id="PROJECT-DOCKER",
+        name="Docker project",
+        project_type=ProjectType.BACKEND,
+        oci_backend=SandboxBackend.DOCKER,
+    )
+
+    assert load_execution_policy(tmp_path).sandbox is SandboxBackend.DOCKER
+    assert load_environment_contract(tmp_path).oci_backend is SandboxBackend.DOCKER
+    assert result.config.environment_mode is EnvironmentMode.OCI_FIRST

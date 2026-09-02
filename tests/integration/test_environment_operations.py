@@ -276,3 +276,21 @@ def test_legacy_adoption_preserves_existing_compose(tmp_path: Path) -> None:
 def test_environment_runtime_rejects_destructive_or_mutating_argv(argv: list[str]) -> None:
     with pytest.raises(EnvironmentOperationError):
         validate_environment_command(argv)
+
+
+def test_environment_prepare_rejects_expired_network_approval(tmp_path: Path) -> None:
+    run_id, task_id, run_version, task_version = _governed_project(tmp_path)
+    service = EnvironmentOperationService(tmp_path, runner=RecordingRunner())
+
+    with pytest.raises(EnvironmentOperationError) as caught:
+        service.prepare(
+            run_id=run_id,
+            task_id=task_id,
+            expected_state_version=run_version,
+            expected_task_version=task_version,
+            idempotency_key="expired-environment-prepare",
+            network_approval_ref="approval-expired",
+            expires_at="2020-01-01T00:00:00+00:00",
+        )
+
+    assert caught.value.code == "APPROVAL_REQUIRED"
