@@ -57,6 +57,21 @@ def test_frontend_g2_requires_validated_and_reviewed_html_prototype() -> None:
     assert "ux-prototype" in requirements.reviews
 
 
+def test_oci_first_policy_adds_environment_evidence(tmp_path: Path) -> None:
+    from codex_ai_os.application.project import ProjectInitializer
+    from codex_ai_os.domain.config import ProjectType
+
+    ProjectInitializer().initialize(
+        tmp_path, project_id="PROJECT-OCI", name="OCI", project_type=ProjectType.BACKEND
+    )
+    policy = GovernancePolicyCompiler(tmp_path).compile(("backend-project",))
+
+    assert "docs/ENVIRONMENT.md" in policy.requirements_for(Gate.G2).artifacts
+    assert "environment-contract" in policy.requirements_for(Gate.G2).checks
+    assert "container-recreate" in policy.requirements_for(Gate.G3).checks
+    assert "environment-reconciliation" in policy.requirements_for(Gate.G4).records
+
+
 def test_project_role_policy_can_tighten_but_cannot_raise_capabilities() -> None:
     policy = GovernancePolicyCompiler(PROJECT_ROOT).compile(
         ("backend-project",),

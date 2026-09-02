@@ -13,9 +13,11 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from codex_ai_os.domain.config import EnvironmentMode
 from codex_ai_os.domain.coordination import TaskBlueprint
 from codex_ai_os.domain.profiles import ProfileTaskTemplate, ProjectProfile
 from codex_ai_os.domain.workflow import Gate
+from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.profiles import load_project_profiles
 
 
@@ -279,6 +281,7 @@ class GovernancePolicyCompiler:
         self._profiles = self._load_profiles()
         self._baseline_gates = self.load_gate_rules(self._baseline_gate_dir())
         self._project_gates = self._load_project_gate_rules()
+        self._environment_gates = self._load_environment_gate_rules()
 
     def compile(
         self,
@@ -315,6 +318,8 @@ class GovernancePolicyCompiler:
                         reviews=frozenset(requirement.reviews),
                     )
                 )
+        for gate, environment_requirement in self._environment_gates.items():
+            gates[gate] = gates[gate].add(environment_requirement)
         role_boundaries = _effective_role_boundaries(role_restrictions or {})
         project_paths = tuple(
             _normalize_policy_pattern(path) for path in additional_protected_paths
@@ -447,10 +452,31 @@ class GovernancePolicyCompiler:
             return dict(self._baseline_gates)
         return self.load_gate_rules(directory)
 
+    def _load_environment_gate_rules(self) -> dict[Gate, EvidenceRequirements]:
+        try:
+            config = load_project_config(self.root)
+        except (OSError, ValueError):
+            return {}
+        if config.environment_mode is not EnvironmentMode.OCI_FIRST:
+            return {}
+        baseline = self._baseline_gate_dir() / "oci-first"
+        project = self.root / ".codex-os" / "gates" / "oci-first"
+        baseline_rules = self.load_gate_rules(baseline, gates=(Gate.G2, Gate.G3, Gate.G4))
+        if not project.is_dir():
+            raise GovernancePolicyError(
+                "CONFIG_INVALID", "OCI-first project is missing declarative environment Gate rules"
+            )
+        project_rules = self.load_gate_rules(project, gates=(Gate.G2, Gate.G3, Gate.G4))
+        for gate, candidate in project_rules.items():
+            _require_monotonic_gate(gate, baseline_rules[gate], candidate)
+        return project_rules
+
     @staticmethod
-    def load_gate_rules(directory: Path) -> dict[Gate, EvidenceRequirements]:
+    def load_gate_rules(
+        directory: Path, *, gates: tuple[Gate, ...] = tuple(Gate)
+    ) -> dict[Gate, EvidenceRequirements]:
         rules: dict[Gate, EvidenceRequirements] = {}
-        for gate in Gate:
+        for gate in gates:
             path = directory / f"{gate.value}.yaml"
             try:
                 raw: object = yaml.safe_load(path.read_text(encoding="utf-8"))

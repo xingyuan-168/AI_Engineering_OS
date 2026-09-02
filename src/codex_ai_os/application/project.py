@@ -199,6 +199,7 @@ def environment_scaffold_files(
     slug = re.sub(r"[^a-z0-9]+", "-", project_name.casefold()).strip("-")
     slug = slug or "codex-project"
     return {
+        **_environment_gate_files(),
         ".codex-os/environment.yaml": (
             f"schema_version: '{RUNTIME_VERSIONS.config_schema}'\n"
             "environment_mode: oci-first\n"
@@ -225,4 +226,16 @@ def environment_scaffold_files(
             "This directory is completed during the governed G2 environment-design task.\n"
             "Do not treat the empty Compose scaffold as runnable evidence.\n"
         ),
+    }
+
+
+def _environment_gate_files() -> dict[str, str]:
+    packaged = Path(__file__).parents[1] / "resources" / "gates"
+    repository = Path(__file__).parents[3] / "gates"
+    gate_root = packaged if packaged.is_dir() else repository
+    return {
+        f".codex-os/gates/oci-first/{gate}.yaml": (
+            gate_root / "oci-first" / f"{gate}.yaml"
+        ).read_text(encoding="utf-8")
+        for gate in ("G2", "G3", "G4")
     }
