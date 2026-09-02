@@ -115,6 +115,27 @@ PUBLIC_TOOL_CONTRACTS: tuple[PublicToolContract, ...] = (
         "EnvironmentGovernanceService",
         False,
     ),
+    PublicToolContract(
+        "environment_adopt",
+        ("environment adopt",),
+        "EnvironmentOperationService",
+        True,
+        ("expected_state_version", "expected_task_version", "idempotency_key"),
+    ),
+    PublicToolContract(
+        "environment_prepare",
+        ("environment prepare",),
+        "EnvironmentOperationService",
+        True,
+        ("expected_state_version", "expected_task_version", "idempotency_key"),
+    ),
+    PublicToolContract(
+        "environment_verify",
+        ("environment verify",),
+        "EnvironmentOperationService",
+        True,
+        ("expected_state_version", "expected_task_version", "idempotency_key"),
+    ),
     PublicToolContract("verification_run", ("verify",), "VerificationService", True),
     PublicToolContract(
         "verification_prepare",

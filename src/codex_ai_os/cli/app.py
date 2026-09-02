@@ -10,12 +10,17 @@ import typer
 
 from codex_ai_os.application.doctor import DoctorService
 from codex_ai_os.application.environment import EnvironmentGovernanceService
+from codex_ai_os.application.environment_operations import (
+    EnvironmentOperationError,
+    EnvironmentOperationService,
+)
 from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.maintenance import (
     DatabaseMigrationService,
     HostOperationMaintenanceService,
     MaintenanceOperationError,
     VerificationPrepareService,
+    host_operation_action,
 )
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.prototype import PrototypeReviewService
@@ -112,6 +117,132 @@ def environment_check_command(
         json_output,
         details=data,
         retryable=True,
+    )
+
+
+@environment_app.command("adopt")
+def environment_adopt_command(
+    run_id: Annotated[str, typer.Argument()],
+    task_id: Annotated[str, typer.Option("--task-id")],
+    expected_state_version: Annotated[int, typer.Option("--expected-state-version")],
+    expected_task_version: Annotated[int, typer.Option("--expected-task-version")],
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
+    oci_backend: Annotated[SandboxBackend, typer.Option("--oci-backend")] = SandboxBackend.PODMAN,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Create missing OCI contract files in an assigned legacy-project task Worktree."""
+
+    context = InvocationContext.local(InvocationSource.CLI)
+    try:
+        result = EnvironmentOperationService(project_root).adopt(
+            run_id=run_id,
+            task_id=task_id,
+            expected_state_version=expected_state_version,
+            expected_task_version=expected_task_version,
+            idempotency_key=idempotency_key,
+            oci_backend=oci_backend,
+            invocation=context,
+        )
+    except EnvironmentOperationError as exc:
+        _fail(
+            exc.code,
+            str(exc),
+            40,
+            json_output,
+            details=exc.details,
+            retryable=exc.retryable,
+        )
+        return
+    emit(
+        success_envelope(
+            {
+                "operation": result.operation.model_dump(mode="json"),
+                "created_paths": list(result.created_paths),
+            },
+            run_id=run_id,
+            state_version=expected_state_version,
+        ),
+        json_output=json_output,
+        human=f"Adopted OCI-first environment in task {task_id}.",
+    )
+
+
+@environment_app.command("prepare")
+def environment_prepare_command(
+    run_id: Annotated[str, typer.Argument()],
+    task_id: Annotated[str, typer.Option("--task-id")],
+    expected_state_version: Annotated[int, typer.Option("--expected-state-version")],
+    expected_task_version: Annotated[int, typer.Option("--expected-task-version")],
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
+    network_approval_ref: Annotated[str, typer.Option("--network-approval-ref")],
+    expires_at: Annotated[str, typer.Option("--expires-at")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Persist an approved networked environment image-build operation."""
+
+    try:
+        result = EnvironmentOperationService(project_root).prepare(
+            run_id=run_id,
+            task_id=task_id,
+            expected_state_version=expected_state_version,
+            expected_task_version=expected_task_version,
+            idempotency_key=idempotency_key,
+            network_approval_ref=network_approval_ref,
+            expires_at=expires_at,
+        )
+    except EnvironmentOperationError as exc:
+        _fail(exc.code, str(exc), 40, json_output, details=exc.details, retryable=exc.retryable)
+        return
+    action = host_operation_action(result.operation).model_dump(mode="json")
+    emit(
+        success_envelope(
+            {"operation": result.operation.model_dump(mode="json"), "next_actions": [action]},
+            run_id=run_id,
+            state_version=expected_state_version,
+            next_actions=[action],
+        ),
+        json_output=json_output,
+        human=f"Scheduled environment prepare operation {result.operation.operation_id}.",
+    )
+
+
+@environment_app.command("verify")
+def environment_verify_command(
+    run_id: Annotated[str, typer.Argument()],
+    task_id: Annotated[str, typer.Option("--task-id")],
+    prepare_operation_id: Annotated[str, typer.Option("--prepare-operation-id")],
+    expected_state_version: Annotated[int, typer.Option("--expected-state-version")],
+    expected_task_version: Annotated[int, typer.Option("--expected-task-version")],
+    idempotency_key: Annotated[str, typer.Option("--idempotency-key")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Persist an offline rebuild and persistence verification operation."""
+
+    try:
+        result = EnvironmentOperationService(project_root).verify(
+            run_id=run_id,
+            task_id=task_id,
+            expected_state_version=expected_state_version,
+            expected_task_version=expected_task_version,
+            idempotency_key=idempotency_key,
+            prepare_operation_id=prepare_operation_id,
+        )
+    except EnvironmentOperationError as exc:
+        _fail(exc.code, str(exc), 40, json_output, details=exc.details, retryable=exc.retryable)
+        return
+    action = host_operation_action(result.operation).model_dump(mode="json")
+    emit(
+        success_envelope(
+            {"operation": result.operation.model_dump(mode="json"), "next_actions": [action]},
+            run_id=run_id,
+            state_version=expected_state_version,
+            next_actions=[action],
+        ),
+        json_output=json_output,
+        human=f"Scheduled environment verify operation {result.operation.operation_id}.",
     )
 
 

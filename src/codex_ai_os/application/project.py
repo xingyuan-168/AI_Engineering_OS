@@ -178,38 +178,7 @@ def _runtime_entry_files(
         ),
     }
     if include_environment:
-        slug = re.sub(r"[^a-z0-9]+", "-", project_name.casefold()).strip("-")
-        slug = slug or "codex-project"
-        files.update(
-            {
-                ".codex-os/environment.yaml": (
-                    f"schema_version: '{RUNTIME_VERSIONS.config_schema}'\n"
-                    "environment_mode: oci-first\n"
-                    f"oci_backend: {oci_backend.value}\n"
-                    "compose_files: [compose.yaml]\n"
-                    "dockerfiles: []\n"
-                    "dependency_locks: []\n"
-                    "services: []\n"
-                    "persistent_mounts: []\n"
-                    "shared_assets: []\n"
-                    "host_budget:\n"
-                    "  max_project_bytes: 1073741824\n"
-                    "  max_git_bytes: 536870912\n"
-                    "  large_file_bytes: 52428800\n"
-                ),
-                ".dockerignore": (
-                    ".git\n.codex-os/state\n.codex-os/logs\n.codex-os/cache\n"
-                    ".worktrees\n.venv\nnode_modules\ntarget\n.next\nbuild\ndist\n"
-                    "*.log\n.env\nmodels\ndatasets\n"
-                ),
-                "compose.yaml": f"name: {slug}\nservices: {{}}\n",
-                "docker/README.md": (
-                    "# OCI environment\n\n"
-                    "This directory is completed during the governed G2 environment-design task.\n"
-                    "Do not treat the empty Compose scaffold as runnable evidence.\n"
-                ),
-            }
-        )
+        files.update(environment_scaffold_files(project_name, oci_backend=oci_backend))
     packaged = Path(__file__).parents[1] / "resources" / "gates"
     repository = Path(__file__).parents[3] / "gates"
     gate_root = packaged if packaged.is_dir() else repository
@@ -218,3 +187,42 @@ def _runtime_entry_files(
             encoding="utf-8"
         )
     return files
+
+
+def environment_scaffold_files(
+    project_name: str,
+    *,
+    oci_backend: SandboxBackend = SandboxBackend.PODMAN,
+) -> dict[str, str]:
+    """Return safe, intentionally incomplete files for init and governed adoption."""
+
+    slug = re.sub(r"[^a-z0-9]+", "-", project_name.casefold()).strip("-")
+    slug = slug or "codex-project"
+    return {
+        ".codex-os/environment.yaml": (
+            f"schema_version: '{RUNTIME_VERSIONS.config_schema}'\n"
+            "environment_mode: oci-first\n"
+            f"oci_backend: {oci_backend.value}\n"
+            "compose_files: [compose.yaml]\n"
+            "dockerfiles: []\n"
+            "dependency_locks: []\n"
+            "services: []\n"
+            "persistent_mounts: []\n"
+            "shared_assets: []\n"
+            "host_budget:\n"
+            "  max_project_bytes: 1073741824\n"
+            "  max_git_bytes: 536870912\n"
+            "  large_file_bytes: 52428800\n"
+        ),
+        ".dockerignore": (
+            ".git\n.codex-os/state\n.codex-os/logs\n.codex-os/cache\n"
+            ".worktrees\n.venv\nnode_modules\ntarget\n.next\nbuild\ndist\n"
+            "*.log\n.env\nmodels\ndatasets\n"
+        ),
+        "compose.yaml": f"name: {slug}\nservices: {{}}\n",
+        "docker/README.md": (
+            "# OCI environment\n\n"
+            "This directory is completed during the governed G2 environment-design task.\n"
+            "Do not treat the empty Compose scaffold as runnable evidence.\n"
+        ),
+    }

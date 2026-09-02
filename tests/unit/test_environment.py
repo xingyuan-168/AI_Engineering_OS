@@ -38,17 +38,27 @@ def _valid_project(root: Path) -> None:
         "      context: .\n"
         "      dockerfile: docker/app.Dockerfile\n"
         "    healthcheck:\n"
-        "      test: [CMD, python, --version]\n",
+        "      test: [CMD, python, --version]\n"
+        "    networks: [default]\n"
+        "networks:\n"
+        "  default:\n"
+        "    internal: true\n",
         encoding="utf-8",
     )
-    environment = {
+    environment: dict[str, object] = {
         "schema_version": "1.2",
         "environment_mode": "oci-first",
         "oci_backend": "podman",
         "compose_files": ["compose.yaml"],
         "dockerfiles": ["docker/app.Dockerfile"],
         "dependency_locks": ["uv.lock"],
-        "services": [{"name": "app", "dockerfile": "docker/app.Dockerfile"}],
+        "services": [
+            {
+                "name": "app",
+                "dockerfile": "docker/app.Dockerfile",
+                "smoke_command": ["python", "--version"],
+            }
+        ],
         "persistent_mounts": [],
         "shared_assets": [],
         "host_budget": {},

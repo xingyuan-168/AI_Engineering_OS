@@ -19,6 +19,10 @@ from codex_ai_os.adapters.git import (
     GitEvidenceVerifier,
 )
 from codex_ai_os.application.coordination import CoordinationService, IntegrationResult
+from codex_ai_os.application.environment_operations import (
+    EnvironmentOperationError,
+    EnvironmentOperationService,
+)
 from codex_ai_os.application.g4 import (
     G4Publisher,
     GitHubReleaseGovernanceService,
@@ -154,6 +158,9 @@ class WorkflowEngine:
             None if readonly else VerificationCachePreparer(self.config.root)
         )
         self.release_execution_service = release_execution_service
+        self.environment_operations = (
+            None if readonly else EnvironmentOperationService(self.config.root)
+        )
 
     def create(
         self,
@@ -1243,6 +1250,14 @@ class WorkflowEngine:
                 return self._execute_release_publish_operation(
                     acquired, lease_owner=invocation.principal
                 )
+            operation_type = acquired.request.get("operation_type")
+            if acquired.kind is HostOperationKind.VERIFICATION_PREPARE and operation_type in {
+                "environment_prepare",
+                "environment_verify",
+            }:
+                return self._execute_environment_operation(
+                    acquired, lease_owner=invocation.principal
+                )
             if acquired.kind is HostOperationKind.VERIFICATION_PREPARE:
                 return self._execute_verification_prepare_operation(
                     acquired, lease_owner=invocation.principal
@@ -1258,6 +1273,47 @@ class WorkflowEngine:
             )
         except HostOperationError as exc:
             raise WorkflowError(exc.code, str(exc), 40) from exc
+
+    def _execute_environment_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        if operation.run_id is None or self.environment_operations is None:
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE",
+                "environment operation has no writable Workflow context",
+                40,
+            )
+        try:
+            self.environment_operations.execute_acquired(
+                operation,
+                lease_owner=lease_owner,
+            )
+        except EnvironmentOperationError as exc:
+            current = self.operations.get(operation.operation_id)
+            if current.status is HostOperationStatus.RUNNING:
+                if exc.outcome_unknown:
+                    self.operations.mark_outcome_unknown(
+                        current.operation_id,
+                        expected_version=current.state_version,
+                        lease_owner=lease_owner,
+                        error_code=exc.code,
+                    )
+                else:
+                    self.operations.mark_failed(
+                        current.operation_id,
+                        expected_version=current.state_version,
+                        lease_owner=lease_owner,
+                        error_code=exc.code,
+                        result={"message": str(exc)},
+                    )
+            raise WorkflowError(
+                exc.code,
+                str(exc),
+                40,
+                details=exc.details,
+                retryable=exc.retryable,
+            ) from exc
+        return self.status(operation.run_id)
 
     def _execute_integration_prepare_operation(
         self, operation: HostOperation, *, lease_owner: str

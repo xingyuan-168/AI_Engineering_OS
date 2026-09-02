@@ -38,16 +38,22 @@ class EnvironmentServiceSpec(StrictModel):
     persistent_targets: tuple[str, ...] = ()
     backup_command: tuple[str, ...] = ()
     restore_command: tuple[str, ...] = ()
+    smoke_command: tuple[str, ...] = ()
+    persistence_probe_command: tuple[str, ...] = ()
 
     _dockerfile_path = field_validator("dockerfile")(_relative_path)
 
     @model_validator(mode="after")
     def stateful_service_has_recovery_contract(self) -> Self:
         if self.stateful and (
-            not self.persistent_targets or not self.backup_command or not self.restore_command
+            not self.persistent_targets
+            or not self.backup_command
+            or not self.restore_command
+            or not self.persistence_probe_command
         ):
             raise ValueError(
-                "stateful services require persistent targets and backup/restore commands"
+                "stateful services require persistent targets, backup/restore, and a "
+                "persistence probe command"
             )
         return self
 

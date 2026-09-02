@@ -16,12 +16,17 @@ from codex_ai_os.application.environment import (
     EnvironmentGovernanceError,
     EnvironmentGovernanceService,
 )
+from codex_ai_os.application.environment_operations import (
+    EnvironmentOperationError,
+    EnvironmentOperationService,
+)
 from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.maintenance import (
     DatabaseMigrationService,
     HostOperationMaintenanceService,
     MaintenanceOperationError,
     VerificationPrepareService,
+    host_operation_action,
 )
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.prototype import PrototypeReviewService
@@ -138,6 +143,104 @@ def environment_check(project_root: str) -> dict[str, Any]:
     def operation() -> dict[str, Any]:
         report = EnvironmentGovernanceService(Path(project_root)).require_valid()
         return _success(**report.model_dump(mode="json"))
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def environment_adopt(
+    project_root: str,
+    run_id: str,
+    task_id: str,
+    expected_state_version: int,
+    expected_task_version: int,
+    idempotency_key: str,
+    oci_backend: str = "podman",
+) -> dict[str, Any]:
+    """Adopt OCI-first files inside the assigned governance task Worktree."""
+
+    def operation() -> dict[str, Any]:
+        result = EnvironmentOperationService(Path(project_root)).adopt(
+            run_id=run_id,
+            task_id=task_id,
+            expected_state_version=expected_state_version,
+            expected_task_version=expected_task_version,
+            idempotency_key=idempotency_key,
+            oci_backend=SandboxBackend(oci_backend),
+            invocation=_current_context(),
+        )
+        return _success(
+            run_id=run_id,
+            state_version=expected_state_version,
+            operation=result.operation.model_dump(mode="json"),
+            created_paths=list(result.created_paths),
+        )
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def environment_prepare(
+    project_root: str,
+    run_id: str,
+    task_id: str,
+    expected_state_version: int,
+    expected_task_version: int,
+    idempotency_key: str,
+    network_approval_ref: str,
+    expires_at: str,
+) -> dict[str, Any]:
+    """Persist an approved networked Compose build operation."""
+
+    def operation() -> dict[str, Any]:
+        result = EnvironmentOperationService(Path(project_root)).prepare(
+            run_id=run_id,
+            task_id=task_id,
+            expected_state_version=expected_state_version,
+            expected_task_version=expected_task_version,
+            idempotency_key=idempotency_key,
+            network_approval_ref=network_approval_ref,
+            expires_at=expires_at,
+        )
+        action = host_operation_action(result.operation).model_dump(mode="json")
+        return _success(
+            run_id=run_id,
+            state_version=expected_state_version,
+            next_actions=[action],
+            operation=result.operation.model_dump(mode="json"),
+        )
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def environment_verify(
+    project_root: str,
+    run_id: str,
+    task_id: str,
+    expected_state_version: int,
+    expected_task_version: int,
+    idempotency_key: str,
+    prepare_operation_id: str,
+) -> dict[str, Any]:
+    """Persist an offline Compose rebuild, smoke, and persistence operation."""
+
+    def operation() -> dict[str, Any]:
+        result = EnvironmentOperationService(Path(project_root)).verify(
+            run_id=run_id,
+            task_id=task_id,
+            expected_state_version=expected_state_version,
+            expected_task_version=expected_task_version,
+            idempotency_key=idempotency_key,
+            prepare_operation_id=prepare_operation_id,
+        )
+        action = host_operation_action(result.operation).model_dump(mode="json")
+        return _success(
+            run_id=run_id,
+            state_version=expected_state_version,
+            next_actions=[action],
+            operation=result.operation.model_dump(mode="json"),
+        )
 
     return _invoke(operation)
 
@@ -1197,6 +1300,14 @@ def _invoke(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
             retryable=exc.retryable,
         )
     except EnvironmentGovernanceError as exc:
+        return error_envelope(
+            exc.code,
+            str(exc),
+            exc.details,
+            context=context,
+            retryable=exc.retryable,
+        )
+    except EnvironmentOperationError as exc:
         return error_envelope(
             exc.code,
             str(exc),

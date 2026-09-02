@@ -14,7 +14,7 @@ from typing import Any, cast
 
 import yaml
 
-from codex_ai_os.domain.config import EnvironmentMode
+from codex_ai_os.domain.config import EnvironmentMode, ProjectConfig
 from codex_ai_os.domain.environment import (
     EnvironmentCheckReport,
     EnvironmentContract,
@@ -74,9 +74,10 @@ class EnvironmentGovernanceService:
         project_root: Path,
         *,
         runner: CommandRunner | None = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         self.root = project_root.resolve()
-        self.config = load_project_config(self.root)
+        self.config = config or load_project_config(self.root)
         self.runner = runner or _run_command
 
     def check(self) -> EnvironmentCheckReport:
@@ -331,6 +332,7 @@ class EnvironmentGovernanceService:
         combined_services: dict[str, Mapping[str, Any]] = {}
         combined_volumes: set[str] = set()
         for relative, document in compose_documents.items():
+            self._validate_offline_networks(relative, document, findings)
             raw_services = document.get("services")
             if not isinstance(raw_services, Mapping) or not raw_services:
                 findings.append(
@@ -365,6 +367,14 @@ class EnvironmentGovernanceService:
                     )
                 )
             mounts = _volume_strings(compose_service.get("volumes"))
+            if not service.smoke_command:
+                findings.append(
+                    _finding(
+                        "ENVIRONMENT_NOT_REBUILDABLE",
+                        "service smoke command is required",
+                        path=name,
+                    )
+                )
             for target in service.persistent_targets:
                 if not any(_mount_target(item) == target for item in mounts):
                     findings.append(
@@ -409,6 +419,34 @@ class EnvironmentGovernanceService:
                         "SHARED_ASSET_POLICY_VIOLATION",
                         "shared asset must use its approved environment root and a read-only mount",
                         path=asset.name,
+                    )
+                )
+
+    @staticmethod
+    def _validate_offline_networks(
+        relative: str,
+        document: Mapping[str, Any],
+        findings: list[EnvironmentFinding],
+    ) -> None:
+        raw_networks = document.get("networks")
+        if not isinstance(raw_networks, Mapping) or not raw_networks:
+            findings.append(
+                _finding(
+                    "ENVIRONMENT_NOT_REBUILDABLE",
+                    "Compose must declare an internal network for offline verification",
+                    path=relative,
+                )
+            )
+            return
+        networks = cast(Mapping[str, Any], raw_networks)
+        for name, raw in networks.items():
+            network = cast(Mapping[str, Any], raw) if isinstance(raw, Mapping) else None
+            if network is None or network.get("internal") is not True:
+                findings.append(
+                    _finding(
+                        "ENVIRONMENT_NOT_REBUILDABLE",
+                        "all Compose networks must be internal for offline verification",
+                        path=f"{relative}:networks.{name}",
                     )
                 )
 

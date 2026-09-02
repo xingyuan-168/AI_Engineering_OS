@@ -55,11 +55,7 @@ def test_environment_contract_requires_stateful_recovery() -> None:
 def test_environment_contract_rejects_unlisted_service_dockerfile() -> None:
     with pytest.raises(ValueError, match="listed"):
         EnvironmentContract(
-            services=(
-                EnvironmentServiceSpec(
-                    name="app", dockerfile="docker/app.Dockerfile"
-                ),
-            )
+            services=(EnvironmentServiceSpec(name="app", dockerfile="docker/app.Dockerfile"),)
         )
 
 
@@ -74,15 +70,14 @@ def test_environment_contract_validates_persistence_and_shared_assets() -> None:
                 persistent_targets=("/var/lib/db",),
                 backup_command=("db-backup",),
                 restore_command=("db-restore",),
+                persistence_probe_command=("db-probe",),
             ),
         ),
         persistent_mounts=(
             PersistentMountSpec(service="db", source="db-data", target="/var/lib/db"),
         ),
         shared_assets=(
-            SharedAssetSpec(
-                name="model", source_env="CODEX_SHARED_MODELS", target="/models"
-            ),
+            SharedAssetSpec(name="model", source_env="CODEX_SHARED_MODELS", target="/models"),
         ),
     )
 

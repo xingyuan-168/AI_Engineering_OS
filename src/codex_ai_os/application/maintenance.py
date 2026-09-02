@@ -389,7 +389,10 @@ def host_operation_action(operation: HostOperation) -> NextAction:
         dependencies=dependencies,
         prompt=f"Execute or reconcile persisted {operation.kind.value} Host Operation.",
         risk_level=RiskLevel.HIGH,
-        requires_repository_change=operation.kind is HostOperationKind.DATABASE_MIGRATE,
+        requires_repository_change=(
+            operation.kind is HostOperationKind.DATABASE_MIGRATE
+            or str(operation.request.get("operation_type", "")).startswith("environment_")
+        ),
         expected_state_version=operation.expected_state_version,
         expected_operation_version=operation.state_version,
     )
