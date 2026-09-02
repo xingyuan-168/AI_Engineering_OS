@@ -12,6 +12,10 @@ from typing import Any, cast
 from mcp.server import MCPServer
 from pydantic import ValidationError
 
+from codex_ai_os.application.environment import (
+    EnvironmentGovernanceError,
+    EnvironmentGovernanceService,
+)
 from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.maintenance import (
     DatabaseMigrationService,
@@ -122,6 +126,17 @@ def repository_check(
             target_branch=target_branch,
             run_id=run_id,
         )
+        return _success(**report.model_dump(mode="json"))
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def environment_check(project_root: str) -> dict[str, Any]:
+    """Audit OCI selection, Compose, storage policy, rebuild inputs, and host footprint."""
+
+    def operation() -> dict[str, Any]:
+        report = EnvironmentGovernanceService(Path(project_root)).require_valid()
         return _success(**report.model_dump(mode="json"))
 
     return _invoke(operation)
@@ -1178,6 +1193,14 @@ def _invoke(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         return error_envelope(
             exc.code,
             str(exc),
+            context=context,
+            retryable=exc.retryable,
+        )
+    except EnvironmentGovernanceError as exc:
+        return error_envelope(
+            exc.code,
+            str(exc),
+            exc.details,
             context=context,
             retryable=exc.retryable,
         )

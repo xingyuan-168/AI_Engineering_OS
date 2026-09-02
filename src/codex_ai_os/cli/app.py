@@ -9,6 +9,7 @@ from typing import Annotated, Any, cast
 import typer
 
 from codex_ai_os.application.doctor import DoctorService
+from codex_ai_os.application.environment import EnvironmentGovernanceService
 from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.maintenance import (
     DatabaseMigrationService,
@@ -67,6 +68,9 @@ task_app = typer.Typer(help="Complete governed task actions.", no_args_is_help=T
 gate_app = typer.Typer(help="Validate declarative Gate requirements.", no_args_is_help=True)
 prototype_app = typer.Typer(help="Validate and review HTML prototypes.", no_args_is_help=True)
 workflow_app = typer.Typer(help="Create, begin, or cancel workflows.", no_args_is_help=True)
+environment_app = typer.Typer(
+    help="Audit and manage OCI-first project environments.", no_args_is_help=True
+)
 app.add_typer(run_app, name="run")
 app.add_typer(handoff_app, name="handoff")
 app.add_typer(host_operation_app, name="host-operation")
@@ -79,6 +83,36 @@ app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(prototype_app, name="prototype")
 app.add_typer(workflow_app, name="workflow")
+app.add_typer(environment_app, name="environment")
+
+
+@environment_app.command("check")
+def environment_check_command(
+    project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Audit the selected OCI backend, Compose contract, storage, and host footprint."""
+
+    try:
+        report = EnvironmentGovernanceService(project_root).check()
+    except (ConfigError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    data = report.model_dump(mode="json")
+    if report.ok:
+        emit(
+            success_envelope(data), json_output=json_output, human="Environment contract is valid."
+        )
+        return
+    first = next(item for item in report.findings if item.blocking)
+    _fail(
+        first.code,
+        first.message,
+        40,
+        json_output,
+        details=data,
+        retryable=True,
+    )
 
 
 @app.command("doctor")
@@ -125,9 +159,7 @@ def init_command(
     name: Annotated[str, typer.Option("--name")] = "AI Engineering Project",
     project_type: Annotated[ProjectType, typer.Option("--project-type")] = ProjectType.GENERIC,
     risk_level: Annotated[RiskLevel, typer.Option("--risk-level")] = RiskLevel.MEDIUM,
-    oci_backend: Annotated[
-        SandboxBackend, typer.Option("--oci-backend")
-    ] = SandboxBackend.PODMAN,
+    oci_backend: Annotated[SandboxBackend, typer.Option("--oci-backend")] = SandboxBackend.PODMAN,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
     """Create a project configuration, document skeleton, and runtime database."""

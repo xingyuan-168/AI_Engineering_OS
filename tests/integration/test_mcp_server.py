@@ -41,6 +41,7 @@ def test_mcp_lists_the_public_runtime_tools() -> None:
         "host_operation_reconcile",
         "worktree_cleanup",
         "docs_check",
+        "environment_check",
         "gate_preflight",
         "verification_prepare",
         "verification_run",

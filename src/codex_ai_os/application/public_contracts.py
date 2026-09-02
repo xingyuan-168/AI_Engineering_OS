@@ -109,6 +109,12 @@ PUBLIC_TOOL_CONTRACTS: tuple[PublicToolContract, ...] = (
     ),
     PublicToolContract("worktree_cleanup", ("worktree cleanup",), "WorktreeService", True),
     PublicToolContract("docs_check", ("check-docs",), "DocumentManager", False),
+    PublicToolContract(
+        "environment_check",
+        ("environment check",),
+        "EnvironmentGovernanceService",
+        False,
+    ),
     PublicToolContract("verification_run", ("verify",), "VerificationService", True),
     PublicToolContract(
         "verification_prepare",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
@@ -44,9 +44,7 @@ class EnvironmentServiceSpec(StrictModel):
     @model_validator(mode="after")
     def stateful_service_has_recovery_contract(self) -> Self:
         if self.stateful and (
-            not self.persistent_targets
-            or not self.backup_command
-            or not self.restore_command
+            not self.persistent_targets or not self.backup_command or not self.restore_command
         ):
             raise ValueError(
                 "stateful services require persistent targets and backup/restore commands"
@@ -110,8 +108,50 @@ class EnvironmentContract(StrictModel):
         return self
 
 
+class EnvironmentFinding(StrictModel):
+    code: str
+    message: str
+    path: str | None = None
+    blocking: bool = True
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentRepairAction(StrictModel):
+    operation: str
+    path: str | None = None
+    expected: str | None = None
+    actual: str | None = None
+
+
+class EnvironmentDiskUsage(StrictModel):
+    project_bytes: int = Field(ge=0)
+    git_bytes: int = Field(ge=0)
+    host_dependency_bytes: int = Field(ge=0)
+    oci_images_bytes: int | None = Field(default=None, ge=0)
+    oci_build_cache_bytes: int | None = Field(default=None, ge=0)
+    oci_volumes_bytes: int | None = Field(default=None, ge=0)
+
+
+class EnvironmentCheckReport(StrictModel):
+    ok: bool
+    environment_mode: EnvironmentMode
+    oci_backend: SandboxBackend | None = None
+    backend_available: bool
+    compose_available: bool
+    contract_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    compose_hashes: dict[str, str] = Field(default_factory=dict)
+    disk_usage: EnvironmentDiskUsage
+    findings: tuple[EnvironmentFinding, ...]
+    repair_actions: tuple[EnvironmentRepairAction, ...]
+    checked_at: str
+
+
 __all__ = [
+    "EnvironmentCheckReport",
     "EnvironmentContract",
+    "EnvironmentDiskUsage",
+    "EnvironmentFinding",
+    "EnvironmentRepairAction",
     "EnvironmentServiceSpec",
     "HostBudget",
     "PersistentMountSpec",
