@@ -15,6 +15,7 @@ from codex_ai_os.domain.config import (
     NetworkMode,
     ProjectConfig,
 )
+from codex_ai_os.domain.environment import EnvironmentContract
 
 
 class ConfigError(ValueError):
@@ -95,6 +96,13 @@ def load_execution_policy(project_root: Path) -> ExecutionPolicy:
     if not path.is_file():
         return DEFAULT_EXECUTION_POLICY
     return load_yaml_model(path, ExecutionPolicy)
+
+
+def load_environment_contract(project_root: Path) -> EnvironmentContract:
+    path = project_root.resolve() / ".codex-os" / "environment.yaml"
+    if not path.is_file():
+        raise ConfigError(f"environment contract is missing: {path}")
+    return load_yaml_model(path, EnvironmentContract)
 
 
 def merge_execution_policy(

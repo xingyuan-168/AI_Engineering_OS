@@ -28,7 +28,7 @@ from codex_ai_os.application.verification_cache import (
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError, WorkflowResult
 from codex_ai_os.application.worktree import WorktreeService, WorktreeServiceError
 from codex_ai_os.cli.output import emit, error_envelope, success_envelope
-from codex_ai_os.domain.config import ProjectType, RiskLevel
+from codex_ai_os.domain.config import ProjectType, RiskLevel, SandboxBackend
 from codex_ai_os.domain.coordination import HandoffReviewInput
 from codex_ai_os.domain.governance import (
     ArtifactEvidenceInput,
@@ -125,6 +125,9 @@ def init_command(
     name: Annotated[str, typer.Option("--name")] = "AI Engineering Project",
     project_type: Annotated[ProjectType, typer.Option("--project-type")] = ProjectType.GENERIC,
     risk_level: Annotated[RiskLevel, typer.Option("--risk-level")] = RiskLevel.MEDIUM,
+    oci_backend: Annotated[
+        SandboxBackend, typer.Option("--oci-backend")
+    ] = SandboxBackend.PODMAN,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
     """Create a project configuration, document skeleton, and runtime database."""
@@ -136,6 +139,7 @@ def init_command(
             name=name,
             project_type=project_type,
             risk_level=risk_level,
+            oci_backend=oci_backend,
         )
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
@@ -150,6 +154,8 @@ def init_command(
         "documents_ok": result.document_report.ok,
         "repository_ready": result.repository_ready,
         "repository_blockers": list(result.repository_blockers),
+        "environment_mode": result.config.environment_mode.value,
+        "oci_backend": oci_backend.value,
     }
     emit(
         success_envelope(data),

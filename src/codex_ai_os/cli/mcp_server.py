@@ -31,7 +31,7 @@ from codex_ai_os.application.verification_cache import (
 )
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError, WorkflowResult
 from codex_ai_os.application.worktree import WorktreeService, WorktreeServiceError
-from codex_ai_os.domain.config import ProjectType, RiskLevel
+from codex_ai_os.domain.config import ProjectType, RiskLevel, SandboxBackend
 from codex_ai_os.domain.coordination import HandoffReviewInput
 from codex_ai_os.domain.governance import (
     ArtifactEvidenceInput,
@@ -80,6 +80,7 @@ def project_init(
     name: str,
     project_type: str = "generic",
     risk_level: str = "medium",
+    oci_backend: str = "podman",
 ) -> dict[str, Any]:
     """Initialize an idempotent local project, governed documents, and runtime database."""
 
@@ -90,6 +91,7 @@ def project_init(
             name=name,
             project_type=ProjectType(project_type),
             risk_level=RiskLevel(risk_level),
+            oci_backend=SandboxBackend(oci_backend),
         )
         return _success(
             project_id=result.config.project_id,
@@ -100,6 +102,8 @@ def project_init(
             documents_ok=result.document_report.ok,
             repository_ready=result.repository_ready,
             repository_blockers=list(result.repository_blockers),
+            environment_mode=result.config.environment_mode.value,
+            oci_backend=oci_backend,
         )
 
     return _invoke(operation)

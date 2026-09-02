@@ -4,6 +4,7 @@ import pytest
 
 from codex_ai_os.domain.config import (
     DEFAULT_EXECUTION_POLICY,
+    EnvironmentMode,
     GitPushPolicy,
     NetworkMode,
     ProjectConfig,
@@ -31,6 +32,8 @@ def test_project_config_resolves_source_inside_root(tmp_path: Path) -> None:
     assert config.root == tmp_path.resolve()
     assert config.source_of_truth == (tmp_path / "docs").resolve()
     assert config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
+    assert config.environment_mode is EnvironmentMode.LEGACY
+    assert DEFAULT_EXECUTION_POLICY.sandbox is SandboxBackend.PODMAN
 
 
 def test_project_config_rejects_source_outside_root(tmp_path: Path) -> None:
@@ -60,6 +63,7 @@ def test_project_loader_resolves_portable_root(tmp_path: Path) -> None:
 
     assert config.root == tmp_path.resolve()
     assert config.source_of_truth == (tmp_path / "docs").resolve()
+    assert config.environment_mode is EnvironmentMode.LEGACY
 
 
 def test_project_loader_rejects_managed_worktree_and_guides_to_coordinator(
@@ -105,7 +109,7 @@ def test_yaml_loader_rejects_unknown_fields(tmp_path: Path) -> None:
         ({"allow_host_execution": True}, "host execution"),
         ({"max_duration_seconds": 1801}, "cannot increase"),
         ({"approval_for": ["delete"]}, "cannot remove"),
-        ({"sandbox": "podman"}, "sandbox"),
+        ({"sandbox": "docker"}, "sandbox"),
     ],
 )
 def test_policy_merge_rejects_relaxation(override: dict[str, object], message: str) -> None:

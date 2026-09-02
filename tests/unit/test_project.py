@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from codex_ai_os.application.project import ProjectInitializer
-from codex_ai_os.domain.config import ProjectType
-from codex_ai_os.infrastructure.config import load_execution_policy
+from codex_ai_os.domain.config import EnvironmentMode, ProjectType
+from codex_ai_os.infrastructure.config import load_environment_contract, load_execution_policy
 from codex_ai_os.infrastructure.database import Database
 
 
@@ -34,12 +34,20 @@ def test_project_initialization_is_idempotent_and_preserves_user_content(tmp_pat
         "docs/PRODUCT_REQUIREMENTS.md: missing governance metadata",
     )
     assert first.context_path.is_file()
-    assert load_execution_policy(tmp_path).sandbox.value == "docker"
+    assert load_execution_policy(tmp_path).sandbox.value == "podman"
+    assert first.config.environment_mode is EnvironmentMode.OCI_FIRST
+    assert load_environment_contract(tmp_path).oci_backend.value == "podman"
+    assert (tmp_path / "compose.yaml").read_text(encoding="utf-8").endswith(
+        "services: {}\n"
+    )
+    assert (tmp_path / ".dockerignore").is_file()
+    assert (tmp_path / "docs" / "ENVIRONMENT.md").is_file()
     assert Database(first.database_path).current_version() == "0007"
     config_text = (tmp_path / ".codex-os" / "project.yaml").read_text(encoding="utf-8")
     assert "schema_version: '1.2'" in config_text
     assert "root: ." in config_text
     assert "source_of_truth: docs" in config_text
+    assert "environment_mode: oci-first" in config_text
 
 
 def test_project_registration_and_init_event_are_persisted(tmp_path: Path) -> None:
