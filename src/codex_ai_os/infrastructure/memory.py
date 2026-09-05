@@ -35,6 +35,7 @@ class MemoryRecord:
     tags: tuple[str, ...]
     scope: str
     status: str
+    state_version: int
     created_at: str
     updated_at: str
     expires_at: str | None
@@ -92,6 +93,7 @@ class MemoryStore:
             tags=tuple(dict.fromkeys(tags)),
             scope=scope,
             status=MemoryStatus.PENDING.value,
+            state_version=0,
             created_at=now,
             updated_at=now,
             expires_at=expires_at,
@@ -165,6 +167,7 @@ class MemoryStore:
         reviewer: str,
         decision: str,
         reason: str,
+        expected_version: int | None = None,
     ) -> MemoryRecord:
         decisions = {"activate", "needs_review", "revoke", "expire", "delete"}
         if decision not in decisions:
@@ -172,6 +175,12 @@ class MemoryStore:
         if not reviewer.strip() or not reason.strip():
             raise MemoryStoreError("Memory review requires reviewer and reason")
         record = self.get(memory_id)
+        version = record.state_version if expected_version is None else expected_version
+        if version != record.state_version:
+            raise MemoryStoreError(
+                f"STATE_VERSION_CONFLICT: expected Memory version {version}, "
+                f"found {record.state_version}"
+            )
         if decision == "activate" and record.status == MemoryStatus.ACTIVE.value:
             return record
         secret_ok = False
@@ -205,8 +214,8 @@ class MemoryStore:
                     INSERT INTO memory_reviews(
                         id, memory_id, reviewer, decision, reason, source_hashes_json,
                         secret_check_passed, scope_check_passed,
-                        confidence_check_passed, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        confidence_check_passed, expected_version, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         review_id,
@@ -218,16 +227,19 @@ class MemoryStore:
                         int(secret_ok),
                         int(scope_ok),
                         int(confidence_ok),
+                        version,
                         now,
                     ),
                 )
                 changed = connection.execute(
-                    "UPDATE memory_records SET status = ?, updated_at = ? "
-                    "WHERE id = ? AND project_id = ?",
-                    (target, now, memory_id, self.project_id),
+                    "UPDATE memory_records SET status = ?, state_version = state_version + 1, "
+                    "updated_at = ? WHERE id = ? AND project_id = ? AND state_version = ?",
+                    (target, now, memory_id, self.project_id, version),
                 ).rowcount
                 if changed != 1:
-                    raise MemoryStoreError(f"Memory record not found: {memory_id}")
+                    raise MemoryStoreError(
+                        f"STATE_VERSION_CONFLICT: Memory {memory_id} changed during review"
+                    )
                 connection.execute(
                     "UPDATE memory_search_documents SET status = ?, updated_at = ? "
                     "WHERE memory_id = ? AND project_id = ?",
@@ -273,9 +285,10 @@ class MemoryStore:
                     (new_memory_id, old_memory_id, now),
                 )
                 connection.execute(
-                    "UPDATE memory_records SET status = 'superseded', updated_at = ? "
-                    "WHERE id = ? AND project_id = ?",
-                    (now, old_memory_id, self.project_id),
+                    "UPDATE memory_records SET status = 'superseded', "
+                    "state_version = state_version + 1, updated_at = ? "
+                    "WHERE id = ? AND project_id = ? AND state_version = ?",
+                    (now, old_memory_id, self.project_id, old.state_version),
                 )
                 connection.execute(
                     "UPDATE memory_search_documents SET status = 'superseded', updated_at = ? "
@@ -456,6 +469,7 @@ def _from_row(row: sqlite3.Row) -> MemoryRecord:
         tags=tags,
         scope=str(row["scope"]),
         status=str(row["status"]),
+        state_version=int(row["state_version"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         expires_at=str(row["expires_at"]) if row["expires_at"] is not None else None,

@@ -1,0 +1,5 @@
+schema_version: '1.2'
+gate: G4
+required_artifact_types: [environment-manifest, environment-rebuild-report, data-recovery]
+required_records: [environment-reconciliation]
+git: {source_commit_required: true, push_required: true, enforce_allowed_paths: true}

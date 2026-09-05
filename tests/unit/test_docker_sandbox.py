@@ -69,7 +69,13 @@ def test_command_enforces_offline_non_root_read_only_resource_limits(tmp_path: P
     ("command", "message"),
     [
         (("curl", "https://example.invalid"), "command is not allowed"),
+        (("cmd", "/c", "dir"), "command is not allowed"),
+        (("powershell", "Get-ChildItem"), "command is not allowed"),
         (("git", "reset", "--hard"), "Git subcommand is blocked"),
+        (("git", "branch", "-D", "obsolete"), "Destructive Git ref mutation"),
+        (("git", "update-ref", "-d", "refs/heads/obsolete"), "Destructive Git ref mutation"),
+        (("git", "checkout", "--", "file.txt"), "Destructive Git checkout"),
+        (("git", "restore", "file.txt"), "Git restore is blocked"),
         (("git", "-C", "/", "status"), "path redirection"),
         ((), "command is not allowed"),
     ],

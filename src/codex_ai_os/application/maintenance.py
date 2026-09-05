@@ -1,0 +1,414 @@
+"""Explicit maintenance operation scheduling for Plugin API 1.2."""
+
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import cast
+
+from codex_ai_os.application.verification_cache import (
+    DEFAULT_VERIFICATION_PLATFORM,
+    DEFAULT_VERIFICATION_PYTHON,
+    VerificationCachePrepareError,
+    validate_verification_target,
+)
+from codex_ai_os.domain.config import RiskLevel
+from codex_ai_os.domain.invocation import InvocationContext
+from codex_ai_os.domain.operations import (
+    HostOperation,
+    HostOperationKind,
+    HostOperationStatus,
+    ReconciliationOutcome,
+)
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
+from codex_ai_os.domain.workflow import ActionKind, NextAction
+from codex_ai_os.infrastructure.config import load_project_config
+from codex_ai_os.infrastructure.database import Database, MigrationError, MigrationResult
+from codex_ai_os.infrastructure.operations import HostOperationError, HostOperationStore
+from codex_ai_os.infrastructure.workflows import WorkflowNotFoundError, WorkflowStore
+
+
+class MaintenanceOperationError(RuntimeError):
+    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledOperation:
+    operation: HostOperation
+
+    @property
+    def next_action(self) -> NextAction:
+        return host_operation_action(self.operation)
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseMigrationCommandResult:
+    migration: MigrationResult
+    operation: HostOperation
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciledOperation:
+    operation: HostOperation
+
+    @property
+    def next_action(self) -> NextAction | None:
+        if self.operation.status is HostOperationStatus.PENDING:
+            return host_operation_action(self.operation)
+        return None
+
+
+class VerificationPrepareService:
+    """Persist the approved network preparation intent before cache side effects."""
+
+    def __init__(self, project_root: Path) -> None:
+        self.config = load_project_config(project_root.resolve())
+        self.database = Database(self.config.root / ".codex-os" / "state" / "state.db")
+        self.operations = HostOperationStore(self.database)
+        self.workflows = WorkflowStore(self.database)
+
+    def prepare(
+        self,
+        *,
+        run_id: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        network_approval_ref: str,
+        expires_at: str,
+        target_python: str = DEFAULT_VERIFICATION_PYTHON,
+        platform: str = DEFAULT_VERIFICATION_PLATFORM,
+    ) -> ScheduledOperation:
+        if not network_approval_ref.strip():
+            raise MaintenanceOperationError(
+                "APPROVAL_REQUIRED", "network_approval_ref is required"
+            )
+        if not expires_at.strip():
+            raise MaintenanceOperationError("CONFIG_INVALID", "expires_at is required")
+        try:
+            validate_verification_target(platform, target_python, expires_at)
+        except VerificationCachePrepareError as exc:
+            raise MaintenanceOperationError(exc.code, str(exc)) from exc
+        lock_path = self.config.root / "uv.lock"
+        if not lock_path.is_file():
+            raise MaintenanceOperationError(
+                "DEPENDENCY_UNVERIFIED", "uv.lock is required for verification prepare"
+            )
+        try:
+            run = self.workflows.get_run(run_id)
+        except WorkflowNotFoundError as exc:
+            raise MaintenanceOperationError("RECOVERY_UNAVAILABLE", str(exc)) from exc
+        if run.project_id != self.config.project_id:
+            raise MaintenanceOperationError(
+                "STATE_VERSION_CONFLICT", "workflow belongs to a different project"
+            )
+        if run.state_version != expected_state_version:
+            raise MaintenanceOperationError(
+                "STATE_VERSION_CONFLICT",
+                f"expected workflow state version {expected_state_version}, "
+                f"found {run.state_version}",
+                retryable=True,
+            )
+        request = {
+            "schema_version": RUNTIME_VERSIONS.api,
+            "run_id": run_id,
+            "expected_state_version": expected_state_version,
+            "network_approval_ref": network_approval_ref,
+            "expires_at": expires_at,
+            "target_python": target_python,
+            "platform": platform,
+            "uv_lock_hash": _sha256(lock_path),
+            "execution_image": RUNTIME_VERSIONS.execution_image,
+        }
+        try:
+            operation = self.operations.ensure_pending(
+                project_id=self.config.project_id,
+                run_id=run_id,
+                kind=HostOperationKind.VERIFICATION_PREPARE,
+                idempotency_key=idempotency_key,
+                request=request,
+                expected_state_version=expected_state_version,
+            )
+        except HostOperationError as exc:
+            raise MaintenanceOperationError(
+                exc.code, str(exc), retryable=exc.retryable
+            ) from exc
+        return ScheduledOperation(operation)
+
+
+class DatabaseMigrationService:
+    """Persist migration intent before executing the recoverable database side effect."""
+
+    def __init__(self, project_root: Path) -> None:
+        self.config = load_project_config(project_root.resolve())
+        self.database = Database(self.config.root / ".codex-os" / "state" / "state.db")
+
+    def migrate(
+        self,
+        *,
+        expected_schema_version: str,
+        target_schema_version: str,
+        idempotency_key: str,
+        invocation: InvocationContext,
+    ) -> DatabaseMigrationCommandResult:
+        if target_schema_version != RUNTIME_VERSIONS.sqlite_schema:
+            raise MaintenanceOperationError(
+                "CONFIG_INVALID",
+                f"unsupported target schema {target_schema_version}; "
+                f"expected {RUNTIME_VERSIONS.sqlite_schema}",
+            )
+        request = {
+            "schema_version": RUNTIME_VERSIONS.api,
+            "expected_schema_version": expected_schema_version,
+            "target_schema_version": target_schema_version,
+        }
+        current = self.database.current_version() or "none"
+        if current == expected_schema_version and current != target_schema_version:
+            try:
+                self.database.bootstrap_host_operation_intents()
+            except MigrationError as exc:
+                raise MaintenanceOperationError(
+                    "MIGRATION_INTENT_UNAVAILABLE", str(exc)
+                ) from exc
+        operations = HostOperationStore(self.database)
+        try:
+            existing = operations.find_by_idempotency(
+                project_id=self.config.project_id,
+                kind=HostOperationKind.DATABASE_MIGRATE,
+                idempotency_key=idempotency_key,
+            )
+            if existing is not None:
+                operation = operations.ensure_pending(
+                    project_id=self.config.project_id,
+                    kind=HostOperationKind.DATABASE_MIGRATE,
+                    idempotency_key=idempotency_key,
+                    request=request,
+                )
+                if operation.status is HostOperationStatus.SUCCEEDED:
+                    if (self.database.current_version() or "none") != target_schema_version:
+                        raise MaintenanceOperationError(
+                            "STATE_VERSION_CONFLICT",
+                            "migration operation succeeded but database schema drifted",
+                        )
+                    return DatabaseMigrationCommandResult(
+                        _migration_result(operation.result), operation
+                    )
+                if (self.database.current_version() or "none") == target_schema_version:
+                    return self._reconcile_completed_migration(
+                        operation=operation,
+                        request=request,
+                        expected_schema_version=expected_schema_version,
+                        target_schema_version=target_schema_version,
+                    )
+            current = self.database.current_version() or "none"
+            if current != expected_schema_version:
+                raise MaintenanceOperationError(
+                    "STATE_VERSION_CONFLICT",
+                    f"expected SQLite schema {expected_schema_version}, found {current}",
+                    retryable=True,
+                )
+            operation = operations.ensure_pending(
+                project_id=self.config.project_id,
+                kind=HostOperationKind.DATABASE_MIGRATE,
+                idempotency_key=idempotency_key,
+                request=request,
+            )
+            acquired = operations.acquire(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=invocation.principal,
+            )
+            try:
+                migration = self.database.migrate(applied_by=invocation.principal)
+            except MigrationError as exc:
+                operations.mark_failed(
+                    acquired.operation_id,
+                    expected_version=acquired.state_version,
+                    lease_owner=invocation.principal,
+                    error_code="MIGRATION_FAILED",
+                )
+                raise MaintenanceOperationError("MIGRATION_FAILED", str(exc)) from exc
+            result = {
+                **request,
+                "previous_schema_version": current,
+                "applied_versions": list(migration.applied_versions),
+                "current_version": migration.current_version,
+                "backup_path": (
+                    migration.backup_path.as_posix()
+                    if migration.backup_path is not None
+                    else None
+                ),
+            }
+            operation = operations.mark_succeeded(
+                acquired.operation_id,
+                expected_version=acquired.state_version,
+                lease_owner=invocation.principal,
+                result=result,
+            )
+        except HostOperationError as exc:
+            raise MaintenanceOperationError(
+                exc.code, str(exc), retryable=exc.retryable
+            ) from exc
+        return DatabaseMigrationCommandResult(migration, operation)
+
+    def _reconcile_completed_migration(
+        self,
+        *,
+        operation: HostOperation,
+        request: Mapping[str, object],
+        expected_schema_version: str,
+        target_schema_version: str,
+    ) -> DatabaseMigrationCommandResult:
+        """Rebuild completion after a crash between migration and operation update."""
+
+        self.database.integrity_check()
+        result: dict[str, object] = {
+            **request,
+            "previous_schema_version": expected_schema_version,
+            "applied_versions": (
+                []
+                if expected_schema_version == target_schema_version
+                else [target_schema_version]
+            ),
+            "current_version": target_schema_version,
+            "backup_path": operation.result.get("backup_path"),
+            "recovered_after_outcome_unknown": True,
+        }
+        reconciling = self._operation_for_recovery(operation)
+        reconciled = HostOperationStore(self.database).reconcile(
+            reconciling.operation_id,
+            expected_version=reconciling.state_version,
+            outcome=ReconciliationOutcome.SUCCEEDED,
+            result=result,
+        )
+        return DatabaseMigrationCommandResult(_migration_result(result), reconciled)
+
+    def _operation_for_recovery(self, operation: HostOperation) -> HostOperation:
+        operations = HostOperationStore(self.database)
+        if operation.status is HostOperationStatus.RECONCILE_REQUIRED:
+            return operation
+        return operations.require_reconciliation(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            error_code="MIGRATION_OUTCOME_RECOVERED",
+        )
+
+
+def _migration_result(result: dict[str, object]) -> MigrationResult:
+    applied_value = result.get("applied_versions")
+    if not isinstance(applied_value, list):
+        raise MaintenanceOperationError(
+            "RECOVERY_UNAVAILABLE", "stored migration result is incomplete"
+        )
+    applied_items = cast(list[object], applied_value)
+    if not all(isinstance(item, str) for item in applied_items):
+        raise MaintenanceOperationError(
+            "RECOVERY_UNAVAILABLE", "stored migration result is incomplete"
+        )
+    current_value = result.get("current_version")
+    if current_value is not None and not isinstance(current_value, str):
+        raise MaintenanceOperationError(
+            "RECOVERY_UNAVAILABLE", "stored migration version is invalid"
+        )
+    backup_value = result.get("backup_path")
+    if backup_value is not None and not isinstance(backup_value, str):
+        raise MaintenanceOperationError(
+            "RECOVERY_UNAVAILABLE", "stored migration backup path is invalid"
+        )
+    return MigrationResult(
+        tuple(cast(str, item) for item in applied_items),
+        current_value,
+        Path(backup_value) if backup_value is not None else None,
+    )
+
+
+class HostOperationMaintenanceService:
+    """Expose explicit reconciliation without replaying unknown side effects."""
+
+    def __init__(self, project_root: Path) -> None:
+        self.config = load_project_config(project_root.resolve())
+        self.database = Database(self.config.root / ".codex-os" / "state" / "state.db")
+        self.database.migrate()
+        self.operations = HostOperationStore(self.database)
+        self.workflows = WorkflowStore(self.database)
+
+    def reconcile(
+        self,
+        *,
+        operation_id: str,
+        expected_operation_version: int,
+        idempotency_key: str,
+        outcome: ReconciliationOutcome,
+        error_code: str | None = None,
+    ) -> ReconciledOperation:
+        try:
+            operation = self.operations.get(operation_id)
+            if operation.project_id != self.config.project_id:
+                raise HostOperationError(
+                    "RECOVERY_UNAVAILABLE",
+                    "host operation belongs to a different project",
+                )
+            if operation.idempotency_key != idempotency_key:
+                raise HostOperationError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "host operation idempotency key does not match persisted intent",
+                )
+            reconciled = self.operations.reconcile(
+                operation_id,
+                expected_version=expected_operation_version,
+                outcome=outcome,
+                error_code=error_code,
+            )
+            if reconciled.run_id is not None and reconciled.status in {
+                HostOperationStatus.SUCCEEDED,
+                HostOperationStatus.FAILED,
+            }:
+                self.workflows.finalize_cancellation_if_ready(reconciled.run_id)
+        except HostOperationError as exc:
+            raise MaintenanceOperationError(
+                exc.code, str(exc), retryable=exc.retryable
+            ) from exc
+        return ReconciledOperation(reconciled)
+
+
+def host_operation_action(operation: HostOperation) -> NextAction:
+    dependencies = tuple(
+        item
+        for item in (operation.handoff_id, operation.release_id, operation.task_id)
+        if item is not None
+    )
+    return NextAction(
+        kind=ActionKind.HOST_OPERATION,
+        operation_id=operation.operation_id,
+        task_id=operation.task_id,
+        task_group_id=operation.task_group_id,
+        dependencies=dependencies,
+        prompt=f"Execute or reconcile persisted {operation.kind.value} Host Operation.",
+        risk_level=RiskLevel.HIGH,
+        requires_repository_change=(
+            operation.kind is HostOperationKind.DATABASE_MIGRATE
+            or str(operation.request.get("operation_type", "")).startswith("environment_")
+        ),
+        expected_state_version=operation.expected_state_version,
+        expected_operation_version=operation.state_version,
+    )
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+__all__ = [
+    "DatabaseMigrationCommandResult",
+    "DatabaseMigrationService",
+    "HostOperationMaintenanceService",
+    "MaintenanceOperationError",
+    "ReconciledOperation",
+    "ScheduledOperation",
+    "VerificationPrepareService",
+    "host_operation_action",
+]

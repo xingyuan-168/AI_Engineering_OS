@@ -4,15 +4,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
-from codex_ai_os.adapters.docker import MountKind, SandboxMount, SandboxRequest
+from codex_ai_os.adapters.docker import (
+    MountKind,
+    SandboxMount,
+    SandboxRequest,
+    command_hash,
+)
 from codex_ai_os.application.execution import ExecutionService, ExecutionServiceError
+from codex_ai_os.application.verification_cache import (
+    VerificationCachePrepareError,
+    validate_verification_cache,
+)
 from codex_ai_os.domain.config import RiskLevel
 from codex_ai_os.domain.governance import CheckEvidenceInput, CheckStatus
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentManager
@@ -30,12 +44,90 @@ class VerificationResult:
 
 
 DEFAULT_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pytest", ("python", "-m", "pytest", "-q")),
+    (
+        "pytest",
+        (
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "--cov=codex_ai_os",
+            "--cov-branch",
+            "--cov-report=term-missing",
+            "--cov-fail-under=85",
+        ),
+    ),
     ("ruff", ("python", "-m", "ruff", "check", ".")),
     ("pyright", ("python", "-m", "pyright")),
     (
+        "docs",
+        ("python", "-m", "codex_ai_os.application.formal_checks", "docs", "/workspace"),
+    ),
+    (
         "secret-scan",
         ("python", "-m", "codex_ai_os.application.secret_scan", "/workspace"),
+    ),
+    (
+        "bandit",
+        (
+            "python",
+            "-m",
+            "bandit",
+            "-q",
+            "-r",
+            "src",
+            "--severity-level",
+            "high",
+            "--confidence-level",
+            "high",
+        ),
+    ),
+    (
+        "plugin-validator",
+        ("python", "-m", "pytest", "-q", "tests/unit/test_plugin_skills.py"),
+    ),
+    (
+        "skill-validator",
+        (
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/unit/test_plugin_skills.py",
+            "-k",
+            "skill_set",
+        ),
+    ),
+    (
+        "agent-validator",
+        ("python", "-m", "pytest", "-q", "tests/unit/test_agent_profiles.py"),
+    ),
+    (
+        "hook-fixture",
+        ("python", "-m", "pytest", "-q", "tests/integration/test_plugin_hooks.py"),
+    ),
+    (
+        "mcp-contract",
+        (
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/unit/test_mcp_v11.py",
+            "tests/integration/test_mcp_server.py",
+            "-k",
+            "not plugin_launcher",
+        ),
+    ),
+    (
+        "build-install",
+        (
+            "python",
+            "-m",
+            "codex_ai_os.application.formal_checks",
+            "build-install",
+            "/workspace",
+        ),
     ),
     (
         "dependency-audit",
@@ -57,6 +149,30 @@ DEFAULT_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "-q",
             "tests/unit/test_docker_sandbox.py",
             "tests/unit/test_git_evidence.py",
+        ),
+    ),
+    (
+        "real-oci",
+        ("python", "-m", "codex_ai_os.application.formal_checks", "real-oci"),
+    ),
+    (
+        "image-sbom",
+        (
+            "python",
+            "-m",
+            "codex_ai_os.application.formal_checks",
+            "image-sbom",
+            "/cache",
+        ),
+    ),
+    (
+        "image-scan",
+        (
+            "python",
+            "-m",
+            "codex_ai_os.application.formal_checks",
+            "image-scan",
+            "/cache",
         ),
     ),
 )
@@ -142,6 +258,10 @@ class VerificationService:
             else None
         )
         for name, command in checks:
+            if re.fullmatch(r"[a-z][a-z0-9-]{1,63}", name) is None:
+                raise ExecutionServiceError(
+                    "CONFIG_INVALID", f"invalid verification check name: {name}"
+                )
             execution_id = new_id("EXEC")
             request = SandboxRequest(
                 execution_id=execution_id,
@@ -166,41 +286,76 @@ class VerificationService:
             try:
                 record = self.execution.execute(request)
             except ExecutionServiceError as exc:
-                blockers.append(f"{name}:{exc.code}:{exc}")
-                continue
+                if exc.record is not None:
+                    record = exc.record
+                    blockers.append(f"{name}:{exc.code}:{exc}")
+                else:
+                    blockers.append(f"{name}:{exc.code}:{exc}")
+                    ended_at = datetime.now(UTC).isoformat()
+                    report = {
+                        "schema_version": RUNTIME_VERSIONS.api,
+                        "run_id": run_id,
+                        "task_id": task_id,
+                        "source_commit": source_commit,
+                        "check": name,
+                        "execution_id": execution_id,
+                        "command_hash": command_hash(request.command),
+                        "exit_code": 1,
+                        "status": CheckStatus.FAILED.value,
+                        "execution_status": "failed",
+                        "error_code": exc.code,
+                        "stdout_ref": None,
+                        "stderr_ref": None,
+                        "image_digest": request.image.rsplit("@", 1)[-1],
+                        "started_at": ended_at,
+                        "ended_at": ended_at,
+                    }
+                    evidence.append(
+                        self._write_check_evidence(
+                            report=report,
+                            run_id=run_id,
+                            name=name,
+                            source_commit=source_commit,
+                        )
+                    )
+                    continue
+            exit_code = record.exit_code if record.exit_code is not None else 1
+            status = (
+                CheckStatus.PASSED
+                if record.status == "completed" and exit_code == 0
+                else CheckStatus.FAILED
+            )
+            if status is CheckStatus.FAILED and not any(
+                blocker.startswith(f"{name}:") for blocker in blockers
+            ):
+                error_code = record.error_code or "EXECUTION_FAILED"
+                blockers.append(
+                    f"{name}:{error_code}:sandbox command failed with exit code {exit_code}"
+                )
             report = {
-                "schema_version": "1.1",
+                "schema_version": RUNTIME_VERSIONS.api,
                 "run_id": run_id,
                 "task_id": task_id,
                 "source_commit": source_commit,
                 "check": name,
                 "execution_id": record.id,
                 "command_hash": record.command_hash,
-                "exit_code": record.exit_code,
+                "exit_code": exit_code,
+                "status": status.value,
+                "execution_status": record.status,
+                "error_code": record.error_code,
                 "stdout_ref": record.stdout_ref,
                 "stderr_ref": record.stderr_ref,
                 "image_digest": record.image_digest,
                 "started_at": record.started_at,
                 "ended_at": record.ended_at,
             }
-            content = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-            relative = (
-                f".codex-os/artifacts/{run_id}/verification/{execution_id}-{name}.json"
-            )
-            manager = DocumentManager(self.root)
-            manager.write_atomic(relative, content, overwrite=False)
-            report_hash = hashlib.sha256(content.encode()).hexdigest()
             evidence.append(
-                CheckEvidenceInput(
+                self._write_check_evidence(
+                    report=report,
+                    run_id=run_id,
                     name=name,
-                    command_hash=record.command_hash,
-                    execution_id=record.id,
-                    exit_code=record.exit_code or 0,
-                    report_path=relative,
-                    report_hash=report_hash,
                     source_commit=source_commit,
-                    executed_at=record.ended_at or record.started_at,
-                    status=CheckStatus.PASSED,
                 )
             )
         return VerificationResult(
@@ -220,19 +375,46 @@ class VerificationService:
             )
         lock_hash = hashlib.sha256(lock.read_bytes()).hexdigest()
         wheelhouse = self.root / ".codex-os" / "cache" / "verification" / lock_hash
-        requirements = wheelhouse / "requirements.txt"
-        wheels = tuple(wheelhouse.glob("*.whl")) if wheelhouse.is_dir() else ()
-        audit_snapshot = wheelhouse / "audit-snapshot.json"
-        if (
-            not requirements.is_file()
-            or not wheels
-            or not audit_snapshot.is_file()
-        ):
+        try:
+            validate_verification_cache(wheelhouse, lock_path=lock)
+        except (
+            VerificationCachePrepareError,
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+        ) as exc:
             raise ExecutionServiceError(
-                "SANDBOX_DEPENDENCIES_UNAVAILABLE",
-                "offline verification cache is incomplete for the current uv.lock",
-            )
+                getattr(exc, "code", "DEPENDENCY_UNVERIFIED"), str(exc)
+            ) from exc
         return wheelhouse
+
+    def _write_check_evidence(
+        self,
+        *,
+        report: Mapping[str, object],
+        run_id: str,
+        name: str,
+        source_commit: str,
+    ) -> CheckEvidenceInput:
+        content = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        execution_id = str(report["execution_id"])
+        relative = (
+            f".codex-os/artifacts/{run_id}/verification/{execution_id}-{name}.json"
+        )
+        DocumentManager(self.root).write_atomic(relative, content, overwrite=False)
+        return CheckEvidenceInput(
+            name=name,
+            command_hash=str(report["command_hash"]),
+            execution_id=execution_id,
+            exit_code=cast(int, report["exit_code"]),
+            report_path=relative,
+            report_hash=hashlib.sha256(content.encode()).hexdigest(),
+            source_commit=source_commit,
+            started_at=str(report["started_at"]),
+            ended_at=str(report["ended_at"]),
+            executed_at=str(report["ended_at"] or report["started_at"]),
+            status=CheckStatus(str(report["status"])),
+        )
 
     def _git_metadata(
         self, source_root: Path, task_id: str, source_commit: str

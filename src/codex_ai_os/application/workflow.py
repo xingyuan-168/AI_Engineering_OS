@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import asdict, dataclass
+import json
+import re
+import subprocess
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
 
@@ -16,25 +19,48 @@ from codex_ai_os.adapters.git import (
     GitEvidenceVerifier,
 )
 from codex_ai_os.application.coordination import CoordinationService, IntegrationResult
+from codex_ai_os.application.environment_operations import (
+    EnvironmentOperationError,
+    EnvironmentOperationService,
+)
 from codex_ai_os.application.g4 import (
     G4Publisher,
     GitHubReleaseGovernanceService,
     ReleaseGovernanceError,
+)
+from codex_ai_os.application.governance_policy import (
+    GovernancePolicyCompiler,
+    GovernancePolicyError,
 )
 from codex_ai_os.application.repository import (
     RepositoryGovernanceError,
     RepositoryGovernanceService,
 )
 from codex_ai_os.application.routing import ProfileRouter
+from codex_ai_os.application.verification_cache import (
+    VerificationCachePrepareError,
+    VerificationCachePreparer,
+)
 from codex_ai_os.application.worktree import (
     TaskWorktreeAllocator,
     WorktreeService,
     WorktreeServiceError,
 )
 from codex_ai_os.domain.config import GitPushPolicy, RiskLevel
-from codex_ai_os.domain.coordination import HandoffReviewInput, TaskBlueprint
+from codex_ai_os.domain.coordination import (
+    HandoffReviewInput,
+    TaskBlueprint,
+    TaskGroupView,
+)
 from codex_ai_os.domain.governance import G4ApprovalInput
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.invocation import InvocationContext
+from codex_ai_os.domain.operations import (
+    HostOperation,
+    HostOperationKind,
+    HostOperationStatus,
+)
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import (
     AUTOMATIC_NEXT_PHASE,
     GATE_AFTER_PHASE,
@@ -55,6 +81,7 @@ from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.coordination import CoordinationError, CoordinationStore
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.evidence import EvidenceError, EvidenceStore
+from codex_ai_os.infrastructure.operations import HostOperationError, HostOperationStore
 from codex_ai_os.infrastructure.workflows import (
     WorkflowConflictError,
     WorkflowNotFoundError,
@@ -62,12 +89,25 @@ from codex_ai_os.infrastructure.workflows import (
 )
 from codex_ai_os.infrastructure.worktrees import WorktreeStore
 
+if TYPE_CHECKING:
+    from codex_ai_os.application.execution import ExecutionService
+
 
 class WorkflowError(RuntimeError):
-    def __init__(self, code: str, message: str, exit_code: int = 30) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        exit_code: int = 30,
+        *,
+        details: dict[str, object] | None = None,
+        retryable: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.exit_code = exit_code
+        self.details = details or {}
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,17 +127,258 @@ class WorkflowEngine:
         git_evidence: GitEvidenceVerifier | None = None,
         worktrees: TaskWorktreeAllocator | None = None,
         g4_publisher: G4Publisher | None = None,
+        verification_cache_preparer: VerificationCachePreparer | None = None,
+        release_execution_service: ExecutionService | None = None,
+        readonly: bool = False,
     ) -> None:
         self.config = load_project_config(project_root.resolve())
         database = Database(self.config.root / ".codex-os" / "state" / "state.db")
-        database.migrate()
+        if readonly:
+            current = database.current_version()
+            if current != RUNTIME_VERSIONS.sqlite_schema:
+                raise WorkflowError(
+                    "MIGRATION_REQUIRED",
+                    f"read-only workflow access requires SQLite "
+                    f"{RUNTIME_VERSIONS.sqlite_schema}, found {current}",
+                    40,
+                )
+        else:
+            database.migrate()
         self.store = WorkflowStore(database)
         self.evidence_store = EvidenceStore(database, self.config.root)
         self.coordination_store = CoordinationStore(database)
         self.worktree_store = WorktreeStore(database)
+        self.operations = HostOperationStore(database)
         self.git_evidence = git_evidence
-        self.worktrees = worktrees or WorktreeService(self.config.root)
-        self.g4_publisher = g4_publisher or GitHubReleaseGovernanceService(self.config.root)
+        self.worktrees = worktrees or (None if readonly else WorktreeService(self.config.root))
+        self.g4_publisher = g4_publisher or (
+            None if readonly else GitHubReleaseGovernanceService(self.config.root)
+        )
+        self.verification_cache_preparer = verification_cache_preparer or (
+            None if readonly else VerificationCachePreparer(self.config.root)
+        )
+        self.release_execution_service = release_execution_service
+        self.environment_operations = (
+            None if readonly else EnvironmentOperationService(self.config.root)
+        )
+
+    def create(
+        self,
+        goal: str,
+        *,
+        workflow_name: str = "new-project",
+        profiles: tuple[str, ...] = (),
+        target_branch: str | None = None,
+        impact_paths: tuple[str, ...] = (),
+        dependency_count: int = 0,
+        release_required: bool = False,
+        override_reason: str | None = None,
+        document_version_target: str | None = None,
+        idempotency_key: str,
+    ) -> WorkflowResult:
+        """Persist a routed workflow without allocating execution resources."""
+
+        normalized_goal = goal.strip()
+        if not normalized_goal or not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "goal and idempotency_key are required", 2)
+        start_phase = WORKFLOW_START_PHASE.get(workflow_name)
+        if start_phase is None:
+            raise WorkflowError("CONFIG_INVALID", f"unsupported workflow: {workflow_name}", 2)
+        selected_target = target_branch or self.config.target_branch
+        selected_document_version = (
+            document_version_target or self.config.document_version or RUNTIME_VERSIONS.software
+        )
+        if not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?",
+            selected_document_version,
+        ):
+            raise WorkflowError(
+                "CONFIG_INVALID", "document_version_target is not a valid version", 2
+            )
+        requested_profile_input = profiles or _default_profiles(self.config.project_type.value)
+        router = ProfileRouter(self.store.database, self.config)
+        try:
+            selected_profiles = router.select_profiles(requested_profile_input, impact_paths)
+        except ValueError as exc:
+            raise WorkflowError("CONFIG_INVALID", str(exc), 2) from exc
+        if len(selected_profiles) > self.config.max_parallel_agents:
+            raise WorkflowError("CONFIG_INVALID", "profiles exceed max_parallel_agents", 2)
+        request_hash = _request_hash(
+            {
+                "operation": "workflow_create",
+                "goal": normalized_goal,
+                "workflow_name": workflow_name,
+                "profiles": requested_profile_input,
+                "target_branch": selected_target,
+                "impact_paths": impact_paths,
+                "dependency_count": dependency_count,
+                "release_required": release_required,
+                "override_reason": override_reason,
+                "document_version_target": selected_document_version,
+            }
+        )
+        replay_hash = self.store.idempotency_request_hash(idempotency_key)
+        if replay_hash is not None:
+            if replay_hash != request_hash:
+                raise WorkflowError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "idempotency key was already used with a different workflow request",
+                    30,
+                )
+            replay_id = self.store.run_id_for_idempotency(idempotency_key)
+            if replay_id is None:
+                raise WorkflowError("RECOVERY_UNAVAILABLE", "workflow replay is missing", 30)
+            return self._result(self._get_run(replay_id))
+        if self.config.schema_version != "1.0":
+            try:
+                RepositoryGovernanceService(self.config.root, config=self.config).require_ready(
+                    target_branch=selected_target
+                )
+            except RepositoryGovernanceError as exc:
+                raise WorkflowError(exc.code, str(exc), 40) from exc
+        now = _utc_now()
+        run = WorkflowRun(
+            id=new_id("RUN"),
+            project_id=self.config.project_id,
+            workflow_name=workflow_name,
+            goal=normalized_goal,
+            workflow_phase=start_phase,
+            run_status=RunStatus.CREATED,
+            state_version=0,
+            risk_level=self.config.risk_level,
+            checkpoint={
+                "next_action": None,
+                "next_actions": [],
+                "document_version_target": selected_document_version,
+            },
+            config_hash=self.store.project_config_hash(self.config.project_id),
+            created_at=now,
+            updated_at=now,
+            profiles=selected_profiles,
+            target_branch=selected_target,
+            max_parallel_agents=self.config.max_parallel_agents,
+        )
+        created = self.store.create_run(
+            run, None, idempotency_key=idempotency_key, request_hash=request_hash
+        )
+        if self.config.schema_version != "1.0":
+            router.route(
+                run_id=created.id,
+                requested_profiles=requested_profile_input,
+                impact_paths=impact_paths,
+                source_commit=None,
+                workflow_name=workflow_name,
+                dependency_count=dependency_count,
+                release_required=release_required,
+                override_reason=override_reason,
+            )
+        return self._result(created)
+
+    def begin(
+        self,
+        run_id: str,
+        *,
+        expected_state_version: int,
+        idempotency_key: str,
+    ) -> WorkflowResult:
+        """Atomically create the first task for a persisted created workflow."""
+
+        if not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "idempotency_key is required", 2)
+        request_hash = _request_hash(
+            {
+                "operation": "workflow_begin",
+                "run_id": run_id,
+                "expected_state_version": expected_state_version,
+            }
+        )
+        replay_hash = self.store.idempotency_request_hash(idempotency_key)
+        if replay_hash is not None:
+            if replay_hash != request_hash:
+                raise WorkflowError("IDEMPOTENCY_CONFLICT", "begin request changed", 30)
+            return self._result(self._get_run(run_id))
+        run = self._get_run(run_id)
+        if run.state_version != expected_state_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT", "workflow state version changed before begin", 30
+            )
+        if run.run_status is not RunStatus.CREATED:
+            raise WorkflowError("STATE_CONFLICT", "only a created workflow can begin", 30)
+        task, action = self._task_and_action(
+            run.id,
+            run.workflow_phase,
+            state_version=run.state_version + 1,
+            goal=run.goal,
+        )
+        checkpoint = _checkpoint(
+            action,
+            previous=run.checkpoint,
+            document_version_target=str(run.checkpoint.get("document_version_target") or ""),
+        )
+        try:
+            begun = self.store.begin_run(
+                run=run,
+                task=task,
+                checkpoint=checkpoint,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+            )
+        except WorkflowConflictError as exc:
+            raise WorkflowError("STATE_VERSION_CONFLICT", str(exc), 30) from exc
+        self._allocate_or_block(begun, task, base_ref="HEAD")
+        return self._result(self._get_run(run.id))
+
+    def cancel(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        requested_by: str = "local-user",
+    ) -> WorkflowResult:
+        """Request auditable cancellation without hiding external side effects."""
+
+        normalized_reason = reason.strip()
+        if not normalized_reason or not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "reason and idempotency_key are required", 2)
+        request_hash = _request_hash(
+            {
+                "operation": "workflow_cancel",
+                "run_id": run_id,
+                "reason": normalized_reason,
+                "expected_state_version": expected_state_version,
+                "requested_by": requested_by,
+            }
+        )
+        replay_hash = self.store.idempotency_request_hash(idempotency_key)
+        if replay_hash is not None:
+            if replay_hash != request_hash:
+                raise WorkflowError("IDEMPOTENCY_CONFLICT", "cancel request changed", 30)
+            return self._result(self._get_run(run_id))
+        run = self._get_run(run_id)
+        if run.state_version != expected_state_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT", "workflow state version changed before cancel", 30
+            )
+        if run.run_status in {RunStatus.COMPLETED, RunStatus.CANCELLED}:
+            raise WorkflowError("STATE_CONFLICT", "terminal workflow cannot be cancelled", 30)
+        try:
+            cancelled = self.store.cancel_transition(
+                run=run,
+                reason=normalized_reason,
+                requested_by=requested_by,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+            )
+        except WorkflowConflictError as exc:
+            code = (
+                "CANCELLATION_BLOCKED_EXTERNAL_COMMITMENT"
+                if "published release" in str(exc)
+                else "STATE_VERSION_CONFLICT"
+            )
+            raise WorkflowError(code, str(exc), 40) from exc
+        return self._result(cancelled)
 
     def start(
         self,
@@ -106,6 +387,11 @@ class WorkflowEngine:
         workflow_name: str = "new-project",
         profiles: tuple[str, ...] = (),
         target_branch: str | None = None,
+        impact_paths: tuple[str, ...] = (),
+        dependency_count: int = 0,
+        release_required: bool = False,
+        override_reason: str | None = None,
+        document_version_target: str | None = None,
     ) -> WorkflowResult:
         normalized_goal = goal.strip()
         if not normalized_goal:
@@ -125,14 +411,29 @@ class WorkflowEngine:
             return self._result(existing)
 
         selected_target = target_branch or self.config.target_branch
-        selected_profiles = profiles or _default_profiles(self.config.project_type.value)
+        selected_document_version = (
+            document_version_target or self.config.document_version or RUNTIME_VERSIONS.software
+        )
+        if not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?",
+            selected_document_version,
+        ):
+            raise WorkflowError(
+                "CONFIG_INVALID", "document_version_target is not a valid version", 2
+            )
+        requested_profile_input = profiles or _default_profiles(self.config.project_type.value)
+        router = ProfileRouter(self.store.database, self.config)
+        try:
+            selected_profiles = router.select_profiles(requested_profile_input, impact_paths)
+        except ValueError as exc:
+            raise WorkflowError("CONFIG_INVALID", str(exc), 2) from exc
         if len(selected_profiles) > self.config.max_parallel_agents:
             raise WorkflowError("CONFIG_INVALID", "profiles exceed max_parallel_agents", 2)
-        if self.config.schema_version == "1.1":
+        if self.config.schema_version != "1.0":
             try:
-                RepositoryGovernanceService(
-                    self.config.root, config=self.config
-                ).require_ready(target_branch=selected_target)
+                RepositoryGovernanceService(self.config.root, config=self.config).require_ready(
+                    target_branch=selected_target
+                )
             except RepositoryGovernanceError as exc:
                 raise WorkflowError(exc.code, str(exc), 40) from exc
 
@@ -153,7 +454,10 @@ class WorkflowEngine:
             run_status=RunStatus.RUNNING,
             state_version=0,
             risk_level=self.config.risk_level,
-            checkpoint=_checkpoint(action),
+            checkpoint=_checkpoint(
+                action,
+                document_version_target=selected_document_version,
+            ),
             config_hash=self.store.project_config_hash(self.config.project_id),
             created_at=now,
             updated_at=now,
@@ -162,11 +466,16 @@ class WorkflowEngine:
             max_parallel_agents=self.config.max_parallel_agents,
         )
         created = self.store.create_run(run, task)
-        if self.config.schema_version == "1.1":
-            ProfileRouter(self.store.database, self.config).route(
+        if self.config.schema_version != "1.0":
+            router.route(
                 run_id=created.id,
-                requested_profiles=selected_profiles,
+                requested_profiles=requested_profile_input,
+                impact_paths=impact_paths,
                 source_commit=None,
+                workflow_name=workflow_name,
+                dependency_count=dependency_count,
+                release_required=release_required,
+                override_reason=override_reason,
             )
         self._allocate_or_block(created, task, base_ref="HEAD")
         return self._result(self.store.get_run(created.id))
@@ -177,7 +486,97 @@ class WorkflowEngine:
         except WorkflowNotFoundError as exc:
             raise WorkflowError("RECOVERY_UNAVAILABLE", str(exc), 30) from exc
 
-    def complete_task(self, run_id: str, completion: TaskCompletion) -> WorkflowResult:
+    def gate_preflight(
+        self,
+        run_id: str,
+        *,
+        gate: Gate,
+        expected_state_version: int | None = None,
+    ) -> dict[str, object]:
+        """Evaluate the exact approval rules without writing runtime state."""
+
+        run = self._get_run(run_id)
+        if expected_state_version is not None and run.state_version != expected_state_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "workflow state version changed before Gate preflight",
+                30,
+                retryable=True,
+            )
+        pending_gate = run.checkpoint.get("pending_gate")
+        if run.run_status is not RunStatus.NEEDS_APPROVAL or pending_gate != gate.value:
+            raise WorkflowError(
+                "APPROVAL_REQUIRED",
+                f"workflow is not waiting for {gate.value}",
+                20,
+            )
+        source_commit = str(run.checkpoint.get("last_commit_sha") or "")
+        if not source_commit:
+            raise WorkflowError(
+                "EVIDENCE_INCOMPLETE",
+                "gate has no commit-bound source evidence",
+                40,
+                details={
+                    "gate": gate.value,
+                    "repair_actions": [
+                        {
+                            "operation": "amend_task_evidence",
+                            "expected": "commit-bound task evidence",
+                            "actual": "missing",
+                            "allowed": True,
+                        }
+                    ],
+                },
+                retryable=True,
+            )
+        try:
+            bundle = self.evidence_store.evaluate_gate_bundle(
+                run_id=run.id,
+                gate=gate,
+                state_version=run.state_version,
+                source_commit=source_commit,
+            )
+        except EvidenceError as exc:
+            raise WorkflowError(
+                exc.code,
+                str(exc),
+                40,
+                details=exc.details,
+                retryable=exc.retryable,
+            ) from exc
+        task_id = run.checkpoint.get("last_completed_task")
+        repair_actions = [{**action, "task_id": task_id} for action in bundle.repair_actions]
+        if repair_actions:
+            repair_actions.append(
+                {
+                    "operation": "amend_task_evidence",
+                    "task_id": task_id,
+                    "expected": "successor Commit with corrected complete evidence",
+                    "actual": "Gate blocked",
+                    "allowed": True,
+                }
+            )
+        return {
+            "valid": bundle.status == "complete" and not bundle.missing,
+            "gate": gate.value,
+            "state_version": run.state_version,
+            "source_commit": bundle.source_commit,
+            "policy_hash": bundle.policy_hash,
+            "requirements_hash": bundle.requirements_hash,
+            "evidence_bundle_hash": bundle.bundle_hash,
+            "requirements": bundle.requirements or {},
+            "findings": list(bundle.missing),
+            "repair_actions": repair_actions,
+        }
+
+    def complete_task(
+        self,
+        run_id: str,
+        completion: TaskCompletion,
+        *,
+        expected_task_version: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> WorkflowResult:
         run = self._get_run(run_id)
         self._require_migration_revalidation(run)
         task = self._get_task(completion.task_id)
@@ -190,10 +589,18 @@ class WorkflowEngine:
             if task.output_ref == completion_json:
                 return self._result(run)
             raise WorkflowError(
-                "STATE_CONFLICT",
+                "IDEMPOTENCY_CONFLICT",
                 "task already completed with different evidence",
                 30,
             )
+        if expected_task_version is not None and task.state_version != expected_task_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "task state version changed before completion",
+                30,
+            )
+        if idempotency_key is not None and not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "idempotency_key cannot be empty", 2)
 
         actions = _actions_from_checkpoint(run.checkpoint)
         action = next(
@@ -241,9 +648,7 @@ class WorkflowEngine:
                     assignment = self.worktree_store.get_for_task(task.id)
                     verifier = GitEvidenceService(
                         Path(task.worktree) if task.worktree is not None else self.config.root,
-                        require_push=(
-                            self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
-                        ),
+                        require_push=(self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED),
                         base_commit=(assignment.base_commit if assignment is not None else None),
                         allowed_paths=action.allowed_paths,
                     )
@@ -268,7 +673,7 @@ class WorkflowEngine:
                 "verified_at": evidence.verified_at,
                 "changed_paths": list(evidence.changed_paths),
             }
-            if self.config.schema_version == "1.1":
+            if self.config.schema_version != "1.0":
                 try:
                     self.evidence_store.record_task_evidence(
                         run_id=run.id,
@@ -282,6 +687,12 @@ class WorkflowEngine:
         if task.task_group_id is not None:
             if completion.commit_sha is None:
                 raise WorkflowError("GIT_EVIDENCE_REQUIRED", "task Commit is required", 40)
+            if run.workflow_phase is WorkflowPhase.RELEASE:
+                from codex_ai_os.application.release import ReleaseCandidateService
+
+                ReleaseCandidateService(self.config.root).bind_candidate_commit(
+                    run.id, task.id, completion.commit_sha
+                )
             try:
                 handoff_id = self.coordination_store.submit_handoff(
                     task_id=task.id,
@@ -307,7 +718,7 @@ class WorkflowEngine:
 
         next_version = run.state_version + 1
         next_task: TaskRecord | None = None
-        if gate := GATE_AFTER_PHASE.get(run.workflow_phase):
+        if gate := _gate_after_action_phase(run.workflow_phase, run.profiles):
             next_action = NextAction(
                 kind=ActionKind.APPROVAL,
                 gate=gate,
@@ -318,12 +729,13 @@ class WorkflowEngine:
             target_status = RunStatus.NEEDS_APPROVAL
             checkpoint = _checkpoint(
                 next_action,
+                previous=run.checkpoint,
                 pending_gate=gate,
                 last_completed_task=task.id,
                 last_commit_sha=completion.commit_sha,
                 evidence_refs=tuple(completion.artifact_paths_and_hashes),
             )
-        elif next_phase := AUTOMATIC_NEXT_PHASE.get(run.workflow_phase):
+        elif next_phase := _next_phase_after_action(run.workflow_phase, run.profiles):
             next_task, next_action = self._task_and_action(
                 run.id,
                 next_phase,
@@ -332,7 +744,11 @@ class WorkflowEngine:
             )
             target_phase = next_phase
             target_status = RunStatus.RUNNING
-            checkpoint = _checkpoint(next_action, last_completed_task=task.id)
+            checkpoint = _checkpoint(
+                next_action,
+                previous=run.checkpoint,
+                last_completed_task=task.id,
+            )
         else:
             raise WorkflowError(
                 "STATE_CONFLICT",
@@ -360,6 +776,172 @@ class WorkflowEngine:
             )
         return self._result(self.store.get_run(updated.id))
 
+    def amend_task_evidence(
+        self,
+        run_id: str,
+        completion: TaskCompletion,
+        *,
+        expected_task_version: int,
+        expected_state_version: int,
+        idempotency_key: str,
+    ) -> WorkflowResult:
+        """Append corrected commit-bound evidence while a Gate is still pending."""
+
+        if not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "idempotency_key cannot be empty", 2)
+        if completion.change_kind.value != "repository" or completion.commit_sha is None:
+            raise WorkflowError(
+                "GIT_EVIDENCE_REQUIRED",
+                "evidence amendment requires repository completion evidence",
+                40,
+            )
+        request_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "expected_task_version": expected_task_version,
+                    "expected_state_version": expected_state_version,
+                    "completion": completion.model_dump(mode="json"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        previous_hash = self.store.idempotency_request_hash(idempotency_key)
+        if previous_hash is not None:
+            if previous_hash == request_hash:
+                return self._result(self._get_run(run_id))
+            raise WorkflowError(
+                "IDEMPOTENCY_CONFLICT",
+                "idempotency key was already used with different evidence",
+                30,
+            )
+
+        run = self._get_run(run_id)
+        task = self._get_task(completion.task_id)
+        if run.state_version != expected_state_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "workflow state version changed before evidence amendment",
+                30,
+                retryable=True,
+            )
+        if task.state_version != expected_task_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "task state version changed before evidence amendment",
+                30,
+                retryable=True,
+            )
+        if (
+            run.run_status is not RunStatus.NEEDS_APPROVAL
+            or not run.checkpoint.get("pending_gate")
+            or run.checkpoint.get("last_completed_task") != task.id
+            or task.status is not TaskStatus.COMPLETED
+        ):
+            raise WorkflowError(
+                "APPROVAL_REQUIRED",
+                "only the task producing the current pending Gate may amend evidence",
+                20,
+            )
+        if task.run_id != run.id or task.head_commit is None or task.worktree is None:
+            raise WorkflowError("EVIDENCE_STALE", "task amendment context is incomplete", 40)
+        if completion.branch != task.branch:
+            raise WorkflowError(
+                "GIT_EVIDENCE_INVALID", "evidence amendment must stay on the task branch", 40
+            )
+        structured_paths = {artifact.path for artifact in completion.artifacts}
+        compatibility_paths = {
+            path
+            for path in completion.artifact_paths_and_hashes
+            if not path.startswith(f".codex-os/artifacts/{run.id}/")
+        }
+        if structured_paths != compatibility_paths:
+            raise WorkflowError(
+                "EVIDENCE_INCOMPLETE",
+                "evidence amendment requires structured evidence for every repository artifact",
+                40,
+                details={
+                    "repair_actions": [
+                        {
+                            "operation": "record_artifact_evidence",
+                            "expected": sorted(compatibility_paths),
+                            "actual": sorted(structured_paths),
+                            "allowed": True,
+                        }
+                    ]
+                },
+                retryable=True,
+            )
+        worktree = Path(task.worktree).resolve()
+        descendant = _is_commit_ancestor(worktree, task.head_commit, completion.commit_sha)
+        if not descendant and not (
+            self.config.git_push_policy is GitPushPolicy.FIXTURE_LOCAL_ONLY
+            and _commits_are_local_only(worktree, task.head_commit, completion.commit_sha)
+        ):
+            raise WorkflowError(
+                "GIT_EVIDENCE_INVALID",
+                "new evidence Commit must descend from the prior task Commit",
+                40,
+            )
+        allowed_paths = task.allowed_paths or PHASE_DEFINITIONS[run.workflow_phase].allowed_paths
+        try:
+            evidence = GitEvidenceService(
+                worktree,
+                require_push=(self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED),
+                base_commit=task.head_commit,
+                allowed_paths=allowed_paths,
+            ).verify(completion)
+        except GitEvidenceError as exc:
+            raise WorkflowError("GIT_EVIDENCE_INVALID", str(exc), 40) from exc
+        verified = {
+            "branch": evidence.branch,
+            "commit_sha": evidence.commit_sha,
+            "remote_name": evidence.remote_name,
+            "remote_url": evidence.remote_url,
+            "artifact_hashes": evidence.artifact_hashes,
+            "verified_at": evidence.verified_at,
+            "changed_paths": list(evidence.changed_paths),
+        }
+        checkpoint = {
+            **run.checkpoint,
+            "last_commit_sha": completion.commit_sha,
+            "evidence_refs": list(completion.artifact_paths_and_hashes),
+        }
+
+        def write_evidence(connection: Any) -> None:
+            self.evidence_store.record_task_evidence_in_transaction(
+                connection,
+                run_id=run.id,
+                task_id=task.id,
+                artifacts=completion.artifacts,
+                checks=completion.checks,
+            )
+
+        try:
+            updated = self.store.amend_task_evidence(
+                run=run,
+                task=task,
+                completion=completion,
+                expected_task_version=expected_task_version,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                checkpoint=checkpoint,
+                verified_git_evidence=verified,
+                evidence_writer=write_evidence,
+            )
+        except EvidenceError as exc:
+            raise WorkflowError(
+                exc.code,
+                str(exc),
+                40,
+                details=exc.details,
+                retryable=exc.retryable,
+            ) from exc
+        except WorkflowConflictError as exc:
+            raise WorkflowError("STATE_VERSION_CONFLICT", str(exc), 30, retryable=True) from exc
+        return self._result(updated)
+
     def submit_approval(
         self,
         run_id: str,
@@ -368,10 +950,22 @@ class WorkflowEngine:
         approved: bool,
         reviewer: str,
         reason: str,
+        expected_state_version: int | None = None,
+        idempotency_key: str | None = None,
+        evidence_bundle_hash: str | None = None,
         g4_evidence: G4ApprovalInput | None = None,
+        invocation: InvocationContext | None = None,
     ) -> WorkflowResult:
         run = self._get_run(run_id)
         self._require_migration_revalidation(run)
+        if expected_state_version is not None and run.state_version != expected_state_version:
+            raise WorkflowError(
+                "STATE_VERSION_CONFLICT",
+                "workflow state version changed before gate review",
+                30,
+            )
+        if idempotency_key is not None and not idempotency_key.strip():
+            raise WorkflowError("CONFIG_INVALID", "idempotency_key cannot be empty", 2)
         if run.run_status is not RunStatus.NEEDS_APPROVAL:
             raise WorkflowError("APPROVAL_REQUIRED", "workflow is not waiting for approval", 20)
         pending_gate = run.checkpoint.get("pending_gate")
@@ -383,9 +977,18 @@ class WorkflowEngine:
             )
         if not reviewer.strip() or not reason.strip():
             raise WorkflowError("CONFIG_INVALID", "reviewer and reason are required", 2)
+        trusted_reviewer = invocation.principal if invocation is not None else reviewer.strip()
+        if g4_evidence is not None and invocation is not None:
+            g4_evidence = g4_evidence.model_copy(
+                update={
+                    "release_authority": g4_evidence.release_authority.model_copy(
+                        update={"authorized_by": trusted_reviewer}
+                    )
+                }
+            )
 
         bundle = None
-        if approved and self.config.schema_version == "1.1":
+        if approved and self.config.schema_version != "1.0":
             source_commit = str(run.checkpoint.get("last_commit_sha") or "")
             if not source_commit:
                 raise WorkflowError(
@@ -400,42 +1003,100 @@ class WorkflowEngine:
                 )
                 self.evidence_store.require_complete(bundle)
             except EvidenceError as exc:
-                raise WorkflowError(exc.code, str(exc), 40) from exc
+                raise WorkflowError(
+                    exc.code,
+                    str(exc),
+                    40,
+                    details=exc.details,
+                    retryable=exc.retryable,
+                ) from exc
+            if (
+                evidence_bundle_hash is not None
+                and evidence_bundle_hash.casefold() != bundle.bundle_hash.casefold()
+            ):
+                raise WorkflowError(
+                    "EVIDENCE_STALE",
+                    "gate evidence bundle changed before approval",
+                    40,
+                )
 
-        publication: dict[str, Any] | None = None
-        if approved and gate is Gate.G4 and self.config.schema_version == "1.1":
+        publication_intent: dict[str, object] | None = None
+        if approved and gate is Gate.G4 and self.config.schema_version != "1.0":
             if g4_evidence is None:
                 raise WorkflowError(
                     "RELEASE_AUTHORITY_REQUIRED",
                     "G4 requires PR, merge, version, and explicit release authorization evidence",
                     20,
                 )
-            try:
-                publication = asdict(
-                    self.g4_publisher.authorize_and_publish(run, g4_evidence)
+            if self.g4_publisher is None:
+                raise WorkflowError(
+                    "READ_ONLY_OPERATION",
+                    "G4 publication is unavailable from a read-only workflow engine",
+                    40,
                 )
+            try:
+                publication_intent = self.g4_publisher.verify_publication_intent(run, g4_evidence)
             except ReleaseGovernanceError as exc:
                 raise WorkflowError(exc.code, str(exc), 50) from exc
 
-        if approved and gate is Gate.G2 and self.config.schema_version == "1.1":
+        if approved and gate is Gate.G2 and self.config.schema_version != "1.0":
             assert bundle is not None
             return self._approve_g2_coordination(
                 run,
-                reviewer=reviewer,
+                reviewer=trusted_reviewer,
                 reason=reason,
                 evidence_bundle_id=bundle.id,
                 evidence_bundle_hash=bundle.bundle_hash,
             )
 
-        if approved and gate is Gate.G3 and self.config.schema_version == "1.1":
+        if approved and gate is Gate.G3 and self.config.schema_version != "1.0":
             assert bundle is not None
             return self._approve_g3_coordination(
                 run,
-                reviewer=reviewer,
+                reviewer=trusted_reviewer,
                 reason=reason,
                 evidence_bundle_id=bundle.id,
                 evidence_bundle_hash=bundle.bundle_hash,
             )
+
+        if approved and gate is Gate.G4 and self.config.schema_version != "1.0":
+            assert bundle is not None
+            assert g4_evidence is not None
+            assert publication_intent is not None
+            initial_checkpoint: dict[str, Any] = {
+                "next_action": None,
+                "next_actions": [],
+                "approved_gate": Gate.G4.value,
+                "pending_gate": None,
+                "last_commit_sha": run.integration_head,
+            }
+            try:
+                authorized = self.store.approval_transition(
+                    run=run,
+                    gate=Gate.G4,
+                    approved=True,
+                    reviewer=trusted_reviewer,
+                    reason=reason,
+                    target_phase=run.workflow_phase,
+                    target_status=RunStatus.RUNNING,
+                    checkpoint=initial_checkpoint,
+                    next_task=None,
+                    evidence_bundle_id=bundle.id,
+                    evidence_bundle_hash=bundle.bundle_hash,
+                    release_authority=g4_evidence.model_dump(mode="json"),
+                    host_operation_kind=HostOperationKind.RELEASE_PUBLISH,
+                    host_operation_idempotency_key=(
+                        f"{run.id}:{run.state_version}:release_publish"
+                    ),
+                    host_operation_request={
+                        "schema_version": RUNTIME_VERSIONS.api,
+                        **publication_intent,
+                    },
+                    host_operation_release_id=str(publication_intent["release_id"]),
+                )
+            except WorkflowConflictError as exc:
+                raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
+            return self._result(authorized)
 
         next_version = run.state_version + 1
         next_task: TaskRecord | None = None
@@ -446,8 +1107,8 @@ class WorkflowEngine:
                 next_action = NextAction(kind=ActionKind.COMPLETE)
                 checkpoint = _checkpoint(
                     next_action,
+                    previous=run.checkpoint,
                     approved_gate=gate,
-                    release_publication=publication,
                 )
             else:
                 target_status = RunStatus.RUNNING
@@ -457,11 +1118,16 @@ class WorkflowEngine:
                     state_version=next_version,
                     goal=run.goal,
                 )
-                checkpoint = _checkpoint(next_action, approved_gate=gate)
+                checkpoint = _checkpoint(
+                    next_action,
+                    previous=run.checkpoint,
+                    approved_gate=gate,
+                )
         else:
             target_phase = run.workflow_phase
             target_status = RunStatus.BLOCKED
             checkpoint = {
+                **run.checkpoint,
                 "next_action": None,
                 "rejected_gate": gate.value,
                 "rejection_reason": reason,
@@ -472,7 +1138,7 @@ class WorkflowEngine:
                 run=run,
                 gate=gate,
                 approved=approved,
-                reviewer=reviewer,
+                reviewer=trusted_reviewer,
                 reason=reason,
                 target_phase=target_phase,
                 target_status=target_status,
@@ -491,28 +1157,507 @@ class WorkflowEngine:
             self._allocate_or_block(updated, next_task, base_ref=base_ref)
         return self._result(self.store.get_run(updated.id))
 
-    def review_handoff(
-        self, review: HandoffReviewInput
-    ) -> WorkflowResult:
+    def review_handoff(self, review: HandoffReviewInput) -> WorkflowResult:
         handoff_task = self._task_for_handoff(review.handoff_id)
-        self._require_migration_revalidation(self._get_run(handoff_task.run_id))
+        run = self._get_run(handoff_task.run_id)
+        self._require_migration_revalidation(run)
+        service = CoordinationService(self.config.root)
         try:
-            integration = CoordinationService(self.config.root).review_and_integrate(review)
+            if self.config.schema_version == "1.2":
+                if review.expected_handoff_version is None or review.idempotency_key is None:
+                    raise WorkflowError(
+                        "CONFIG_INVALID",
+                        "API 1.2 Handoff review requires expected_handoff_version "
+                        "and idempotency_key",
+                        2,
+                    )
+                decision = service.prepare_review(review)
+                if decision.decision == "accepted":
+                    if decision.operation_id is None:
+                        raise WorkflowError(
+                            "RECOVERY_UNAVAILABLE",
+                            "accepted Handoff has no integration operation",
+                            40,
+                        )
+                    action = NextAction(
+                        kind=ActionKind.HOST_OPERATION,
+                        operation_id=decision.operation_id,
+                        task_id=decision.task_id,
+                        task_group_id=decision.task_group_id,
+                        dependencies=(decision.handoff_id,),
+                        prompt="Execute or reconcile the accepted Handoff integration merge.",
+                        risk_level=RiskLevel.HIGH,
+                        requires_repository_change=True,
+                    )
+                    checkpoint = _coordination_checkpoint(
+                        run.checkpoint,
+                        (action,),
+                        task_group_id=decision.task_group_id,
+                        waiting_handoff=decision.handoff_id,
+                    )
+                    updated = self.store.update_checkpoint(
+                        run=run,
+                        checkpoint=checkpoint,
+                        status=RunStatus.RUNNING,
+                    )
+                    return self._result(updated)
+                integration = service.decision_result(decision)
+            else:
+                integration = service.review_and_integrate(review)
         except CoordinationError as exc:
             raise WorkflowError(exc.code, str(exc), 40) from exc
+        return self._apply_integration_result(integration)
+
+    def execute_host_operation(
+        self,
+        operation_id: str,
+        *,
+        expected_operation_version: int,
+        idempotency_key: str,
+        invocation: InvocationContext,
+    ) -> WorkflowResult:
+        try:
+            operation = self.operations.get(operation_id)
+            if operation.idempotency_key != idempotency_key:
+                raise HostOperationError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "host operation idempotency key does not match persisted intent",
+                )
+            acquired = self.operations.acquire(
+                operation_id,
+                expected_version=expected_operation_version,
+                lease_owner=invocation.principal,
+            )
+            if acquired.status is HostOperationStatus.SUCCEEDED:
+                if acquired.run_id is None:
+                    raise HostOperationError(
+                        "RECOVERY_UNAVAILABLE", "completed operation has no Workflow run"
+                    )
+                return self.status(acquired.run_id)
+            if acquired.kind is HostOperationKind.INTEGRATION_PREPARE:
+                return self._execute_integration_prepare_operation(
+                    acquired, lease_owner=invocation.principal
+                )
+            if acquired.kind is HostOperationKind.INTEGRATION_MERGE:
+                return self._execute_integration_merge_operation(
+                    acquired, lease_owner=invocation.principal
+                )
+            if acquired.kind is HostOperationKind.RELEASE_PREPARE:
+                return self._execute_release_prepare_operation(
+                    acquired, lease_owner=invocation.principal
+                )
+            if acquired.kind is HostOperationKind.RELEASE_PUBLISH:
+                return self._execute_release_publish_operation(
+                    acquired, lease_owner=invocation.principal
+                )
+            operation_type = acquired.request.get("operation_type")
+            if acquired.kind is HostOperationKind.VERIFICATION_PREPARE and operation_type in {
+                "environment_prepare",
+                "environment_verify",
+            }:
+                return self._execute_environment_operation(
+                    acquired, lease_owner=invocation.principal
+                )
+            if acquired.kind is HostOperationKind.VERIFICATION_PREPARE:
+                return self._execute_verification_prepare_operation(
+                    acquired, lease_owner=invocation.principal
+                )
+            self.operations.mark_failed(
+                operation_id,
+                expected_version=acquired.state_version,
+                lease_owner=invocation.principal,
+                error_code="OPERATION_KIND_UNSUPPORTED",
+            )
+            raise HostOperationError(
+                "CONFIG_INVALID", f"unsupported Host Operation kind: {acquired.kind.value}"
+            )
+        except HostOperationError as exc:
+            raise WorkflowError(exc.code, str(exc), 40) from exc
+
+    def _execute_environment_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        if operation.run_id is None or self.environment_operations is None:
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE",
+                "environment operation has no writable Workflow context",
+                40,
+            )
+        try:
+            self.environment_operations.execute_acquired(
+                operation,
+                lease_owner=lease_owner,
+            )
+        except EnvironmentOperationError as exc:
+            current = self.operations.get(operation.operation_id)
+            if current.status is HostOperationStatus.RUNNING:
+                if exc.outcome_unknown:
+                    self.operations.mark_outcome_unknown(
+                        current.operation_id,
+                        expected_version=current.state_version,
+                        lease_owner=lease_owner,
+                        error_code=exc.code,
+                    )
+                else:
+                    self.operations.mark_failed(
+                        current.operation_id,
+                        expected_version=current.state_version,
+                        lease_owner=lease_owner,
+                        error_code=exc.code,
+                        result={"message": str(exc)},
+                    )
+            raise WorkflowError(
+                exc.code,
+                str(exc),
+                40,
+                details=exc.details,
+                retryable=exc.retryable,
+            ) from exc
+        return self.status(operation.run_id)
+
+    def _execute_integration_prepare_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        if operation.run_id is None:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE", "integration prepare has no Workflow run", 40
+            )
+        request = operation.request
+        source_commit = request.get("source_commit")
+        tasks_value = request.get("tasks")
+        if not isinstance(source_commit, str) or not isinstance(tasks_value, list):
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE", "integration prepare request is incomplete", 40
+            )
+        try:
+            tasks = tuple(
+                TaskBlueprint.model_validate(item) for item in cast(list[object], tasks_value)
+            )
+            integration_path = CoordinationService(self.config.root).ensure_integration_worktree(
+                operation.run_id, base_commit=source_commit
+            )
+            group = self._ensure_task_group(
+                run_id=operation.run_id,
+                name="implementation",
+                phase=WorkflowPhase.IMPLEMENTATION,
+                base_commit=source_commit,
+                blueprints=tasks,
+            )
+            current = self._get_run(operation.run_id)
+            actions = self._schedule_group(current, group.id)
+            checkpoint = _coordination_checkpoint(
+                current.checkpoint,
+                actions,
+                task_group_id=group.id,
+                waiting_handoff=None,
+                integration_worktree=integration_path.as_posix(),
+            )
+            checkpoint.pop("pending_host_operation_id", None)
+            updated = self.store.update_checkpoint(run=current, checkpoint=checkpoint)
+        except (CoordinationError, WorkflowConflictError, ValidationError) as exc:
+            code = exc.code if isinstance(exc, CoordinationError) else "STATE_CONFLICT"
+            if code == "WORKTREE_BLOCKED":
+                self.operations.mark_outcome_unknown(
+                    operation.operation_id,
+                    expected_version=operation.state_version,
+                    lease_owner=lease_owner,
+                    error_code=code,
+                )
+                raise WorkflowError("RECONCILIATION_REQUIRED", str(exc), 40) from exc
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code=code,
+            )
+            raise WorkflowError(code, str(exc), 40) from exc
+        self.operations.mark_succeeded(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            lease_owner=lease_owner,
+            result={
+                "integration_worktree": integration_path.as_posix(),
+                "integration_branch": updated.integration_branch,
+                "integration_head": updated.integration_head,
+                "task_group_id": group.id,
+                "task_ids": list(self._task_ids_for_group(group.id)),
+            },
+        )
+        return self._result(updated)
+
+    def _execute_integration_merge_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        try:
+            integration = CoordinationService(self.config.root).execute_merge_operation(operation)
+        except CoordinationError as exc:
+            if exc.code == "REMOTE_UNREACHABLE":
+                self.operations.mark_outcome_unknown(
+                    operation.operation_id,
+                    expected_version=operation.state_version,
+                    lease_owner=lease_owner,
+                    error_code=exc.code,
+                )
+                raise WorkflowError("RECONCILIATION_REQUIRED", str(exc), 40) from exc
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code=exc.code,
+            )
+            raise WorkflowError(exc.code, str(exc), 40) from exc
+        result = self._apply_integration_result(integration)
+        self.operations.mark_succeeded(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            lease_owner=lease_owner,
+            result={
+                "handoff_id": integration.handoff_id,
+                "status": integration.status,
+                "integration_branch": integration.integration_branch,
+                "integration_head": integration.integration_head,
+                "merge_commit": integration.merge_commit,
+                "conflict_paths": list(integration.conflict_paths),
+            },
+        )
+        return result
+
+    def _execute_release_prepare_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        from codex_ai_os.application.release import ReleaseCandidateService
+
+        if operation.run_id is None:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError("RECOVERY_UNAVAILABLE", "release prepare has no Workflow run", 40)
+        source_commit = operation.request.get("integration_source_commit")
+        if not isinstance(source_commit, str) or not source_commit:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError("RECOVERY_UNAVAILABLE", "release prepare request is incomplete", 40)
+        definition = PHASE_DEFINITIONS[WorkflowPhase.RELEASE]
+        blueprint = TaskBlueprint(
+            key="release-governed",
+            agent=definition.agent,
+            skill=definition.skill,
+            prompt=definition.prompt,
+            allowed_paths=definition.allowed_paths,
+        )
+        try:
+            group = self._ensure_task_group(
+                run_id=operation.run_id,
+                name=WorkflowPhase.RELEASE.value,
+                phase=WorkflowPhase.RELEASE,
+                base_commit=source_commit,
+                blueprints=(blueprint,),
+            )
+            current = self._get_run(operation.run_id)
+            actions = self._schedule_group(current, group.id)
+            candidate = ReleaseCandidateService(
+                self.config.root,
+                execution_service=self.release_execution_service,
+            ).create(operation.run_id, operation=operation)
+            checkpoint = _coordination_checkpoint(
+                current.checkpoint,
+                actions,
+                task_group_id=group.id,
+                waiting_handoff=None,
+            )
+            checkpoint["release_candidate_id"] = candidate.id
+            checkpoint["release_manifest_path"] = candidate.manifest_path
+            checkpoint["release_manifest_hash"] = candidate.manifest_hash
+            checkpoint.pop("pending_host_operation_id", None)
+            updated = self.store.update_checkpoint(run=current, checkpoint=checkpoint)
+        except (CoordinationError, WorkflowConflictError, WorkflowError) as exc:
+            code = (
+                exc.code
+                if isinstance(exc, (CoordinationError, WorkflowError))
+                else "STATE_CONFLICT"
+            )
+            if code in {"OPERATION_RECONCILE_REQUIRED", "RECONCILIATION_REQUIRED"}:
+                self.operations.mark_outcome_unknown(
+                    operation.operation_id,
+                    expected_version=operation.state_version,
+                    lease_owner=lease_owner,
+                    error_code=code,
+                )
+                raise WorkflowError("RECONCILIATION_REQUIRED", str(exc), 40) from exc
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code=code,
+            )
+            raise WorkflowError(code, str(exc), 40) from exc
+        self.operations.mark_succeeded(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            lease_owner=lease_owner,
+            result={
+                "candidate_id": candidate.id,
+                "integration_source_commit": candidate.source_commit,
+                "candidate_commit": candidate.candidate_commit,
+                "manifest_path": candidate.manifest_path,
+                "manifest_hash": candidate.manifest_hash,
+                "artifact_root": candidate.artifact_root,
+                "artifacts": candidate.artifacts,
+            },
+        )
+        return self._result(updated)
+
+    def _execute_release_publish_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        if operation.run_id is None or self.g4_publisher is None:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE", "release publish context is unavailable", 40
+            )
+        approval_value = operation.request.get("approval")
+        if not isinstance(approval_value, dict):
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError("RECOVERY_UNAVAILABLE", "release publish approval is missing", 40)
+        try:
+            approval = G4ApprovalInput.model_validate(approval_value)
+            run = self._get_run(operation.run_id)
+            publication = self.g4_publisher.authorize_and_publish(run, approval)
+        except (ReleaseGovernanceError, ValidationError) as exc:
+            code = exc.code if isinstance(exc, ReleaseGovernanceError) else "CONFIG_INVALID"
+            if code in {
+                "GITHUB_RELEASE_BLOCKED",
+                "REMOTE_UNREACHABLE",
+                "OPERATION_RECONCILE_REQUIRED",
+            }:
+                self.operations.mark_outcome_unknown(
+                    operation.operation_id,
+                    expected_version=operation.state_version,
+                    lease_owner=lease_owner,
+                    error_code=code,
+                )
+                raise WorkflowError("RECONCILIATION_REQUIRED", str(exc), 50) from exc
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code=code,
+            )
+            raise WorkflowError(code, str(exc), 50) from exc
+        result = {
+            "pr_number": publication.pr_number,
+            "pr_url": publication.pr_url,
+            "pr_head_commit": publication.pr_head_commit,
+            "merge_commit": publication.merge_commit,
+            "tag": publication.tag,
+            "github_release_id": publication.github_release_id,
+            "github_release_url": publication.github_release_url,
+            "final_manifest_path": publication.final_manifest_path,
+            "final_manifest_hash": publication.final_manifest_hash,
+            "external_reconciliation": publication.external_reconciliation,
+        }
+        succeeded = self.operations.mark_succeeded(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            lease_owner=lease_owner,
+            result=result,
+        )
+        try:
+            completed = self.store.complete_release_publish(
+                run=run,
+                operation_id=succeeded.operation_id,
+                publication=result,
+            )
+        except WorkflowConflictError as exc:
+            raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
+        return self._result(completed)
+
+    def _execute_verification_prepare_operation(
+        self, operation: HostOperation, *, lease_owner: str
+    ) -> WorkflowResult:
+        if operation.run_id is None:
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code="RECOVERY_UNAVAILABLE",
+            )
+            raise WorkflowError(
+                "RECOVERY_UNAVAILABLE",
+                "verification prepare operation has no Workflow run",
+                40,
+            )
+        if self.verification_cache_preparer is None:
+            raise WorkflowError(
+                "CONFIG_INVALID",
+                "verification prepare cannot run from read-only workflow access",
+                40,
+            )
+        try:
+            prepared = self.verification_cache_preparer.prepare(operation)
+        except VerificationCachePrepareError as exc:
+            if exc.outcome_unknown:
+                self.operations.mark_outcome_unknown(
+                    operation.operation_id,
+                    expected_version=operation.state_version,
+                    lease_owner=lease_owner,
+                    error_code=exc.code,
+                )
+                raise WorkflowError("RECONCILIATION_REQUIRED", str(exc), 40) from exc
+            self.operations.mark_failed(
+                operation.operation_id,
+                expected_version=operation.state_version,
+                lease_owner=lease_owner,
+                error_code=exc.code,
+            )
+            raise WorkflowError(exc.code, str(exc), 40) from exc
+        self.operations.mark_succeeded(
+            operation.operation_id,
+            expected_version=operation.state_version,
+            lease_owner=lease_owner,
+            result=prepared,
+        )
+        return self.status(operation.run_id)
+
+    def _apply_integration_result(self, integration: IntegrationResult) -> WorkflowResult:
         run = self._get_run(integration.task_group.run_id)
         if integration.task_group.status == "completed":
             phase = WorkflowPhase(integration.task_group.phase)
             if phase is WorkflowPhase.IMPLEMENTATION:
-                return self._advance_to_coordinated_phase(
-                    run, WorkflowPhase.VERIFY, integration
-                )
+                return self._advance_to_coordinated_phase(run, WorkflowPhase.VERIFY, integration)
             if phase is WorkflowPhase.VERIFY:
                 return self._advance_group_to_gate(run, Gate.G3, integration)
             if phase is WorkflowPhase.RELEASE:
-                return self._advance_to_coordinated_phase(
-                    run, WorkflowPhase.MEMORY, integration
-                )
+                return self._advance_to_coordinated_phase(run, WorkflowPhase.MEMORY, integration)
             if phase is WorkflowPhase.MEMORY:
                 return self._advance_group_to_gate(run, Gate.G4, integration)
             raise WorkflowError(
@@ -520,9 +1665,11 @@ class WorkflowEngine:
             )
 
         if integration.status == "rejected":
-            task = self._get_task(integration.task_group.ready_task_ids[0]) if (
-                integration.task_group.ready_task_ids
-            ) else self._task_for_handoff(review.handoff_id)
+            task = (
+                self._get_task(integration.task_group.ready_task_ids[0])
+                if (integration.task_group.ready_task_ids)
+                else self._task_for_handoff(integration.handoff_id)
+            )
             actions = (self._action_for_coordinated_task(task),)
             status = RunStatus.RUNNING
         elif integration.status in {"blocked", "conflicted"}:
@@ -570,6 +1717,19 @@ class WorkflowEngine:
             "last_commit_sha": source_commit,
         }
         try:
+            router = ProfileRouter(self.store.database, self.config)
+            routing_input = router.input_for_run(run.id)
+            routing = router.route(
+                run_id=run.id,
+                requested_profiles=run.profiles,
+                impact_paths=routing_input.impact_paths,
+                source_commit=source_commit,
+                workflow_name=run.workflow_name,
+                dependency_count=routing_input.dependency_count,
+                release_required=routing_input.release_required,
+                override_reason=routing_input.override_reason,
+                require_task_mapping=True,
+            )
             approved = self.store.approval_transition(
                 run=run,
                 gate=Gate.G2,
@@ -582,37 +1742,32 @@ class WorkflowEngine:
                 next_task=None,
                 evidence_bundle_id=evidence_bundle_id,
                 evidence_bundle_hash=evidence_bundle_hash,
+                host_operation_kind=HostOperationKind.INTEGRATION_PREPARE,
+                host_operation_idempotency_key=(
+                    f"{run.id}:{run.state_version}:integration_prepare"
+                ),
+                host_operation_request={
+                    "schema_version": RUNTIME_VERSIONS.api,
+                    "run_id": run.id,
+                    "source_commit": source_commit,
+                    "routing_decision_hash": routing.decision_hash,
+                    "policy_hash": routing.policy_hash,
+                    "tasks": [task.model_dump(mode="json") for task in routing.tasks],
+                    "evidence_bundle_hash": evidence_bundle_hash,
+                },
             )
-            integration_path = CoordinationService(
-                self.config.root
-            ).ensure_integration_worktree(run.id, base_commit=source_commit)
-            current = self._get_run(approved.id)
-            routing = ProfileRouter(self.store.database, self.config).route(
-                run_id=run.id,
-                requested_profiles=run.profiles,
-                source_commit=source_commit,
+        except (WorkflowConflictError, CoordinationError, ValueError) as exc:
+            code = (
+                exc.code
+                if isinstance(exc, CoordinationError)
+                else (
+                    "ROUTING_PATH_UNMAPPED"
+                    if "ROUTING_PATH_UNMAPPED" in str(exc)
+                    else "STATE_CONFLICT"
+                )
             )
-            group, _planned = self.coordination_store.create_group(
-                run_id=run.id,
-                name="implementation",
-                phase=WorkflowPhase.IMPLEMENTATION.value,
-                base_commit=source_commit,
-                blueprints=routing.tasks,
-            )
-            current = self._get_run(current.id)
-            actions = self._schedule_group(current, group.id)
-            checkpoint = _coordination_checkpoint(
-                current.checkpoint,
-                actions,
-                task_group_id=group.id,
-                waiting_handoff=None,
-                integration_worktree=integration_path.as_posix(),
-            )
-            updated = self.store.update_checkpoint(run=current, checkpoint=checkpoint)
-        except (WorkflowConflictError, CoordinationError) as exc:
-            code = exc.code if isinstance(exc, CoordinationError) else "STATE_CONFLICT"
             raise WorkflowError(code, str(exc), 40) from exc
-        return self._result(updated)
+        return self._result(approved)
 
     def _approve_g3_coordination(
         self,
@@ -631,6 +1786,7 @@ class WorkflowEngine:
             "last_commit_sha": run.integration_head,
         }
         try:
+            cache_binding = self._release_cache_binding(run.id)
             approved = self.store.approval_transition(
                 run=run,
                 gate=Gate.G3,
@@ -643,13 +1799,69 @@ class WorkflowEngine:
                 next_task=None,
                 evidence_bundle_id=evidence_bundle_id,
                 evidence_bundle_hash=evidence_bundle_hash,
+                host_operation_kind=HostOperationKind.RELEASE_PREPARE,
+                host_operation_idempotency_key=(f"{run.id}:{run.state_version}:release_prepare"),
+                host_operation_request={
+                    "schema_version": RUNTIME_VERSIONS.api,
+                    "run_id": run.id,
+                    "integration_source_commit": run.integration_head,
+                    "evidence_bundle_hash": evidence_bundle_hash,
+                    "verification_cache": cache_binding,
+                    "execution_image": RUNTIME_VERSIONS.execution_image,
+                    "software_version": RUNTIME_VERSIONS.software,
+                },
             )
-            return self._start_coordinated_phase(
-                approved, WorkflowPhase.RELEASE, approved.integration_head or ""
-            )
+            return self._result(approved)
         except (WorkflowConflictError, CoordinationError) as exc:
             code = exc.code if isinstance(exc, CoordinationError) else "STATE_CONFLICT"
             raise WorkflowError(code, str(exc), 40) from exc
+
+    def _release_cache_binding(self, run_id: str) -> dict[str, object] | None:
+        with self.store.database.read_connection() as connection:
+            row = connection.execute(
+                "SELECT operation_id, request_hash, result_json "
+                "FROM host_operations WHERE run_id = ? "
+                "AND kind = 'verification_prepare' AND status = 'succeeded' "
+                "ORDER BY ended_at DESC, operation_id DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            if self.config.git_push_policy is GitPushPolicy.FIXTURE_LOCAL_ONLY:
+                return None
+            raise WorkflowError(
+                "SANDBOX_DEPENDENCIES_UNAVAILABLE",
+                "G3 release preparation requires a succeeded verification cache operation",
+                40,
+            )
+        result_value: object = json.loads(str(row["result_json"]))
+        if not isinstance(result_value, dict):
+            raise WorkflowError("DEPENDENCY_UNVERIFIED", "verification cache result is invalid", 40)
+        result = cast(dict[str, object], result_value)
+        lock_hash = result.get("uv_lock_hash")
+        if not isinstance(lock_hash, str):
+            raise WorkflowError(
+                "DEPENDENCY_UNVERIFIED", "verification cache has no lock binding", 40
+            )
+        cache = (
+            self.config.root
+            / ".codex-os"
+            / "cache"
+            / "verification"
+            / lock_hash
+            / "verification-cache-manifest.json"
+        )
+        if not cache.is_file():
+            raise WorkflowError(
+                "SANDBOX_DEPENDENCIES_UNAVAILABLE",
+                "verification cache manifest is missing",
+                40,
+            )
+        return {
+            "operation_id": str(row["operation_id"]),
+            "operation_request_hash": str(row["request_hash"]),
+            "uv_lock_hash": lock_hash,
+            "manifest_hash": hashlib.sha256(cache.read_bytes()).hexdigest(),
+        }
 
     def _advance_to_coordinated_phase(
         self,
@@ -726,6 +1938,7 @@ class WorkflowEngine:
         )
         checkpoint = _checkpoint(
             action,
+            previous=run.checkpoint,
             pending_gate=gate,
             last_completed_task=integration.handoff_id,
             last_commit_sha=integration.integration_head,
@@ -756,15 +1969,33 @@ class WorkflowEngine:
                     evidence_bundle_ids=bundle_ids,
                 )
             except (RepositoryGovernanceError, EvidenceError) as exc:
-                raise WorkflowError(
-                    "MIGRATION_REVALIDATION_REQUIRED", str(exc), 40
-                ) from exc
+                raise WorkflowError("MIGRATION_REVALIDATION_REQUIRED", str(exc), 40) from exc
             except WorkflowConflictError as exc:
                 raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
         if run.run_status in {RunStatus.RUNNING, RunStatus.NEEDS_APPROVAL}:
             return self._result(run)
         if run.run_status in {RunStatus.COMPLETED, RunStatus.CANCELLED}:
             raise WorkflowError("RECOVERY_UNAVAILABLE", "terminal workflow cannot resume", 30)
+
+        recoverable_operations = self.operations.recoverable(run.id, limit=run.max_parallel_agents)
+        if recoverable_operations:
+            actions = tuple(
+                self._action_for_host_operation(operation) for operation in recoverable_operations
+            )
+            checkpoint = _operations_checkpoint(
+                run.checkpoint,
+                actions,
+                resumed_from=run.run_status.value,
+            )
+            try:
+                updated = self.store.resume_transition(
+                    run=run,
+                    checkpoint=checkpoint,
+                    next_task=None,
+                )
+            except WorkflowConflictError as exc:
+                raise WorkflowError("STATE_CONFLICT", str(exc), 30) from exc
+            return self._result(updated)
 
         active_task = self.store.active_task(run.id)
         next_task: TaskRecord | None = None
@@ -777,7 +2008,11 @@ class WorkflowEngine:
                 state_version=run.state_version + 1,
                 goal=run.goal,
             )
-        checkpoint = _checkpoint(action, resumed_from=run.run_status.value)
+        checkpoint = _checkpoint(
+            action,
+            previous=run.checkpoint,
+            resumed_from=run.run_status.value,
+        )
         try:
             updated = self.store.resume_transition(
                 run=run,
@@ -825,10 +2060,21 @@ class WorkflowEngine:
         hydrated: list[NextAction] = []
         for action in actions:
             task = tasks.get(action.task_id or "")
+            updates: dict[str, Any] = {"expected_state_version": run.state_version}
             if task is not None and action.kind is ActionKind.MODEL_TASK:
-                action = action.model_copy(
-                    update={"branch": task.branch, "worktree": task.worktree}
+                updates.update(
+                    branch=task.branch,
+                    worktree=task.worktree,
+                    task_group_id=task.task_group_id,
+                    expected_task_version=task.state_version,
                 )
+            if action.kind is ActionKind.HOST_OPERATION and action.operation_id is not None:
+                operation = self.operations.get(action.operation_id)
+                updates["expected_operation_version"] = operation.state_version
+            target_gate = action.gate or _gate_after_action_phase(run.workflow_phase, run.profiles)
+            if target_gate is not None:
+                updates["gate_requirements"] = self._gate_requirements(run, target_gate)
+            action = action.model_copy(update=updates)
             hydrated.append(action)
         next_actions = tuple(hydrated)
         next_action = next_actions[0] if len(next_actions) == 1 else None
@@ -841,10 +2087,58 @@ class WorkflowEngine:
             integration_result=integration_result,
         )
 
-    def _schedule_group(self, run: WorkflowRun, group_id: str) -> tuple[NextAction, ...]:
-        planned = self.coordination_store.ready_tasks(
-            group_id, limit=run.max_parallel_agents
+    def _gate_requirements(self, run: WorkflowRun, gate: Gate) -> dict[str, object]:
+        try:
+            policy = GovernancePolicyCompiler(self.config.root).compile(run.profiles)
+        except GovernancePolicyError as exc:
+            raise WorkflowError(exc.code, str(exc), 40) from exc
+        return policy.gate_contract(
+            gate,
+            document_version=self._document_version_target(run),
+            push_required=(self.config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED),
         )
+
+    @staticmethod
+    def _document_version_target(run: WorkflowRun) -> str:
+        value = run.checkpoint.get("document_version_target")
+        if isinstance(value, str) and value:
+            return value
+        return RUNTIME_VERSIONS.software
+
+    def _action_for_host_operation(self, operation: HostOperation) -> NextAction:
+        dependencies = tuple(
+            item
+            for item in (operation.handoff_id, operation.release_id, operation.task_id)
+            if item is not None
+        )
+        verb = (
+            "Reconcile"
+            if operation.status is HostOperationStatus.RECONCILE_REQUIRED
+            else "Execute or replay"
+        )
+        return NextAction(
+            kind=ActionKind.HOST_OPERATION,
+            operation_id=operation.operation_id,
+            task_id=operation.task_id,
+            task_group_id=operation.task_group_id,
+            dependencies=dependencies,
+            prompt=f"{verb} persisted {operation.kind.value} Host Operation.",
+            risk_level=RiskLevel.HIGH,
+            requires_repository_change=operation.kind
+            in {
+                HostOperationKind.INTEGRATION_PREPARE,
+                HostOperationKind.INTEGRATION_MERGE,
+                HostOperationKind.RELEASE_PREPARE,
+                HostOperationKind.RELEASE_PUBLISH,
+                HostOperationKind.DATABASE_MIGRATE,
+            },
+            expected_state_version=operation.expected_state_version,
+            expected_task_version=operation.expected_task_version,
+            expected_operation_version=operation.state_version,
+        )
+
+    def _schedule_group(self, run: WorkflowRun, group_id: str) -> tuple[NextAction, ...]:
+        planned = self.coordination_store.ready_tasks(group_id, limit=run.max_parallel_agents)
         actions: list[NextAction] = []
         base_ref = run.integration_head or run.base_commit or "HEAD"
         for item in planned:
@@ -856,6 +2150,7 @@ class WorkflowEngine:
                 NextAction(
                     kind=ActionKind.MODEL_TASK,
                     task_id=task.id,
+                    task_group_id=task.task_group_id,
                     agent=item.agent,
                     skill=item.skill,
                     prompt=item.prompt,
@@ -869,13 +2164,79 @@ class WorkflowEngine:
                         "required": ["summary", "artifacts", "checks"],
                     },
                     allowed_paths=item.allowed_paths,
+                    dependencies=item.depends_on_task_ids,
                     branch=task.branch,
                     worktree=task.worktree,
                     risk_level=RiskLevel.HIGH,
                     requires_repository_change=True,
+                    expected_task_version=task.state_version,
+                    expected_state_version=run.state_version + 1,
                 )
             )
         return tuple(actions)
+
+    def _ensure_task_group(
+        self,
+        *,
+        run_id: str,
+        name: str,
+        phase: WorkflowPhase,
+        base_commit: str,
+        blueprints: tuple[TaskBlueprint, ...],
+    ) -> TaskGroupView:
+        rows: list[Any] = []
+        with self.store.database.read_connection() as connection:
+            group = connection.execute(
+                "SELECT id, base_commit FROM task_groups "
+                "WHERE run_id = ? AND name = ? AND phase = ?",
+                (run_id, name, phase.value),
+            ).fetchone()
+            if group is not None:
+                rows = connection.execute(
+                    "SELECT task_key, agent, skill, prompt, allowed_paths_json "
+                    "FROM tasks WHERE task_group_id = ? ORDER BY task_key",
+                    (str(group["id"]),),
+                ).fetchall()
+        if group is None:
+            created, _planned = self.coordination_store.create_group(
+                run_id=run_id,
+                name=name,
+                phase=phase.value,
+                base_commit=base_commit,
+                blueprints=blueprints,
+            )
+            return created
+        expected = {
+            item.key: (
+                item.agent,
+                item.skill,
+                item.prompt,
+                tuple(item.allowed_paths),
+            )
+            for item in blueprints
+        }
+        actual = {
+            str(row["task_key"]): (
+                str(row["agent"]),
+                str(row["skill"]),
+                str(row["prompt"]),
+                tuple(cast(list[str], json.loads(str(row["allowed_paths_json"])))),
+            )
+            for row in rows
+        }
+        if str(group["base_commit"]) != base_commit or actual != expected:
+            raise CoordinationError(
+                "STATE_VERSION_CONFLICT", "persisted task group differs from operation intent"
+            )
+        return self.coordination_store.group_view(str(group["id"]))
+
+    def _task_ids_for_group(self, group_id: str) -> tuple[str, ...]:
+        with self.store.database.read_connection() as connection:
+            rows = connection.execute(
+                "SELECT id FROM tasks WHERE task_group_id = ? ORDER BY created_at, id",
+                (group_id,),
+            ).fetchall()
+        return tuple(str(row["id"]) for row in rows)
 
     def _action_for_coordinated_task(self, task: TaskRecord) -> NextAction:
         if task.skill is None or task.prompt is None:
@@ -883,17 +2244,29 @@ class WorkflowEngine:
         return NextAction(
             kind=ActionKind.MODEL_TASK,
             task_id=task.id,
+            task_group_id=task.task_group_id,
             agent=task.agent,
             skill=task.skill,
             prompt=task.prompt,
             input_artifacts=("docs/ARCHITECTURE.md", "docs/API_SPEC.md", "docs/DATABASE.md"),
             output_schema={"type": "object", "required": ["artifacts", "checks"]},
             allowed_paths=task.allowed_paths,
+            dependencies=self._task_dependencies(task.id),
             branch=task.branch,
             worktree=task.worktree,
             risk_level=RiskLevel.HIGH,
             requires_repository_change=True,
+            expected_task_version=task.state_version,
         )
+
+    def _task_dependencies(self, task_id: str) -> tuple[str, ...]:
+        with self.store.database.read_connection() as connection:
+            rows = connection.execute(
+                "SELECT depends_on_task_id FROM task_dependencies "
+                "WHERE task_id = ? ORDER BY depends_on_task_id",
+                (task_id,),
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows)
 
     def _task_for_handoff(self, handoff_id: str) -> TaskRecord:
         with self.store.database.connection() as connection:
@@ -911,6 +2284,12 @@ class WorkflowEngine:
         *,
         base_ref: str,
     ) -> None:
+        if self.worktrees is None:
+            raise WorkflowError(
+                "READ_ONLY_OPERATION",
+                "Worktree allocation is unavailable from a read-only workflow engine",
+                40,
+            )
         try:
             self.worktrees.allocate(run_id=run.id, task_id=task.id, base_ref=base_ref)
         except WorktreeServiceError as exc:
@@ -963,6 +2342,10 @@ class WorkflowEngine:
             state_version=0,
             created_at=now,
             updated_at=now,
+            allowed_paths=definition.allowed_paths,
+            producer=definition.agent,
+            skill=definition.skill,
+            prompt=definition.prompt,
         )
         action = NextAction(
             kind=ActionKind.MODEL_TASK,
@@ -983,6 +2366,8 @@ class WorkflowEngine:
             allowed_paths=definition.allowed_paths,
             risk_level=definition.risk_level,
             requires_repository_change=True,
+            expected_task_version=task.state_version,
+            expected_state_version=state_version,
         )
         return task, action
 
@@ -999,12 +2384,16 @@ class WorkflowEngine:
             allowed_paths=definition.allowed_paths,
             risk_level=definition.risk_level,
             requires_repository_change=True,
+            expected_task_version=task.state_version,
+            expected_state_version=run.state_version,
         )
 
 
 def _checkpoint(
     action: NextAction,
     *,
+    previous: dict[str, Any] | None = None,
+    document_version_target: str | None = None,
     pending_gate: Gate | None = None,
     approved_gate: Gate | None = None,
     last_completed_task: str | None = None,
@@ -1014,6 +2403,7 @@ def _checkpoint(
     release_publication: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
+        **(previous or {}),
         "next_action": action.model_dump(mode="json"),
         "pending_gate": pending_gate.value if pending_gate is not None else None,
         "approved_gate": approved_gate.value if approved_gate is not None else None,
@@ -1022,7 +2412,24 @@ def _checkpoint(
         "evidence_refs": list(evidence_refs),
         "resumed_from": resumed_from,
         "release_publication": release_publication,
+        "document_version_target": (
+            document_version_target or (previous or {}).get("document_version_target")
+        ),
     }
+
+
+def _gate_after_action_phase(phase: WorkflowPhase, profiles: tuple[str, ...]) -> Gate | None:
+    if phase is WorkflowPhase.DESIGN and "frontend-project" in profiles:
+        return None
+    return GATE_AFTER_PHASE.get(phase)
+
+
+def _next_phase_after_action(
+    phase: WorkflowPhase, profiles: tuple[str, ...]
+) -> WorkflowPhase | None:
+    if phase is WorkflowPhase.DESIGN and "frontend-project" in profiles:
+        return WorkflowPhase.PROTOTYPE
+    return AUTOMATIC_NEXT_PHASE.get(phase)
 
 
 def _action_from_checkpoint(checkpoint: dict[str, Any]) -> NextAction | None:
@@ -1051,9 +2458,7 @@ def _actions_from_checkpoint(checkpoint: dict[str, Any]) -> tuple[NextAction, ..
         try:
             actions.append(NextAction.model_validate(cast(dict[str, Any], raw)))
         except ValidationError as exc:
-            raise WorkflowError(
-                "RECOVERY_UNAVAILABLE", f"invalid next action: {exc}", 30
-            ) from exc
+            raise WorkflowError("RECOVERY_UNAVAILABLE", f"invalid next action: {exc}", 30) from exc
     return tuple(actions)
 
 
@@ -1075,20 +2480,60 @@ def _coordination_checkpoint(
         "task_group_id": task_group_id,
         "waiting_handoff": waiting_handoff,
         "last_commit_sha": last_commit_sha or previous.get("last_commit_sha"),
-        "integration_worktree": (
-            integration_worktree or previous.get("integration_worktree")
-        ),
+        "integration_worktree": (integration_worktree or previous.get("integration_worktree")),
         "blocker": blocker,
         "pending_gate": None,
     }
 
 
+def _operations_checkpoint(
+    previous: dict[str, Any],
+    actions: tuple[NextAction, ...],
+    *,
+    resumed_from: str,
+) -> dict[str, Any]:
+    serialized = [action.model_dump(mode="json") for action in actions]
+    return {
+        **previous,
+        "next_action": serialized[0] if len(serialized) == 1 else None,
+        "next_actions": serialized,
+        "pending_gate": None,
+        "blocker": None,
+        "resumed_from": resumed_from,
+    }
+
+
 def _default_profiles(project_type: str) -> tuple[str, ...]:
     if project_type == "frontend":
-        return ("frontend",)
+        return ("frontend-project",)
     if project_type == "fullstack":
-        return ("backend", "frontend")
-    return ("backend",)
+        return ("backend-project", "frontend-project")
+    return ("backend-project",)
+
+
+def _is_commit_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", ancestor, descendant],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+    return result.returncode == 0
+
+
+def _commits_are_local_only(root: Path, *commits: str) -> bool:
+    for commit in commits:
+        result = subprocess.run(
+            ["git", "-C", str(root), "branch", "-r", "--contains", commit],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+        if result.returncode != 0 or result.stdout.strip():
+            return False
+    return True
 
 
 def _input_artifacts_for(phase: WorkflowPhase) -> tuple[str, ...]:
@@ -1097,6 +2542,11 @@ def _input_artifacts_for(phase: WorkflowPhase) -> tuple[str, ...]:
         WorkflowPhase.REQUIREMENTS: ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"),
         WorkflowPhase.RESEARCH: ("docs/PRODUCT_REQUIREMENTS.md", "docs/SCOPE.md"),
         WorkflowPhase.DESIGN: ("docs/OPEN_SOURCE_RESEARCH.md", "docs/PRODUCT_REQUIREMENTS.md"),
+        WorkflowPhase.PROTOTYPE: (
+            "docs/PRODUCT_DESIGN.md",
+            "docs/INTERACTION_DESIGN.md",
+            "docs/UI_DESIGN.md",
+        ),
         WorkflowPhase.IMPLEMENTATION: (
             "docs/ARCHITECTURE.md",
             "docs/API_SPEC.md",
@@ -1126,3 +2576,9 @@ def _artifact_path_allowed(raw_path: str, allowed_paths: tuple[str, ...]) -> boo
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _request_hash(payload: dict[str, object]) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=list).encode("utf-8")
+    ).hexdigest()

@@ -16,6 +16,8 @@ BASE_DOCUMENTS: dict[str, str] = {
 - Keep every Agent task in its assigned branch and worktree.
 - Do not mark a mutating task complete without tests, a commit SHA, and push evidence when a remote exists.
 - Route commands and file writes through AI Engineering OS execution policy.
+- Keep project dependencies, builds, tests, and services inside the OCI environment selected by `.codex-os/environment.yaml`.
+- Do not run host package managers or delete persistent OCI volumes.
 """,
     "docs/README.md": """# 文档索引
 
@@ -105,6 +107,12 @@ BASE_DOCUMENTS: dict[str, str] = {
 ## Unreleased
 
 - 初始化项目文档骨架。
+""",
+    "docs/ENVIRONMENT.md": """# 项目环境
+
+状态：草案
+
+在 G2 前补齐 Compose 服务、Dockerfile、依赖锁、镜像 digest、健康检查、持久化、备份恢复和共享只读资产。
 """,
     "docs/ADR/README.md": """# Architecture Decision Records
 

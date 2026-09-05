@@ -1,9 +1,39 @@
 # 变更记录
 
-## [Unreleased] - 2026-08-21
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","VERSION-001","RELEASE-001"]} -->
+
+## [Unreleased] - 2026-08-26
+
+- 0.2.1 adopts OCI-first project environments: new projects scaffold an explicit Podman/Docker contract, legacy projects require governed adoption, and G2-G4 bind Compose, image, persistence, rebuild and host-cleanliness evidence (ADR-0007).
 
 ### Added
 
+- 增加 API 1.2 分阶段 `workflow_create`、`workflow_begin`、`workflow_cancel`：创建不分配资源，开始受版本与幂等约束，取消保留 Host Operation 对账并暴露结构化 cancellation 状态；旧 `workflow_start` 保留为带弃用提示的兼容包装。
+- Release prepare now archives Plugin source from the authorized Commit, normalizes only the OCI staging copy to exact `0.2.0`, records source/packaged manifest versions and hash, and makes G4 reopen the ZIP before publication; the streaming archive path avoids Windows deep-directory expansion.
+- Windows 路径状态统一使用 resolved POSIX-form Unicode 文本，Plugin CLI/MCP 固定 UTF-8 stdio；新写入拒绝 `U+FFFD`，Doctor 可用 `PATH_ENCODING_CORRUPT` 精确报告历史损坏字段，并增加中文项目根、Worktree、SQLite、CLI JSON 和真实 stdio MCP 回归测试。
+- 含前端页面的 Routing 现在不可移除 `frontend-project`；Workflow 在 design 与 G2 之间强制进入 prototype 阶段，要求离线自包含 HTML、`html-prototype-validator` 和独立 accepted UX Review，原型 Commit/hash 变化会使旧确认失效。
+- 增加唯一不可变 `RuntimeVersions`，统一软件、Plugin、API、配置、文档、Profile、SQLite、需求和执行镜像版本；公共 1.2 配置使用可移植项目根。
+- 增加 SQLite `0007_release_closure`：Host Operation、脱敏调用审计、Memory 乐观版本、Routing 评分、Release candidate/final 对账、Check 时间和不可逆 accepted Handoff 约束。
+- 增加受管 Worktree/coordinator root 明确拒绝、0006→0007 重验证、Memory expected-version 和迁移失败临时库校验/原子恢复测试。
+- `status` 与 `step` 改用 SQLite 只读连接，不再隐式迁移、创建状态目录、分配任务或推进 Workflow。
+- CLI 与 MCP 共用 API 1.2 响应封装、受信本地调用上下文和 `next_actions` 语义；`NextAction` 增加 Host Operation、Task Group、依赖及期望版本字段。
+- Review finding 改为 `id/severity/status/summary` 结构对象，开放 high/critical finding 会在 accepted 决策写入前被拒绝。
+- 增加 Host Operation 持久化内核：稳定幂等键与请求 hash、脱敏请求、租约/尝试次数、未知结果强制对账及最多 4 个恢复动作。
+- Handoff accepted 审批改为先在 SQLite 同一事务中持久化 `integration_merge` Host Operation；API 1.2 返回待执行操作，merge 后 push 失败时保持 Handoff accepted 并保存待补推送的 merge commit。
+- G2 批准改为同事务持久化 `integration_prepare`，executor 再幂等创建/登记 integration Worktree、任务组和最多 4 个任务；数据库维护也先创建/租赁 `database_migrate` intent 再执行迁移，远端 push 结果未知进入 reconcile 而非盲目重试。
+- G3 批准改为持久化 `release_prepare`；executor 使用已批准 wheelhouse 在离线 OCI 中按 Commit 时间可复现构建 wheel/sdist/Plugin 包，经 operation staging 全量复算 hash 后原子提升 candidate，并支持已提升未入库结果的安全对账。
+- G4 审批与发布副作用已拆分：审批事务只保存独立 authority、PR/Commit 预检结果和 `release_publish` intent；executor 成功写回 final manifest/远端结果后 Workflow 才进入 completed，未知结果进入 reconcile。
+- CLI/MCP 增加 `host_operation_execute` 公共入口；Handoff review 接受 `expected_handoff_version` 与 `idempotency_key`，自报 `reviewer` 仅作兼容显示并返回 warning。
+- `resume` 会从持久化 Host Operation、租约和失败状态重建最多 4 个可执行 `host_operation` actions，避免进程中断后丢失外部副作用恢复入口。
+- Review report、Check report 与文档 Gate 校验改为从绑定 Git Commit 或受管 `.codex-os/artifacts/` 审计区复算 hash，不再信任活动 Worktree 中未提交的当前文件。
+- 非零验证检查现在生成 `failed` Check Evidence、失败报告和可恢复 blocker，不再构造 `passed + 非零 exit_code` 的无效证据。
+- verification prepare 默认目标修正为 Bookworm `linux-amd64` / Python 3.12，下载对应 manylinux wheels；正式消费端复核审批、期限、镜像、平台、完整 manifest/hash、Trivy tree、只读权限与 link/junction，沙箱未启动也会生成 failed Check Evidence。
+- Runtime Routing 改用 canonical `backend-project`、`frontend-project`、`large-project` Profile 名，短名只作为兼容 alias；`routing_decisions` 同步写入 0007 的七维评分、canonical profiles、risk、workflow 和 schema 版本字段。
+- Profile Router 从项目 `profiles/*.yaml` 读取 allowed profile 名；缺省 fixture 保留内置安全集合，large 自动扩展不再绕过 Profile 资源事实源。
+- 以 CQ-OS `400a930` 为研究基线，移植其 MIT `@cq/governance` 包的 Baseline + Project 单调策略、默认拒绝、角色/路径负向测试向量并保留 attribution；新增带 hash 的 `EffectiveGovernancePolicy`，Profile Schema 1.2 声明任务模板、影响路径、增量 Gate 证据与 Reviewer，Routing 保存七维输入、override、依赖和 policy hash，审批适配器忽略自报身份的提权语义。
+- Plugin 资源补齐 `frontend-engineer` Agent、`frontend-implementation` Skill，并将插件 manifest 版本对齐 Runtime `0.2.0`。
+- CLI/MCP 补齐 `verification_prepare`、`host_operation_reconcile` 与 `database_migrate` 公共映射；CLI 另新增 Release Candidate 与 Memory submit/review/search 映射，统一返回 API 1.2 envelope。
+- MCP `memory_review` 暴露 `expected_version`，Memory 生命周期变更可由公共接口执行乐观并发校验。
 - 增加 Plugin API 1.1 公共接口：`repository_check`、结构化 `task_complete`、`handoff_review`、`worktree_cleanup`、受管 `verification_run`、Release Candidate 与 Memory 审核；配置 Schema 1.1 兼容读取 1.0。
 - 增加 `0004`～`0006` 追加式迁移，覆盖仓库审计、强证据 Gate、版本/发布记录、多 Agent DAG、Handoff Review、集成合并、Worktree 清理、Memory 生命周期与 FTS5；迁移前数据库备份带 checksum、完整性及恢复校验。
 - 增加正式 GitHub 仓库预检与独立 Repository Governance Service，检查 Git 根、干净状态、remote/upstream/HEAD/目标分支、复制式版本目录、临时文件、跟踪污染、Secret、`.gitignore` 和路径逃逸。
@@ -39,9 +69,19 @@
 - 补齐 V1 的产品、交互、UI、API、Agent、Execution 和变更工作流 Skills，并增加可校验的 frontend/backend/large 增量 Profiles。
 - 增加 V1 发布候选验收报告，归档构建、测试、Git 证据及 OCI、Codex Host 和 G4 阻塞项。
 - 增加显式启用的真实 Podman 集成测试，在隔离 Git Worktree 中验证锁定镜像、非 root、断网、只读根、最小权限、资源限制和执行后干净状态。
+- 完成 draft GitHub Release、远端资产下载 SHA-256 复核、final manifest 资产化和未知副作用对账；资产全部核验前 Release/Version/Workflow 不得完成。
+- G3/G4 Gate 改为完整结构化证据矩阵，公共 CLI/MCP/应用/API 文档由同一 20-tool registry 自动比对，并补齐发布故障注入和 1.0/1.1 兼容回归。
+- 开发收口全量验证提升至 `248 passed`、`0 skipped`，总体 branch-aware 覆盖率 `86.89%`、相对 `ab879c0` 的变更行覆盖率 `90%`；最新远端提交通过干净 clone、独立虚拟环境 wheel 安装与 doctor 冒烟验证。
 
 ### Governance
 
+- 所有活跃 `docs/**/*.md` 现在强制完整治理 metadata，版本目标来自项目配置；归档文档明确豁免活跃 metadata。新增机器可校验的 Requirement/规格/测试追溯表和公共文档检查错误字段。
+- 将 Skill 规格回写为实际交付的 21 个 Plugin Skills，补齐 Product/Frontend 的设计、原型与实现职责及 Handoff 链，并统一任务执行超时和 Runtime ID 示例。
+- 接受 ADR-0005，将实现契约读取顺序收敛到 `PROJECT_MASTER.md` 第 3 节，明确 Workflow 显式入口、治理文档自修改、统一 ID、事件保留和发布清单事实源，并用规格一致性测试防止再次漂移。
+- 接受 ADR-0004，冻结 `REQ-1.6.2` / 软件与 Plugin `0.2.0` / API、配置、文档与 Profile `1.2` / SQLite `0007`，并规定 1.0/1.1 在 0.2.x 的弃用兼容期。
+- 新增 0.2.0 发布收口矩阵，把版本漂移、项目根混淆、Host Operation、合并/发布恢复、Commit-bound Evidence、离线验证缓存、Routing/Plugin 资源和 OCI 供应链逐项绑定测试与 Gate。
+- 决定 Git/OCI/GitHub 副作用先持久化 intent 与授权、结果未知先对账；文档、Review 和制品从绑定 Commit 或受管审计区重读，不接受活动 Worktree 未提交内容替代。
+- 将正式镜像决策统一为 Python 3.12.14 full Bookworm，并要求 index/platform digest、SBOM、Trivy 与 high/critical finding 策略证据。
 - 固定需求基线 `REQ-1.6.2`、软件/CLI/Core `0.2.0`、Plugin API `1.1`、配置 Schema `1.1`、SQLite Schema `0006` 和预期 tag `v0.2.0`，不再混用需求与软件版本。
 - 迁移后的活动 Workflow 在下一次状态变化前进入 `MIGRATION_REVALIDATION_REQUIRED`；只有仓库预检及已批准 Gate 的 1.1 证据包重审通过后才能恢复。
 - 绑定 GitHub 远端，实施每个逻辑变更提交并立即推送的交付协议。
@@ -57,6 +97,7 @@
 - 当前 Windows 环境已验证 Git、uv、Python 3.12 与 SQLite FTS5。
 - 已安装 WSL 2.7.12 和 Podman 5.8.3，启动 rootless `podman-machine-default` 并预拉取项目锁定 digest；`doctor` 返回 `ok=true`。
 - 真实 Podman 沙箱复验通过，ENV-SANDBOX-001 与 ERP PA-007 环境遗留项已解除；Docker Desktop 未安装且不再是阻塞条件。
+- 2026-08-29 当前主机已启动 `podman-machine-default`，Podman 5.8.6 与锁定 Python 3.12.14 Bookworm digest 可用，真实 OCI 全量测试零 skip；已安装 `gh 2.98.0` 但尚未认证，正式 verification/Trivy 快照、GitHub 对账和独立 G4 仍保持 blocked。
 
 ### Documentation baseline (2026-08-20)
 

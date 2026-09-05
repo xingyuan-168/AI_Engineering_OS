@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from codex_ai_os.adapters.docker import SandboxRequest, SandboxResult, command_h
 from codex_ai_os.application.execution import ExecutionService
 from codex_ai_os.application.g4 import GitHubReleaseGovernanceService
 from codex_ai_os.application.project import ProjectInitializer
+from codex_ai_os.application.prototype import PrototypeReviewService
 from codex_ai_os.application.release import ReleaseCandidateService
 from codex_ai_os.application.verification import DEFAULT_CHECKS, VerificationService
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowResult
@@ -23,7 +26,10 @@ from codex_ai_os.domain.governance import (
     ReviewDecision,
     ReviewEvidenceInput,
 )
+from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
+from codex_ai_os.domain.operations import HostOperationStatus
 from codex_ai_os.domain.workflow import (
+    ActionKind,
     ChangeKind,
     Gate,
     NextAction,
@@ -43,6 +49,35 @@ class _SuccessfulSandbox:
                 (mount.source / "codex_ai_engineering_os-0.2.0-py3-none-any.whl").write_bytes(
                     b"governed-wheel"
                 )
+                (mount.source / "codex_ai_engineering_os-0.2.0.tar.gz").write_bytes(
+                    b"governed-sdist"
+                )
+                source = mount.source / ".plugin-source.zip"
+                archive = mount.source / "ai-engineering-os-plugin-0.2.0.zip"
+                with zipfile.ZipFile(source) as source_bundle, zipfile.ZipFile(
+                    archive, "w"
+                ) as bundle:
+                    for info in source_bundle.infolist():
+                        if info.is_dir():
+                            continue
+                        relative = info.filename.removeprefix(
+                            "plugins/ai-engineering-os/"
+                        )
+                        content = source_bundle.read(info)
+                        if relative == ".codex-plugin/plugin.json":
+                            manifest = json.loads(content.decode("utf-8"))
+                            manifest["version"] = "0.2.0"
+                            content = (
+                                json.dumps(
+                                    manifest,
+                                    ensure_ascii=False,
+                                    indent=2,
+                                    sort_keys=True,
+                                )
+                                + "\n"
+                            ).encode()
+                        bundle.writestr(f"ai-engineering-os/{relative}", content)
+                source.unlink()
         now = datetime.now(UTC).isoformat()
         return SandboxResult(
             execution_id=request.execution_id,
@@ -61,6 +96,8 @@ class _SuccessfulSandbox:
 class _GitHubRunner:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.assets: dict[str, bytes] = {}
+        self.draft = True
 
     def __call__(
         self, command: list[str], _cwd: Path, _timeout: float
@@ -74,10 +111,7 @@ class _GitHubRunner:
         if command[:2] == ["git", "tag"]:
             return self._result(command)
         if command[:3] == ["git", "ls-remote", "--tags"]:
-            output = (
-                f"{'a' * 40}\trefs/tags/v0.2.0\n"
-                f"{'e' * 40}\trefs/tags/v0.2.0^{{}}\n"
-            )
+            output = f"{'a' * 40}\trefs/tags/v0.2.0\n{'e' * 40}\trefs/tags/v0.2.0^{{}}\n"
             return self._result(command, stdout=output)
         if command[:3] == ["gh", "pr", "view"]:
             with Database(self.root / ".codex-os" / "state" / "state.db").connection() as db:
@@ -107,11 +141,31 @@ class _GitHubRunner:
                     {
                         "id": "R_fixture",
                         "url": "https://github.com/example/ai-os/releases/tag/v0.2.0",
-                        "isDraft": False,
+                        "isDraft": self.draft,
                         "tagName": "v0.2.0",
+                        "assets": [
+                            {
+                                "id": index,
+                                "name": name,
+                                "apiUrl": f"https://api.github.com/assets/{index}",
+                                "size": len(content),
+                            }
+                            for index, (name, content) in enumerate(sorted(self.assets.items()), 1)
+                        ],
                     }
                 ),
             )
+        if command[:3] == ["gh", "release", "upload"]:
+            path = Path(command[-1])
+            self.assets[path.name] = path.read_bytes()
+            return self._result(command)
+        if command[:2] == ["gh", "api"]:
+            index = int(command[2].rsplit("/", 1)[1]) - 1
+            content = sorted(self.assets.items())[index][1]
+            return subprocess.CompletedProcess(command, 0, content, b"")
+        if command[:3] == ["gh", "release", "edit"]:
+            self.draft = False
+            return self._result(command)
         raise AssertionError(f"unexpected publication command: {command}")
 
     @staticmethod
@@ -135,7 +189,11 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         name="Governed V11",
         project_type=ProjectType.FULLSTACK,
         git_push_policy=GitPushPolicy.FIXTURE_LOCAL_ONLY,
-        schema_version="1.1",
+        schema_version="1.2",
+    )
+    shutil.copytree(
+        Path(__file__).parents[2] / "plugins" / "ai-engineering-os",
+        root / "plugins" / "ai-engineering-os",
     )
     _git(root, "add", ".")
     _git(root, "commit", "-m", "chore: initialize governed fixture")
@@ -144,11 +202,22 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     engine = WorkflowEngine(
         root,
         g4_publisher=GitHubReleaseGovernanceService(root, runner=_GitHubRunner(root)),
+        release_execution_service=execution,
     )
     current = engine.start(
         "Deliver the governed 0.2.0 runtime",
         profiles=("backend", "frontend", "large"),
         target_branch="main",
+        impact_paths=(
+            "src/codex_ai_os/application/generated_backend.py",
+            "src/codex_ai_os/frontend/generated_frontend.py",
+            "src/codex_ai_os/infrastructure/migrations/9999_fixture.sql",
+            "tests/integration/test_generated_governance.py",
+            "pyproject.toml",
+            "uv.lock",
+        ),
+        dependency_count=1,
+        release_required=True,
     )
 
     current, _ = _complete(
@@ -169,9 +238,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         engine,
         current,
         {
-            "docs/PRODUCT_REQUIREMENTS.md": _doc(
-                "Requirements", ("范围", "成功标准", "验收标准")
-            ),
+            "docs/PRODUCT_REQUIREMENTS.md": _doc("Requirements", ("范围", "成功标准", "验收标准")),
             "docs/USER_STORY.md": _doc("User Stories", ("用户", "场景", "验收")),
             "docs/BUSINESS_RULES.md": _doc("Business Rules", ("规则", "异常", "验收")),
         },
@@ -184,28 +251,78 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         engine,
         current,
         {
-            "docs/OPEN_SOURCE_RESEARCH.md": _doc(
-                "Research", ("来源", "版本", "License", "风险")
-            ),
+            "docs/OPEN_SOURCE_RESEARCH.md": _doc("Research", ("来源", "版本", "License", "风险")),
             "docs/TECH_STACK.md": _doc("Stack", ("Python", "SQLite", "Podman")),
         },
     )
-    current, design_commit = _complete(
+    current, _ = _complete(
         engine,
         current,
         {
-            "docs/ARCHITECTURE.md": _doc(
-                "Architecture", ("定位", "组件", "信任边界", "恢复")
-            ),
+            "docs/ARCHITECTURE.md": _doc("Architecture", ("定位", "组件", "信任边界", "恢复")),
             "docs/API_SPEC.md": _doc("API", ("接口", "错误", "兼容")),
             "docs/DATABASE.md": _doc("Database", ("迁移", "事务", "恢复")),
+            "docs/MIGRATION_SPEC.md": _doc("Migration", ("迁移", "回滚", "校验")),
             "docs/SECURITY.md": _doc("Security", ("信任", "威胁", "风险")),
+            "docs/ADR/README.md": _doc("ADR Index", ("Decision", "Status", "Owner")),
+            "docs/PRODUCT_DESIGN.md": _doc("Product Design", ("用户", "范围", "验收")),
+            "docs/INTERACTION_DESIGN.md": _doc("Interaction Design", ("流程", "状态", "错误")),
+            "docs/UI_DESIGN.md": _doc("UI Design", ("布局", "组件", "无障碍")),
+            "docs/RISK_REGISTER.md": _doc("Risk Register", ("风险", "影响", "处置")),
+            "docs/AGENT_HANDOFF.md": _doc("Agent Handoff", ("任务", "证据", "审核")),
         },
     )
+    assert current.next_action is not None
+    assert current.next_action.skill == "html-prototype"
+    prototype_action = current.next_action
+    prototype_path = "docs/prototypes/governed/index.html"
+    prototype_commit = _commit_files(
+        prototype_action,
+        {prototype_path: _prototype()},
+    )
+    current = _complete_committed_action(
+        engine,
+        current,
+        prototype_action,
+        prototype_commit,
+        {prototype_path: "html-prototype"},
+    )
+    prototype_hash = hashlib.sha256(
+        _git_bytes(
+            Path(str(prototype_action.worktree)), "show", f"{prototype_commit}:{prototype_path}"
+        )
+    ).hexdigest()
+    PrototypeReviewService(root).submit(
+        run_id=current.run.id,
+        task_id=str(prototype_action.task_id),
+        expected_task_version=engine.store.get_task(str(prototype_action.task_id)).state_version,
+        expected_state_version=current.run.state_version,
+        idempotency_key="e2e-prototype-review",
+        prototype_path=prototype_path,
+        prototype_hash=prototype_hash,
+        reviewed_commit=prototype_commit,
+        decision=ReviewDecision.ACCEPTED,
+        reviewer="ux-owner",
+        reason="offline interaction states confirmed",
+        invocation=InvocationContext.local(InvocationSource.CLI),
+    )
+    current = engine.status(current.run.id)
     current = engine.submit_approval(
         current.run.id, gate=Gate.G2, approved=True, reviewer="owner", reason="G2 verified"
     )
-    assert current.run.integration_head == design_commit
+    assert current.next_action is not None
+    assert current.next_action.kind is ActionKind.HOST_OPERATION
+    assert current.run.integration_head is None
+    assert engine.operations.get(str(current.next_action.operation_id)).status.value == ("pending")
+    current = engine.execute_host_operation(
+        str(current.next_action.operation_id),
+        expected_operation_version=int(current.next_action.expected_operation_version or 0),
+        idempotency_key=engine.operations.get(
+            str(current.next_action.operation_id)
+        ).idempotency_key,
+        invocation=InvocationContext.local(InvocationSource.CLI),
+    )
+    assert current.run.integration_head == prototype_commit
     assert len(current.next_actions) == 3
 
     initial_actions = current.next_actions
@@ -279,21 +396,65 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         current.run.id, gate=Gate.G3, approved=True, reviewer="owner", reason="G3 verified"
     )
 
+    assert current.next_action is not None
+    assert current.next_action.kind is ActionKind.HOST_OPERATION
+    release_prepare = engine.operations.get(str(current.next_action.operation_id))
+    current = engine.execute_host_operation(
+        release_prepare.operation_id,
+        expected_operation_version=int(current.next_action.expected_operation_version or 0),
+        idempotency_key=release_prepare.idempotency_key,
+        invocation=InvocationContext.local(InvocationSource.CLI),
+    )
+    succeeded_prepare = engine.operations.get(release_prepare.operation_id)
+    assert succeeded_prepare.status.value == "succeeded"
+
+    with engine.store.database.connection() as connection:
+        connection.execute("DELETE FROM release_records WHERE run_id = ?", (current.run.id,))
+        connection.commit()
+    recovered_candidate = ReleaseCandidateService(root, execution_service=execution).create(
+        current.run.id,
+        operation=succeeded_prepare.model_copy(
+            update={"status": HostOperationStatus.RUNNING, "attempt_count": 2}
+        ),
+    )
+    assert recovered_candidate.created is False
+
     release_action = current.next_actions[0]
     candidate = ReleaseCandidateService(root, execution_service=execution).create(current.run.id)
     release_worktree = Path(str(release_action.worktree))
+    assert candidate.created is False
+    assert Path(candidate.artifact_root).name == "candidate"
+    assert any(name.endswith(".whl") for name in candidate.artifacts)
+    assert any(name.endswith(".tar.gz") for name in candidate.artifacts)
+    assert any(name.endswith("plugin-0.2.0.zip") for name in candidate.artifacts)
+    candidate_manifest = json.loads(
+        (release_worktree / candidate.manifest_path).read_text(encoding="utf-8")
+    )
+    assert candidate_manifest["integration_source_commit"] == candidate.source_commit
+    assert candidate_manifest["candidate_commit"] is None
+    assert isinstance(candidate_manifest["source_date_epoch"], int)
+    assert candidate_manifest["verification_cache_manifest_hash"] is None
+    assert candidate_manifest["source_plugin_manifest_version"].startswith("0.2.0+")
+    assert candidate_manifest["packaged_plugin_version"] == "0.2.0"
+    assert len(candidate_manifest["packaged_plugin_manifest_hash"]) == 64
+    sbom = json.loads((root / candidate.sbom_path).read_text(encoding="utf-8"))
+    assert str(sbom["serialNumber"]).startswith("urn:uuid:")
     (release_worktree / "docs" / "CHANGELOG.md").write_text(
         _doc("Changelog", ("0.2.0", "Governance")), encoding="utf-8"
     )
     release_commit = _git_commit(release_worktree, "feat: assemble governed release")
-    release_checks = VerificationService(root, execution_service=execution).run(
-        run_id=current.run.id,
-        task_id=str(release_action.task_id),
-        checks=tuple(
-            (name, ("python", "--version"))
-            for name in ("release-manifest", "sbom", "checksums", "rollback")
-        ),
-    ).checks
+    release_checks = (
+        VerificationService(root, execution_service=execution)
+        .run(
+            run_id=current.run.id,
+            task_id=str(release_action.task_id),
+            checks=tuple(
+                (name, ("python", "--version"))
+                for name in ("release-manifest", "sbom", "checksums", "rollback")
+            ),
+        )
+        .checks
+    )
     current = _complete_committed_action(
         engine,
         current,
@@ -308,6 +469,15 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         },
         checks=release_checks,
     )
+    with engine.store.database.read_connection() as connection:
+        bound_candidate = connection.execute(
+            "SELECT integration_source_commit, candidate_commit "
+            "FROM release_records WHERE run_id = ?",
+            (current.run.id,),
+        ).fetchone()
+    assert bound_candidate is not None
+    assert bound_candidate[0] == candidate.source_commit
+    assert bound_candidate[1] == release_commit
     current = _review_handoff(root, engine, _only_ready_handoff(engine, current.run.id))
     assert current.run.workflow_phase.value == "memory"
 
@@ -353,7 +523,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         "release",
     )
     merge_commit = "e" * 40
-    completed = engine.submit_approval(
+    authorized = engine.submit_approval(
         current.run.id,
         gate=Gate.G4,
         approved=True,
@@ -371,15 +541,41 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
             ),
         ),
     )
+    assert authorized.run.run_status.value == "running"
+    assert authorized.next_action is not None
+    assert authorized.next_action.kind is ActionKind.HOST_OPERATION
+    publish_operation = engine.operations.get(str(authorized.next_action.operation_id))
+    assert publish_operation.kind.value == "release_publish"
+    completed = engine.execute_host_operation(
+        publish_operation.operation_id,
+        expected_operation_version=int(authorized.next_action.expected_operation_version or 0),
+        idempotency_key=publish_operation.idempotency_key,
+        invocation=InvocationContext.local(InvocationSource.CLI),
+    )
     assert completed.run.run_status.value == "completed"
     assert completed.run.checkpoint["release_publication"]["tag"] == "v0.2.0"
+    with engine.store.database.read_connection() as connection:
+        published = connection.execute(
+            "SELECT status, final_manifest_path, final_manifest_hash, "
+            "external_reconciliation_json FROM release_records WHERE run_id = ?",
+            (completed.run.id,),
+        ).fetchone()
+    assert published is not None
+    assert published["status"] == "published"
+    final_manifest = root / str(published["final_manifest_path"])
+    assert (
+        hashlib.sha256(final_manifest.read_bytes()).hexdigest() == published["final_manifest_hash"]
+    )
+    external = json.loads(str(published["external_reconciliation_json"]))
+    assert external["release"]["is_draft"] is False
+    assert external["assets"]["release-manifest.json"]["sha256"]
 
 
-def _doc(title: str, sections: tuple[str, ...]) -> str:
+def _doc(title: str, sections: tuple[str, ...], *, version: str = "0.1.0") -> str:
     metadata = json.dumps(
         {
-            "schema_version": "1.1",
-            "document_version": "0.2.0",
+            "schema_version": "1.2",
+            "document_version": version,
             "status": "approved",
             "owner": "fixture-owner",
             "requirement_refs": ["REQ-1.6.2"],
@@ -388,6 +584,30 @@ def _doc(title: str, sections: tuple[str, ...]) -> str:
     )
     body = "\n\n".join(f"## {section}\n\nVerified content." for section in sections)
     return f"<!-- codex-os-document: {metadata} -->\n# {title}\n\n{body}\n"
+
+
+def _prototype() -> str:
+    states = "".join(
+        f'<section data-state="{state}">{state}</section>'
+        for state in (
+            "success",
+            "empty",
+            "loading",
+            "validation",
+            "permission",
+            "failure",
+            "retry",
+            "cancel",
+            "resume",
+        )
+    )
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        "<style>button:focus{outline:2px solid}</style></head>"
+        f'<body>{states}<label for="name">Name</label><input id="name">'
+        '<button type="button">Continue</button>'
+        '<script>document.body.dataset.ready="1";</script></body></html>'
+    )
 
 
 def _complete(
@@ -478,20 +698,25 @@ def _complete_committed_action(
 
 
 def _review_handoff(root: Path, engine: WorkflowEngine, handoff_id: str) -> WorkflowResult:
-    with engine.store.database.connection() as connection:
+    with engine.store.database.read_connection() as connection:
         row = connection.execute(
-            "SELECT task_id FROM handoffs WHERE id = ?", (handoff_id,)
+            "SELECT task_id, state_version FROM handoffs WHERE id = ?", (handoff_id,)
         ).fetchone()
+        assert row is not None
         task = connection.execute(
             "SELECT head_commit FROM tasks WHERE id = ?", (str(row["task_id"]),)
         ).fetchone()
+        assert task is not None
     relative = f".codex-os/artifacts/reviews/{handoff_id}.md"
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("# Handoff Review\n\nAccepted.\n", encoding="utf-8")
-    return engine.review_handoff(
+    idempotency_key = f"e2e:handoff:{handoff_id}:{row['state_version']}"
+    prepared = engine.review_handoff(
         HandoffReviewInput(
             handoff_id=handoff_id,
+            expected_handoff_version=int(row["state_version"]),
+            idempotency_key=idempotency_key,
             reviewer="independent-reviewer",
             reviewed_commit=str(task["head_commit"]),
             decision=ReviewDecision.ACCEPTED,
@@ -499,6 +724,15 @@ def _review_handoff(root: Path, engine: WorkflowEngine, handoff_id: str) -> Work
             report_ref=relative,
             report_hash=hashlib.sha256(path.read_bytes()).hexdigest(),
         )
+    )
+    assert prepared.next_action is not None
+    assert prepared.next_action.operation_id is not None
+    assert prepared.next_action.expected_operation_version is not None
+    return engine.execute_host_operation(
+        prepared.next_action.operation_id,
+        expected_operation_version=prepared.next_action.expected_operation_version,
+        idempotency_key=idempotency_key,
+        invocation=InvocationContext.local(InvocationSource.CLI),
     )
 
 

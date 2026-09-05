@@ -25,16 +25,30 @@ def test_mcp_lists_the_public_runtime_tools() -> None:
     assert asyncio.run(exercise()) == {
         "project_init",
         "workflow_start",
+        "workflow_create",
+        "workflow_begin",
+        "workflow_cancel",
         "workflow_status",
         "workflow_step",
         "workflow_resume",
         "approval_submit",
         "repository_check",
         "task_complete",
+        "task_amend_evidence",
+        "prototype_review_submit",
         "handoff_review",
+        "host_operation_execute",
+        "host_operation_reconcile",
         "worktree_cleanup",
         "docs_check",
+        "environment_check",
+        "environment_adopt",
+        "environment_prepare",
+        "environment_verify",
+        "gate_preflight",
+        "verification_prepare",
         "verification_run",
+        "database_migrate",
         "release_candidate_create",
         "memory_candidate_submit",
         "memory_review",
@@ -43,8 +57,10 @@ def test_mcp_lists_the_public_runtime_tools() -> None:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="the repository plugin launcher is Windows-only")
-def test_plugin_launcher_serves_the_same_tools_over_stdio() -> None:
-    async def exercise() -> set[str]:
+def test_plugin_launcher_serves_unicode_over_real_stdio(tmp_path: Path) -> None:
+    unicode_root = tmp_path / "中文 MCP 项目"
+
+    async def exercise() -> tuple[set[str], dict[str, Any]]:
         launcher = (
             Path(__file__).parents[2]
             / "plugins"
@@ -58,11 +74,26 @@ def test_plugin_launcher_serves_the_same_tools_over_stdio() -> None:
         )
         async with Client(stdio_client(parameters), raise_exceptions=True) as client:
             result = await client.list_tools()
-            return {tool.name for tool in result.tools}
+            initialized = await client.call_tool(
+                "project_init",
+                {
+                    "project_root": str(unicode_root),
+                    "project_id": "PROJECT-MCP-UNICODE",
+                    "name": "中文 MCP 工程",
+                    "project_type": "backend",
+                },
+            )
+            return (
+                {tool.name for tool in result.tools},
+                cast(dict[str, Any], initialized.structured_content),
+            )
 
-    names = asyncio.run(exercise())
+    names, initialized = asyncio.run(exercise())
     assert "workflow_start" in names
     assert "task_complete" in names
+    assert initialized["ok"] is True
+    assert initialized["data"]["root"] == unicode_root.resolve().as_posix()
+    assert "\ufffd" not in str(initialized)
 
 
 def test_mcp_initializes_and_starts_a_workflow(tmp_path: Path) -> None:
@@ -95,21 +126,23 @@ def test_mcp_initializes_and_starts_a_workflow(tmp_path: Path) -> None:
 
     initialized, started, checked = asyncio.run(exercise())
     assert initialized["ok"] is True
-    assert initialized["project_id"] == "PROJECT-MCP"
-    assert started["run"]["workflow_phase"] == "intake"
+    _assert_api_envelope(initialized)
+    _assert_api_envelope(started)
+    _assert_api_envelope(checked)
+    assert initialized["data"]["project_id"] == "PROJECT-MCP"
+    assert started["data"]["run"]["workflow_phase"] == "intake"
     assert started["next_action"]["kind"] == "model_task"
     assert started["next_action"]["branch"].startswith("agent/product-manager/")
     assert ".worktrees" in started["next_action"]["worktree"]
-    assert checked == {
-        "ok": True,
+    assert checked["data"] == {
         "valid": True,
         "checks": [
             {"name": "sqlite_integrity", "ok": True},
             {"name": "document_governance", "ok": True},
         ],
         "deprecated": True,
-        "warning": "Supply run_id and task_id for governed verification.",
     }
+    assert checked["warnings"] == ["Supply run_id and task_id for governed verification."]
 
 
 def test_mcp_host_handshake_completes_the_full_fixture_workflow(
@@ -250,7 +283,26 @@ def test_mcp_host_handshake_completes_the_full_fixture_workflow(
 
 
 def _structured(result: Any) -> dict[str, Any]:
-    return cast(dict[str, Any], result.structured_content)
+    payload = cast(dict[str, Any], result.structured_content)
+    _assert_api_envelope(payload)
+    data = cast(dict[str, Any], payload["data"])
+    return {
+        **data,
+        "ok": payload["ok"],
+        "next_action": payload["next_action"],
+        "next_actions": payload["next_actions"],
+    }
+
+
+def _assert_api_envelope(payload: dict[str, Any]) -> None:
+    assert payload["api_version"] == "1.2"
+    assert str(payload["request_id"]).startswith("REQ-")
+    assert str(payload["correlation_id"]).startswith("CORR-")
+    next_actions = cast(list[object], payload["next_actions"])
+    assert isinstance(next_actions, list)
+    assert isinstance(payload["warnings"], list)
+    if len(next_actions) == 1:
+        assert payload["next_action"] == next_actions[0]
 
 
 def _initialize_git_repository(root: Path) -> None:
@@ -265,7 +317,7 @@ def _use_legacy_fixture_config(root: Path) -> None:
     config = root / ".codex-os" / "project.yaml"
     config.write_text(
         config.read_text(encoding="utf-8").replace(
-            "schema_version: '1.1'", "schema_version: '1.0'"
+            "schema_version: '1.2'", "schema_version: '1.0'"
         ),
         encoding="utf-8",
     )

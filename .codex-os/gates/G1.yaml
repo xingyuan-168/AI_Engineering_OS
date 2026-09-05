@@ -1,0 +1,4 @@
+schema_version: '1.2'
+gate: G1
+documents: [docs/PRODUCT_REQUIREMENTS.md, docs/USER_STORY.md, docs/BUSINESS_RULES.md, docs/SCOPE.md]
+git: {source_commit_required: true, push_required: true, enforce_allowed_paths: true}

@@ -1,5 +1,7 @@
 # 配置规格
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","CFG-001"]} -->
+
 版本：V2.0-derived-config
 状态：可执行实现规格基线
 格式：YAML；所有配置文件 UTF-8 编码，禁止未知字段静默忽略。
@@ -22,10 +24,10 @@
 ## 2. `project.yaml`
 
 ```yaml
-schema_version: "1.0"
+schema_version: "1.2"
 project_id: PROJECT-001
 name: example-project
-root: "C:/work/example-project"
+root: "."
 project_type: backend | frontend | fullstack | desktop | generic
 risk_level: low | medium | high | critical
 source_of_truth: docs/
@@ -40,7 +42,7 @@ default_agent_profile: standard
 | --- | --- | --- | --- |
 | `schema_version` | string | 是 | 只接受受支持的主版本 |
 | `project_id` | string | 是 | `PROJECT-` 前缀，项目内唯一 |
-| `root` | path | 是 | 必须是已存在的项目根目录 |
+| `root` | path | 是 | 1.2 固定使用相对项目根 `.`；Loader 以调用的 coordinator root 解析 |
 | `risk_level` | enum | 是 | 影响审批和执行策略 |
 | `source_of_truth` | path | 是 | 必须位于项目根目录内 |
 | `active_workflow` | string | 否 | 必须引用已注册 Workflow |
@@ -51,7 +53,7 @@ default_agent_profile: standard
 schema_version: "1.0"
 name: new-project
 version: "1.0.0"
-states: [intake, requirements, research, design, implementation, verify, release, memory]
+states: [intake, requirements, research, design, prototype, implementation, verify, release, memory, completed]
 initial_state: intake
 max_retries: 2
 checkpoint: after_transition
@@ -95,7 +97,7 @@ requires_review: true
 ## 6. `execution-policy.yaml`
 
 ```yaml
-schema_version: "1.0"
+schema_version: "1.2"
 sandbox: docker | podman
 network: disabled
 allowed_mounts: [worktree, artifacts, cache]
@@ -122,14 +124,14 @@ redaction_profile: strict
 cross_project_reuse: approval_required
 ```
 
-`storage` 只能使用已登记的 SQLite 存储；`default_scope` 必须为 `project` 或更严格范围。配置不得关闭来源 hash、脱敏、审计或项目隔离；`retention_days: 0` 表示按 `expires_at` 和人工失效规则管理，而不是立即删除历史。
+`storage` 只能使用已登记的 SQLite 存储；0.2.x 的 `default_scope` 必须精确为 `project`，`organization` 和 `public` 留待后续 ADR。配置不得关闭来源 hash、脱敏、审计或项目隔离；`retention_days: 0` 表示按 `expires_at` 和人工失效规则管理，而不是立即删除历史。
 
 ## 8. Plugin 配置 `plugin.yaml`
 
 ```yaml
-schema_version: "1.0"
+schema_version: "1.2"
 host: codex
-plugin_api: "1.0"
+plugin_api: "1.2"
 runtime_endpoint: "local-cli"
 enabled: true
 hooks:
@@ -210,7 +212,33 @@ review_required_by_default: true
 - 未知字段默认报错；只有显式声明 `extensions` 的命名空间允许扩展字段。
 - Schema 主版本不兼容时禁止启动；次版本可在兼容范围内读取。
 - 配置 hash 写入 Workflow 检查点，恢复时必须匹配或经过迁移。
+- 1.2 兼容读取 1.0/1.1 并返回弃用 warning；旧绝对根只有与显式调用根相同才可读取。
+- 从 Git 受管 Worktree 发起的公共调用必须拒绝并指向 coordinator root，不得跟随旧绝对路径静默切换 checkout。
 
 ## 14. 完成定义
 
 配置规格只有在每种配置都有 Schema 版本、字段类型、必填规则、覆盖规则、安全限制、错误处理和示例时才算完成。
+
+## 15. 项目环境配置
+
+`project.yaml` 在 Schema 1.2 增加 `environment_mode: legacy | oci-first`。缺失时只为存量项目兼容成 `legacy`；`project_init` 创建的新项目必须显式写入 `oci-first`。
+
+`.codex-os/environment.yaml` 使用 Schema 1.2，至少包含：
+
+```yaml
+schema_version: '1.2'
+environment_mode: oci-first
+oci_backend: podman
+compose_files: [compose.yaml]
+dockerfiles: []
+dependency_locks: []
+services: []
+persistent_mounts: []
+shared_assets: []
+host_budget:
+  max_project_bytes: 1073741824
+  max_git_bytes: 536870912
+  large_file_bytes: 52428800
+```
+
+`oci_backend` 只能为 `podman` 或 `docker`，默认 Podman，且不能在运行中静默回退。路径必须是项目内规范相对路径；项目外共享资产只允许以受批准环境变量定位并只读挂载。空 `services`、空 Dockerfile 或空 lockfile 允许作为初始化草案，但不能通过 G2。

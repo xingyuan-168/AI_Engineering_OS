@@ -1,5 +1,7 @@
 # Workflow 路由规则
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","ROUTING-001"]} -->
+
 版本：V2.0-derived-routing
 状态：可执行实现规格基线
 策略：可解释评分 + 人工覆盖。
@@ -55,6 +57,13 @@ human_override: null
 ## 5. 失败与复盘
 
 无法计算评分时进入 `blocked`，列出缺失输入。历史路由可按输入 hash、分数、结果和人工覆盖检索，用于改进规则；V1 不使用黑盒模型直接决定 Workflow。
+
+### 5.1 校准责任与变更纪律
+
+- Product Manager 是路由校准负责人；每季度或每完成 20 个 Workflow（先到者）复核一次。
+- 复核至少统计人工覆盖率、误入 `large-project` 的比例、因路由导致的 blocked/reopen、返工率和交付 lead time，并保留使用的数据范围与结论。
+- V1 不根据历史记录自动更新权重或阈值。任何评分维度、权重或 `7` 分边界变更都必须通过 ADR，更新 Profile/Effective Policy hash、测试向量和兼容说明后才能生效。
+- 样本不足或指标相互矛盾时维持当前规则，不以个人印象调整线上策略。
 
 ## 6. 完成定义
 

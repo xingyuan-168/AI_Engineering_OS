@@ -1,5 +1,7 @@
 # ADR-0001：MVP 运行时与状态存储
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001"]} -->
+
 - 状态：Accepted
 - 日期：2026-08-20
 - 范围：Workflow、Agent、Execution 和 Memory 的 V1 实现

@@ -11,6 +11,7 @@ from pathlib import Path
 from codex_ai_os.adapters.worktree import WorktreeSpec
 from codex_ai_os.domain.ids import new_id
 from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.path_codec import path_from_state, state_path
 
 
 class WorktreeStoreError(RuntimeError):
@@ -75,13 +76,14 @@ class WorktreeStore:
         spec: WorktreeSpec,
     ) -> WorktreeReservation:
         now = _utc_now()
+        normalized_path = state_path(spec.path)
         record = WorktreeRecord(
             id=new_id("WORKTREE"),
             project_id=project_id,
             run_id=run_id,
             task_id=task_id,
             agent=agent,
-            path=spec.path,
+            path=Path(normalized_path),
             branch=spec.branch,
             base_commit=spec.base_commit,
             status="provisioning",
@@ -117,7 +119,7 @@ class WorktreeStore:
                     WHERE id = ? AND run_id = ? AND agent = ?
                       AND status IN ('pending', 'running')
                     """,
-                    (spec.branch, spec.path.as_posix(), now, task_id, run_id, agent),
+                    (spec.branch, normalized_path, now, task_id, run_id, agent),
                 ).rowcount
                 if changed != 1:
                     raise WorktreeStoreError(
@@ -136,7 +138,7 @@ class WorktreeStore:
                         run_id,
                         task_id,
                         agent,
-                        spec.path.as_posix(),
+                        normalized_path,
                         spec.branch,
                         spec.base_commit,
                         now,
@@ -408,7 +410,7 @@ def _record_from_row(row: sqlite3.Row) -> WorktreeRecord:
         run_id=str(row["run_id"]),
         task_id=str(row["task_id"]),
         agent=str(row["agent"]),
-        path=Path(str(row["path"])),
+        path=path_from_state(row["path"]),
         branch=str(row["branch"]),
         base_commit=str(row["base_commit"]),
         status=str(row["status"]),

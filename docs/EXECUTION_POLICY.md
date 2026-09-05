@@ -1,12 +1,14 @@
 # 执行策略
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"security-reviewer","requirement_refs":["REQ-1.6.2","EXEC-001"]} -->
+
 版本：V2.0-derived-execution
 状态：可执行实现规格基线
-默认：Docker/Podman 沙箱；Windows 宿主机不直接承载高风险 Agent 命令。
+默认：由 `.codex-os/execution-policy.yaml` 选择 Docker 或 Podman OCI 沙箱；当前仓库选择 Podman。Windows 宿主机不直接承载高风险 Agent 命令。
 
 ## 1. 沙箱前置条件
 
-- Docker Desktop 或 Podman machine 已安装、启动并可由当前用户调用。
+- 策略所选的 Docker Desktop 或 Podman machine 已安装、启动并可由当前用户调用；两种 Adapter 必须执行相同安全契约。
 - 镜像必须来自已批准的来源，并使用固定 digest 或锁定版本。
 - 容器不可用时，低风险只读检查可报告环境问题；代码写入、网络访问、迁移、删除和发布全部进入 `blocked`。
 - Plugin 和项目配置不能改变上述降级规则；Codex Host 也必须经 Runtime 进入执行策略。
@@ -38,11 +40,23 @@
 | --- | --- | --- |
 | L0 | `git status`、读取文件、静态检查 | 容器内自动执行 |
 | L1 | 单元测试、格式化、构建 | 容器内自动执行，设置超时 |
-| L2 | 安装依赖、网络访问、生成迁移 | 容器内执行，需审批或已批准策略 |
+| L2 | 安装依赖、网络访问、生成迁移 | 容器内执行，需本次操作的显式、持久化审批 |
 | L3 | 删除、数据库迁移、修改权限、外传数据 | 必须人工确认 |
 | L4 | 生产发布、宿主机写入、凭据访问 | V1 禁止自动执行，必须人工确认和专项流程 |
 
 默认阻止：宿主机路径写入、递归删除、系统关机/重启、修改防火墙、访问 Docker socket、未经批准的网络外传和任意 shell 拼接。
+
+### 4.1 L2 授权契约
+
+0.2.x 不接受无期限或仅以文本声明的“已批准策略”。每个 L2 操作必须先创建持久化审批或 Host Operation，并将受信 principal、source Commit、操作范围、允许的网络主机、到期时间、幂等键和规范请求 hash 绑定到同一 intent。缺失、过期、Commit/范围漂移或允许主机不匹配时返回 `APPROVAL_REQUIRED` 或对应 blocker，不执行副作用。
+
+长期可复用的预批准策略、撤销列表和跨 Workflow 授权不属于 0.2.0；如在 0.3.0 引入，必须先通过 ADR、明确 scope/expiry/revocation Schema，并提供迁移与负向测试。
+
+### 4.2 OCI-first 项目执行
+
+宿主控制平面只允许 `codex-os`、Codex Plugin、Git 与 OCI 引擎。项目 package manager、编译器、测试和服务必须经专用 Environment Host Operation 进入项目选定的 OCI backend。Runtime 接收结构化 argv，不接收任意 shell，也不在 Podman/Docker 之间回退。
+
+`environment_prepare` 是有期 L2 联网操作；`environment_verify` 必须断网。`compose down -v`、`volume rm` 和带 volume 的 prune 不属于 Agent 可授权命令，0.2.1 没有删除真实持久 Volume 的公共 API。
 
 ## 5. 资源限制
 

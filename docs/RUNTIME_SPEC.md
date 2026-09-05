@@ -1,5 +1,7 @@
 # 运行时实现规格
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001"]} -->
+
 版本：V2.0-derived-runtime
 状态：可执行实现规格基线
 范围：Windows 本地 CLI、Codex 宿主适配、Workflow、Skill、Agent、执行沙箱和本地状态。
@@ -28,6 +30,7 @@
 
 ```text
 created -> running -> needs_approval -> running
+   |\------------------------------> cancelled
               |  \-> paused ---------> running
               |  \-> blocked --------> running
               |  \-> failed ---------> running
@@ -46,6 +49,8 @@ needs_approval | paused | blocked | failed -> cancelled
 - `completed`：所有产物、验证、审批和记忆记录齐全。
 - `cancelled`：用户明确取消；与失败不同，不自动重试。
 
+创建、开始和取消均为独立 API 1.2 写事务，要求稳定幂等键；开始和取消还要求 `expected_state_version`。`created` 不得存在 Task、Worktree 或 Host Operation。取消请求保存在 checkpoint 与追加事件中；不可逆外部副作用必须完成 reconcile，不能通过取消隐藏。
+
 `run_status` 只描述上述生命周期；业务进度单独保存在 `workflow_phase`，取值和 Gate 位置以 [WORKFLOW_SPEC.md](WORKFLOW_SPEC.md) 为准。两者共享单调递增的 `state_version`。
 
 ## 4. 运行上下文
@@ -53,16 +58,16 @@ needs_approval | paused | blocked | failed -> cancelled
 每次运行必须携带：
 
 ```yaml
-run_id: RUN-20260820-0001
+run_id: RUN-20260831090000000000-A1B2C3D4
 project_id: PROJECT-001
-workflow_id: WF-001
-task_id: TASK-001
+workflow_id: RUN-20260831090000000000-A1B2C3D4
+task_id: TASK-20260831090001000000-B2C3D4E5
 parent_run_id: null
 config_revision: git:abc123
 actor: user | codex-host | agent
 ```
 
-`run_id`、`workflow_id`、`task_id` 和 `config_revision` 写入所有日志、事件、审批和产物索引。
+运行时生成的记录 ID 使用统一语法：`<PREFIX>-<YYYYMMDDHHMMSSffffff>-<8位大写十六进制>`。Prefix 必须是大写字母数字及可选连字符；时间为 UTC、精确到微秒，末段提供随机熵。`workflow_id` 是 API/事件中的兼容字段，值必须等于主键 `run_id`，不得再生成独立 `WF-*` 标识。`run_id`、`task_id` 和 `config_revision` 写入所有日志、事件、审批和产物索引。
 
 ## 5. 事件与 Hook 生命周期
 
@@ -80,7 +85,7 @@ actor: user | codex-host | agent
 
 ## 6. 幂等与恢复
 
-- 状态转换键为 `workflow_id + state_version + transition_name`，相同键重复提交不得创建重复任务。
+- 状态转换键为 `run_id + state_version + transition_name`，相同键重复提交不得创建重复任务。
 - 产物写入先写临时文件，再原子替换；已有相同内容 hash 的产物复用索引。
 - 每个可恢复状态完成后写检查点，检查点包含状态、配置版本、任务快照和产物引用。
 - 恢复时重新校验工作树、配置 hash、数据库迁移版本和容器可用性。

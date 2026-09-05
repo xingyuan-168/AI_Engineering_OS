@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 用户故事
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
 
 本文使用 Given/When/Then 表达可测试行为。每个故事必须映射到 [产品需求](PRODUCT_REQUIREMENTS.md) 和 [业务规则](BUSINESS_RULES.md)。
 
@@ -107,9 +107,9 @@
 作为运行时维护者，我希望配置与 SQLite 使用兼容、追加和可恢复的迁移，以免升级 0.2.0 时沿用无效 Gate 或损坏状态。
 
 - 关联需求：`MIGRATION-001`、`COMPAT-001`
-- Given：项目可能使用配置 1.0、SQLite 0003 或存在活动 Workflow。
+- Given：项目可能使用配置 1.0/1.1、SQLite 0006 或存在活动 Workflow。
 - When：首次用 0.2.0 打开或推进状态。
-- Then：先备份并验证 checksum，依次应用 0004-0006；重复执行无副作用；失败可从备份恢复。
+- Then：先备份并验证 checksum，追加应用 0007；重复执行无副作用；失败先在临时库验证恢复副本再原子替换活动库。
 - And：旧活动 Workflow 进入 `MIGRATION_REVALIDATION_REQUIRED`，通过新证据审计后才能恢复。
 
 ## US-012：复核和检索长期 Memory
@@ -134,7 +134,7 @@
 
 ## US-014：通过公共接口审计全流程
 
-作为审计者，我希望使用 Plugin API 1.1 查看仓库、任务组、依赖、Handoff、集成分支、Gate、执行、版本和 Memory 状态，以便无需读取内部数据库也能重建决策链。
+作为审计者，我希望使用 Plugin API 1.2 查看仓库、任务组、依赖、Handoff、Host Operation、集成分支、Gate、执行、版本、Release 和 Memory 状态，以便无需读取内部数据库也能重建决策链。
 
 - 关联需求：`API-001`
 - Given：Workflow 已启动且产生一个或多个任务。

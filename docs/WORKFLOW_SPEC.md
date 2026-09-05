@@ -1,5 +1,7 @@
 # Workflow 实现规格
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GATE-001"]} -->
+
 版本：V2.0-derived-workflow
 状态：可执行实现规格基线
 
@@ -13,6 +15,7 @@
 | `requirements` | G0 通过 | 产品需求、用户故事、业务规则 | `blocked` |
 | `research` | G1 通过 | 开源研究、License 记录 | `blocked` |
 | `design` | G1 通过且研究输入齐全 | 架构、技术栈、API、数据库、安全、UI（如适用） | `blocked` |
+| `prototype` | 含 `frontend-project` 且设计任务完成 | 离线 HTML 交互原型、validator 证据、独立 UX 确认 | `blocked` |
 | `implementation` | G2 通过且 Agent 交接依赖满足 | 代码提交、任务产物、Handoff | `failed` |
 | `verify` | 实现任务完成 | 测试、Review、安全扫描 | `failed` |
 | `release` | G3 通过 | 发布候选物、变更记录、回滚包 | `blocked` |
@@ -35,18 +38,29 @@
 ## 2. 合法转换
 
 ```text
-intake -> requirements -> research -> design -> implementation
+backend: intake -> requirements -> research -> design -> implementation
+frontend/fullstack: intake -> requirements -> research -> design -> prototype -> implementation
 implementation -> verify -> release -> memory -> completed
 
 run_status: created -> running
 running -> needs_approval | paused | blocked | failed | completed
+created -> cancelled
 needs_approval -> running | blocked | cancelled
 paused -> running | blocked | cancelled
 blocked -> running | cancelled
 failed -> running | cancelled
 ```
 
-阶段与运行状态必须在同一 `state_version` 事务中更新。禁止跳过顺序进入 `implementation`、`release` 或 `completed`。`bug-fix` 可从 `intake` 进入 `requirements` 的精简分支，但仍必须完成影响检查和 G3 质量验证。
+阶段与运行状态必须在同一 `state_version` 事务中更新。Workflow 注册时允许以下显式入口：
+
+| Workflow | 入口阶段 | 必须先持久化的输入 |
+| --- | --- | --- |
+| `new-project` | `intake` | 业务目标、Routing Input |
+| `feature-development` | `requirements` | 现有需求引用、Routing Decision、impact paths |
+| `bug-fix` | `implementation` | 缺陷复现、影响检查、Routing Decision、impact paths |
+| `release` | `verify` | 已完成的候选 Commit 与验证证据引用 |
+
+“禁止跳阶段”约束 Workflow 从其登记入口开始后的顺序推进，不否定上述显式入口。任何入口都不能绕过适用 Gate；`bug-fix` 涉及 API、数据库、安全、架构或前端页面时必须升级到对应设计/原型门禁，并始终完成 G3 质量验证。
 
 ## 3. G0-G4 门禁
 
@@ -62,13 +76,29 @@ failed -> running | cancelled
 
 `intake` 必须先调用 [WORKFLOW_ROUTING_RULES.md](WORKFLOW_ROUTING_RULES.md)，保存评分、理由、风险级别、候选 Workflow、Profile 和人工覆盖信息。路由失败、不确定、边界分数或用户选择与风险策略冲突时进入 `needs_approval` 或 `blocked`，不得猜测。
 
-基础 Workflow 与 Profile 独立组合：`large-project` 提供多 Agent、Worktree 和额外 Review 门禁；`frontend-project` 启用 UX Research 到 UI Spec 的设计链路；`backend-project` 启用 API、数据库、迁移和服务测试链路。Profile 只能增加步骤和证据，不能跳过 G0-G4 或降低执行安全等级。
+基础 Workflow 与 Profile 独立组合：`large-project` 提供多 Agent、Worktree 和额外 Review 门禁；`frontend-project` 启用 UX Research、UI Spec、离线 HTML 交互原型、validator 和独立用户确认；`backend-project` 启用 API、数据库、迁移和服务测试链路。Profile 只能增加步骤和证据，不能跳过 G0-G4 或降低执行安全等级。项目类型或 impact paths 表明存在前端页面时，Routing 必须保留 `frontend-project`，人工 override 不能移除原型门禁。
+
+前端原型由 `frontend-engineer` 使用 `html-prototype` Skill 生成在 `docs/prototypes/<prototype-id>/index.html`。原型必须 UTF-8、自包含、断网可运行，并覆盖成功、空态、加载、验证、权限、失败、重试、取消和恢复状态。`prototype_review_submit` 只从任务绑定 Commit 读取原型并复算 hash；生产者不得自审。只有 `html-prototype-validator` 通过且独立 `ux-prototype` Review accepted 后，G2 才可能通过。原型 Commit、文件或 hash 变化会使旧 Review stale。
+
+Profile Schema 1.2 声明任务模板、影响路径模式、增量 Gate 证据和 Reviewer。Runtime 将核心 Gate 与所选 Profile 编译为不可放宽的 `EffectiveGovernancePolicy` 并保存 policy hash；任务允许路径从已批准 impact paths 匹配产生，重叠路径按稳定顺序建立依赖，未映射路径阻塞。G0 bundle 必须绑定 Routing Decision，G2 bundle 必须包含 Migration Spec 与适用 ADR 索引。
+
+G2 批准事务只写入审批、绑定的 evidence/policy/routing hash 与 `integration_prepare` Host Operation；创建集成 Worktree、任务组和 Agent Worktree 由后续 executor 完成。executor 重试会复用登记 Worktree/任务组，未登记但与 base Commit/分支完全一致的受管 Worktree 可重新登记；Git 结果不确定时进入 `reconcile_required`。
+
+G3 批准同样只在事务中写入审批、验证缓存绑定和 `release_prepare` Host Operation。executor 幂等建立 Release task/Worktree，在断网 OCI 中挂载已批准 wheelhouse，使用 integration Commit 时间作为 `SOURCE_DATE_EPOCH` 构建 wheel、sdist 和 Plugin 包；制品先进入 operation 专属 staging，完整复算 hash 后原子提升为 candidate。staging 残留必须人工保留并对账；已提升但未入库的 candidate 仅在重试且 manifest/source/lock/全部文件 hash 一致时恢复索引。
+
+G4 审批调用只执行只读 PR、merge Commit、target ancestry、候选 manifest 与发布 authority 预检，并在审批事务中写入 `release_publish` Host Operation；不得创建 tag、上传资产或完成 Workflow。executor 重新校验相同意图并完成远端对账，先将 operation 标记 succeeded，再在受约束事务中把 Workflow 置为 `completed`；任一步结果未知都保持 `reconcile_required`。
+
+### OCI-first 环境门禁
+
+新项目的 G0 绑定 `environment_mode=oci-first` 和显式 OCI backend。G2 必须包含 `docs/ENVIRONMENT.md`、`.codex-os/environment.yaml`、`.dockerignore`、`compose.yaml`、实际 Dockerfile 清单和通过的 `environment-contract` Check。空服务、占位 Compose、未锁定基础镜像或未声明依赖锁不能通过。
+
+G3 先在有期 L2 网络批准下完成 `environment_prepare`，再断网运行 `environment_verify`。必需证据为 `environment-prepare-evidence`、`host-cleanliness`、`compose-build`、`container-recreate`、`storage-persistence` 和 `environment-smoke`；G4 审计包归档环境 manifest、镜像 digest、Compose hash、重建报告和恢复说明。存量 `legacy` 项目在显式 adoption 并重新通过 G2/G3 前返回 `ENVIRONMENT_ADOPTION_REQUIRED`。
 
 ## 5. 四条 V1 Workflow
 
 ### `new-project`
 
-`intake -> requirements -> research -> design -> implementation -> verify -> release -> memory`。
+后端为 `intake -> requirements -> research -> design -> implementation -> verify -> release -> memory`；含前端页面时强制为 `intake -> requirements -> research -> design -> prototype -> implementation -> verify -> release -> memory`。
 
 ### `feature-development`
 
@@ -92,6 +122,8 @@ failed -> running | cancelled
 - `resume` 重新校验配置、Worktree、容器、数据库版本和产物 hash。
 - 自动重试最多 2 次，仅适用于临时执行失败；权限、审批、License 和配置错误不得自动重试。
 - 恢复失败进入 `blocked`，输出明确的人工动作和证据位置。
+- `workflow_create` 只写入 `created` 与 Routing Decision；`workflow_begin` 才原子建立首个 Task 并分配执行资源。兼容 `workflow_start` 是 create+begin 包装。
+- 取消使用期望版本与幂等键。运行中的逻辑 Task 进入 `cancelled` 并停止后继调度；`running/reconcile_required` Host Operation 保持可对账，全部终止后 Workflow 自动进入 `cancelled`。已发布 Release 不能以取消替代审计或回滚。
 
 ## 8. 幂等与并发
 

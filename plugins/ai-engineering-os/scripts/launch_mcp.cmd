@@ -1,5 +1,7 @@
 @echo off
 setlocal
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 
 where codex-os.exe >nul 2>nul
 if %ERRORLEVEL% EQU 0 (

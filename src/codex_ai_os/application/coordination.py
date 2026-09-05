@@ -14,6 +14,7 @@ from pathlib import Path
 from codex_ai_os.domain.config import GitPushPolicy
 from codex_ai_os.domain.coordination import HandoffReviewInput, TaskGroupView
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.operations import HostOperation, HostOperationKind
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.coordination import (
     CoordinationError,
@@ -21,6 +22,7 @@ from codex_ai_os.infrastructure.coordination import (
     HandoffDecisionResult,
 )
 from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.path_codec import path_from_state, state_path
 
 GitRunner = Callable[[list[str], Path, float], subprocess.CompletedProcess[bytes]]
 
@@ -58,7 +60,7 @@ class CoordinationService:
                 (run_id,),
             ).fetchone()
         if existing is not None:
-            path = Path(str(existing["path"])).resolve()
+            path = path_from_state(existing["path"]).resolve()
             state = self._git(path, "rev-parse", "HEAD")
             if state.returncode != 0 or not path.is_relative_to(self.root / ".worktrees"):
                 raise CoordinationError("WORKTREE_BLOCKED", "integration Worktree is invalid")
@@ -68,17 +70,42 @@ class CoordinationService:
         path = (self.root / ".worktrees" / run_id / "coordinator" / "integration").resolve()
         if not path.is_relative_to((self.root / ".worktrees").resolve()):
             raise CoordinationError("PATH_ESCAPE", "integration path escapes managed root")
+        if path.exists():
+            top = self._require_git(path, "rev-parse", "--show-toplevel")
+            actual_branch = self._require_git(path, "branch", "--show-current")
+            head = self._require_git(path, "rev-parse", "HEAD")
+            if Path(top).resolve() != path or actual_branch != branch or head != base_commit:
+                raise CoordinationError(
+                    "WORKTREE_BLOCKED",
+                    "unregistered integration Worktree differs from persisted intent",
+                )
+            self._register_integration_worktree(
+                run_id=run_id,
+                project_id=str(run["project_id"]),
+                path=path,
+                branch=branch,
+                base_commit=base_commit,
+                head=head,
+            )
+            return path
         path.parent.mkdir(parents=True, exist_ok=True)
-        branch_exists = self._git(
-            self.root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"
-        ).returncode == 0
-        args = ("worktree", "add", str(path), branch) if branch_exists else (
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            str(path),
-            base_commit,
+        branch_exists = (
+            self._git(
+                self.root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"
+            ).returncode
+            == 0
+        )
+        args = (
+            ("worktree", "add", str(path), branch)
+            if branch_exists
+            else (
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                str(path),
+                base_commit,
+            )
         )
         created = self._git(self.root, *args)
         if created.returncode != 0:
@@ -86,6 +113,26 @@ class CoordinationService:
                 "WORKTREE_BLOCKED", f"cannot create integration Worktree: {_stderr(created)}"
             )
         head = self._require_git(path, "rev-parse", "HEAD")
+        self._register_integration_worktree(
+            run_id=run_id,
+            project_id=str(run["project_id"]),
+            path=path,
+            branch=branch,
+            base_commit=base_commit,
+            head=head,
+        )
+        return path
+
+    def _register_integration_worktree(
+        self,
+        *,
+        run_id: str,
+        project_id: str,
+        path: Path,
+        branch: str,
+        base_commit: str,
+        head: str,
+    ) -> None:
         now = _utc_now()
         with self.database.connection() as connection:
             try:
@@ -99,9 +146,9 @@ class CoordinationService:
                     """,
                     (
                         new_id("WORKFLOWWORKTREE"),
-                        str(run["project_id"]),
+                        project_id,
                         run_id,
-                        path.as_posix(),
+                        state_path(path),
                         branch,
                         base_commit,
                         head,
@@ -117,32 +164,60 @@ class CoordinationService:
                     (branch, base_commit, head, now, run_id),
                 )
                 connection.commit()
-            except sqlite3.Error:
+            except sqlite3.Error as exc:
                 connection.rollback()
-                self._git(self.root, "worktree", "remove", str(path))
-                raise
-        return path
+                raise CoordinationError(
+                    "WORKTREE_BLOCKED",
+                    f"integration Worktree exists but registration failed: {exc}",
+                ) from exc
 
     def review_and_integrate(self, review: HandoffReviewInput) -> IntegrationResult:
-        self._verify_review_report(review)
-        decision = self.store.review_handoff(review)
+        decision = self.prepare_review(review)
         if decision.decision != "accepted":
-            group = self.store.group_view(decision.task_group_id)
-            with self.database.connection() as connection:
-                run = connection.execute(
-                    "SELECT integration_branch, integration_head FROM workflow_runs "
-                    "WHERE id = (SELECT run_id FROM tasks WHERE id = ?)",
-                    (decision.task_id,),
-                ).fetchone()
-            return IntegrationResult(
-                handoff_id=decision.handoff_id,
-                status=decision.decision,
-                integration_branch=str(run["integration_branch"] or ""),
-                integration_head=str(run["integration_head"] or ""),
-                merge_commit=None,
-                conflict_paths=(),
-                task_group=group,
+            return self.decision_result(decision)
+        return self._merge(decision)
+
+    def prepare_review(self, review: HandoffReviewInput) -> HandoffDecisionResult:
+        self._verify_review_report(review)
+        return self.store.review_handoff(review)
+
+    def decision_result(self, decision: HandoffDecisionResult) -> IntegrationResult:
+        group = self.store.group_view(decision.task_group_id)
+        with self.database.read_connection() as connection:
+            run = connection.execute(
+                "SELECT integration_branch, integration_head FROM workflow_runs "
+                "WHERE id = (SELECT run_id FROM tasks WHERE id = ?)",
+                (decision.task_id,),
+            ).fetchone()
+        if run is None:
+            raise CoordinationError("RECOVERY_UNAVAILABLE", "Handoff run not found")
+        return IntegrationResult(
+            handoff_id=decision.handoff_id,
+            status=decision.decision,
+            integration_branch=str(run["integration_branch"] or ""),
+            integration_head=str(run["integration_head"] or ""),
+            merge_commit=None,
+            conflict_paths=(),
+            task_group=group,
+        )
+
+    def execute_merge_operation(self, operation: HostOperation) -> IntegrationResult:
+        if operation.kind is not HostOperationKind.INTEGRATION_MERGE:
+            raise CoordinationError("CONFIG_INVALID", "host operation is not an integration merge")
+        request = operation.request
+        required = ("handoff_id", "task_id", "task_group_id", "source_commit")
+        if not all(isinstance(request.get(key), str) for key in required):
+            raise CoordinationError(
+                "RECOVERY_UNAVAILABLE", "integration merge request is incomplete"
             )
+        decision = HandoffDecisionResult(
+            handoff_id=str(request["handoff_id"]),
+            task_id=str(request["task_id"]),
+            task_group_id=str(request["task_group_id"]),
+            decision="accepted",
+            source_commit=str(request["source_commit"]),
+            operation_id=operation.operation_id,
+        )
         return self._merge(decision)
 
     def _merge(self, decision: HandoffDecisionResult) -> IntegrationResult:
@@ -162,7 +237,7 @@ class CoordinationService:
         run_id = str(row["run_id"])
         source_branch = str(row["branch"])
         integration_branch = str(row["integration_branch"])
-        worktree = Path(str(row["path"])).resolve()
+        worktree = path_from_state(row["path"]).resolve()
         token = self._acquire_lock(run_id)
         try:
             dirty = self._require_git(worktree, "status", "--porcelain")
@@ -187,9 +262,7 @@ class CoordinationService:
             )
             if already.returncode == 0:
                 merge_commit = before
-                parent_text = self._require_git(
-                    worktree, "show", "-s", "--format=%P", "HEAD"
-                )
+                parent_text = self._require_git(worktree, "show", "-s", "--format=%P", "HEAD")
                 parents = tuple(parent_text.split())
             else:
                 merged = self._git(
@@ -229,9 +302,7 @@ class CoordinationService:
                     self._require_git(worktree, "show", "-s", "--format=%P", "HEAD").split()
                 )
                 valid_parents = (
-                    len(parents) >= 2
-                    and before in parents
-                    and decision.source_commit in parents
+                    len(parents) >= 2 and before in parents and decision.source_commit in parents
                 )
                 if not valid_parents:
                     raise CoordinationError(
@@ -360,9 +431,7 @@ class CoordinationService:
         return result.stdout.decode("utf-8", errors="replace").strip()
 
 
-def _run_git(
-    arguments: list[str], cwd: Path, timeout: float
-) -> subprocess.CompletedProcess[bytes]:
+def _run_git(arguments: list[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         arguments,
         cwd=cwd,

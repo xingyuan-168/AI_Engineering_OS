@@ -2,18 +2,32 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import stat
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from codex_ai_os.application.execution import ExecutionServiceError
+from codex_ai_os.adapters.docker import SandboxRequest, SandboxResult, command_hash
+from codex_ai_os.application.execution import ExecutionService, ExecutionServiceError
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.application.verification import VerificationService
+from codex_ai_os.application.verification_cache import (
+    VerificationCachePrepareError,
+    VerificationCachePreparer,
+    validate_verification_cache,
+    validate_verification_target,
+)
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
-from codex_ai_os.domain.workflow import PHASE_DEFINITIONS, WorkflowPhase
+from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
+from codex_ai_os.domain.operations import HostOperationKind
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
+from codex_ai_os.domain.workflow import PHASE_DEFINITIONS, ActionKind, WorkflowPhase
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentManager, PathDeniedError
@@ -315,6 +329,43 @@ def test_migrated_workflow_refuses_legacy_approval_without_strong_bundle(
     assert "G0" in str(blocked.value)
 
 
+def test_resume_rebuilds_recoverable_host_operation_actions(tmp_path: Path) -> None:
+    root = _fixture_project(tmp_path / "host-operation-resume")
+    engine = WorkflowEngine(root)
+    started = engine.start("Resume recoverable host operations")
+    operations = tuple(
+        engine.operations.ensure_pending(
+            project_id=started.run.project_id,
+            run_id=started.run.id,
+            kind=HostOperationKind.INTEGRATION_MERGE,
+            idempotency_key=f"resume-operation-{index}",
+            request={"index": index},
+        )
+        for index in range(5)
+    )
+    with engine.store.database.connection() as connection:
+        connection.execute(
+            "UPDATE workflow_runs SET run_status = 'blocked' WHERE id = ?",
+            (started.run.id,),
+        )
+        connection.commit()
+
+    resumed = engine.resume(started.run.id)
+
+    assert resumed.run.run_status.value == "running"
+    assert resumed.next_action is None
+    assert [action.kind for action in resumed.next_actions] == [ActionKind.HOST_OPERATION] * 4
+    assert [action.operation_id for action in resumed.next_actions] == [
+        operation.operation_id for operation in operations[:4]
+    ]
+    assert [action.expected_operation_version for action in resumed.next_actions] == [
+        0,
+        0,
+        0,
+        0,
+    ]
+
+
 def test_verification_requires_lock_bound_offline_wheelhouse(tmp_path: Path) -> None:
     root = _fixture_project(tmp_path / "verification-cache")
     (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
@@ -332,7 +383,104 @@ def test_verification_requires_lock_bound_offline_wheelhouse(tmp_path: Path) -> 
     )
     (wheelhouse / "fixture-1.0-py3-none-any.whl").write_bytes(b"fixture")
     (wheelhouse / "audit-snapshot.json").write_text("{}", encoding="utf-8")
-    assert service._wheelhouse(root) == wheelhouse
+    with pytest.raises(ExecutionServiceError) as legacy:
+        service._wheelhouse(root)
+    assert legacy.value.code == "SANDBOX_DEPENDENCIES_UNAVAILABLE"
+
+
+def test_verification_target_rejects_expired_or_host_platform_cache() -> None:
+    with pytest.raises(VerificationCachePrepareError) as expired:
+        validate_verification_target(
+            "linux-amd64", "3.12", "2020-01-01T00:00:00+00:00"
+        )
+    assert expired.value.code == "VERIFICATION_CACHE_EXPIRED"
+
+    with pytest.raises(VerificationCachePrepareError) as platform_error:
+        validate_verification_target(
+            "windows-amd64", "3.12", "2099-01-01T00:00:00+00:00"
+        )
+    assert platform_error.value.code == "PLATFORM_MISMATCH"
+
+
+class _FailingSandbox:
+    def __init__(self, *, exit_code: int) -> None:
+        self.exit_code = exit_code
+
+    def run(self, request: SandboxRequest) -> SandboxResult:
+        now = datetime.now(UTC).isoformat()
+        return SandboxResult(
+            execution_id=request.execution_id,
+            command_hash=command_hash(request.command),
+            image_digest=request.image.rsplit("@", 1)[1],
+            container_name=f"codex-os-{request.execution_id.lower()}",
+            exit_code=self.exit_code,
+            stdout="",
+            stderr="tests failed\n",
+            worktree_dirty=False,
+            started_at=now,
+            ended_at=now,
+        )
+
+
+def test_verification_records_failed_check_evidence_for_nonzero_exit(
+    tmp_path: Path,
+) -> None:
+    root = _fixture_project(tmp_path / "verification-failed-check")
+    engine = WorkflowEngine(root)
+    started = engine.start("Record failed verification evidence")
+    assert started.active_task is not None
+    execution = ExecutionService(root, sandbox=_FailingSandbox(exit_code=7))
+    service = VerificationService(root, execution_service=execution)
+
+    result = service.run(
+        run_id=started.run.id,
+        task_id=started.active_task.id,
+        checks=(("pytest", ("python", "-m", "pytest", "-q")),),
+    )
+
+    assert result.valid is False
+    assert result.blockers == (
+        "pytest:EXECUTION_FAILED:sandbox command failed with exit code 7",
+    )
+    assert len(result.checks) == 1
+    check = result.checks[0]
+    assert check.status.value == "failed"
+    assert check.exit_code == 7
+    assert check.started_at <= check.ended_at
+    report = json.loads((root / check.report_path).read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["exit_code"] == 7
+
+
+class _UnavailableExecution:
+    def execute(self, _request: SandboxRequest) -> object:
+        raise ExecutionServiceError("SANDBOX_UNAVAILABLE", "Podman is unavailable")
+
+
+def test_missing_sandbox_records_failed_evidence(tmp_path: Path) -> None:
+    root = _fixture_project(tmp_path / "x")
+    engine = WorkflowEngine(root)
+    started = engine.start("Record a missing sandbox as failed evidence")
+    assert started.active_task is not None
+    service = VerificationService(
+        root,
+        execution_service=cast(ExecutionService, _UnavailableExecution()),
+        bootstrap_dependencies=False,
+    )
+
+    result = service.run(
+        run_id=started.run.id,
+        task_id=started.active_task.id,
+        checks=(("real-oci", ("python", "-c", "print('never runs')")),),
+    )
+
+    assert result.valid is False
+    assert result.blockers == (
+        "real-oci:SANDBOX_UNAVAILABLE:Podman is unavailable",
+    )
+    assert len(result.checks) == 1
+    assert result.checks[0].status.value == "failed"
+    assert result.checks[0].exit_code == 1
 
 
 def test_verification_builds_commit_bound_container_git_metadata(tmp_path: Path) -> None:
@@ -349,6 +497,109 @@ def test_verification_builds_commit_bound_container_git_metadata(tmp_path: Path)
         metadata,
         pointer,
     )
+
+
+def test_host_operation_executes_verification_prepare_cache(
+    tmp_path: Path,
+) -> None:
+    root = _fixture_project(tmp_path / "verification-prepare-exec")
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    _git(root, "add", "uv.lock")
+    _git(root, "commit", "-m", "test: add verification lock")
+    lock_hash = hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest()
+    engine = WorkflowEngine(root)
+    started = engine.start("Prepare governed offline verification cache")
+    operation = engine.operations.ensure_pending(
+        project_id=started.run.project_id,
+        run_id=started.run.id,
+        kind=HostOperationKind.VERIFICATION_PREPARE,
+        idempotency_key="prepare-cache-exec",
+        request={
+            "schema_version": "1.2",
+            "run_id": started.run.id,
+            "expected_state_version": started.run.state_version,
+            "network_approval_ref": "APPROVED-NETWORK",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "target_python": "3.12",
+            "platform": "linux-amd64",
+            "uv_lock_hash": lock_hash,
+            "execution_image": RUNTIME_VERSIONS.execution_image,
+        },
+        expected_state_version=started.run.state_version,
+    )
+
+    executor = WorkflowEngine(
+        root,
+        verification_cache_preparer=VerificationCachePreparer(
+            root, runner=_VerificationPrepareRunner()
+        ),
+    )
+    result = executor.execute_host_operation(
+        operation.operation_id,
+        expected_operation_version=operation.state_version,
+        idempotency_key="prepare-cache-exec",
+        invocation=InvocationContext.local(InvocationSource.CLI),
+    )
+
+    succeeded = executor.operations.get(operation.operation_id)
+    cache = root / ".codex-os" / "cache" / "verification" / lock_hash
+    assert result.run.id == started.run.id
+    assert succeeded.status.value == "succeeded"
+    assert succeeded.result["uv_lock_hash"] == lock_hash
+    assert (cache / "requirements.txt").is_file()
+    assert (cache / "fixture-1.0-py3-none-any.whl").is_file()
+    assert (cache / "audit-snapshot.json").is_file()
+    assert (cache / "trivy" / "db.json").is_file()
+    assert (cache / "image-sbom.cdx.json").is_file()
+    assert (cache / "image-scan.json").is_file()
+    assert succeeded.result["files"]["requirements.txt"]
+    assert VerificationService(root, bootstrap_dependencies=True)._wheelhouse(root) == cache
+    manifest_path = cache / "verification-cache-manifest.json"
+    baseline = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutations: tuple[tuple[str, object], ...] = (
+        ("schema_version", "0.0"),
+        ("kind", "unknown"),
+        ("network_approval_ref", ""),
+        ("uv_lock_hash", "0" * 64),
+        ("target_python", "3.11"),
+        ("platform", "linux-arm64"),
+        ("execution_image", "python:invalid"),
+        ("read_only", False),
+        ("files", []),
+        ("files", {"../unsafe": "a" * 64}),
+        ("image", {}),
+        ("trivy_cache", {}),
+        ("wheelhouse", {}),
+        ("wheelhouse", {"path": ".", "wheels": []}),
+        ("wheelhouse", {"path": ".", "wheels": ["missing.whl"]}),
+        ("requirements", {}),
+    )
+    for field, value in mutations:
+        changed = {**baseline, field: value}
+        manifest_path.chmod(stat.S_IREAD | stat.S_IWRITE)
+        manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+        manifest_path.chmod(stat.S_IREAD)
+        with pytest.raises(VerificationCachePrepareError):
+            validate_verification_cache(cache, lock_path=root / "uv.lock")
+    manifest_path.chmod(stat.S_IREAD | stat.S_IWRITE)
+    manifest_path.write_text(json.dumps(baseline), encoding="utf-8")
+    manifest_path.chmod(stat.S_IREAD)
+    with pytest.raises(VerificationCachePrepareError, match="request hash"):
+        validate_verification_cache(
+            cache,
+            lock_path=root / "uv.lock",
+            expected_request_hash="0" * 64,
+        )
+    with pytest.raises(VerificationCachePrepareError) as missing_lock:
+        validate_verification_cache(cache, lock_path=root / "missing.lock")
+    assert missing_lock.value.code == "SANDBOX_DEPENDENCIES_UNAVAILABLE"
+    _make_writable(cache)
+    with pytest.raises(VerificationCachePrepareError, match="permissions"):
+        validate_verification_cache(cache, lock_path=root / "uv.lock")
+    (cache / "fixture-1.0-py3-none-any.whl").write_bytes(b"tampered")
+    with pytest.raises(ExecutionServiceError) as drifted:
+        VerificationService(root, bootstrap_dependencies=True)._wheelhouse(root)
+    assert drifted.value.code == "DEPENDENCY_UNVERIFIED"
 
 
 class _GitRunner:
@@ -409,6 +660,66 @@ class _BrokenGitRunner:
         raise AssertionError(f"unexpected git command: {command}")
 
 
+class _VerificationPrepareRunner:
+    def __call__(
+        self, command: list[str], _cwd: Path, _timeout: float
+    ) -> subprocess.CompletedProcess[bytes]:
+        if command[:2] == ["uv", "export"]:
+            output = Path(command[command.index("--output-file") + 1])
+            output.write_text(
+                "fixture==1.0 \\\n"
+                "    --hash=sha256:" + "a" * 64 + "\n",
+                encoding="utf-8",
+            )
+            return _result(command)
+        if command[1:4] == ["-m", "pip", "download"]:
+            destination = Path(command[command.index("--dest") + 1])
+            (destination / "fixture-1.0-py3-none-any.whl").write_bytes(b"fixture wheel")
+            return _result(command)
+        if command[:2] == ["pip-audit", "-r"]:
+            output = Path(command[command.index("-o") + 1])
+            output.write_text(
+                json.dumps(
+                    {
+                        "dependencies": [
+                            {"name": "fixture", "version": "1.0", "vulns": []}
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return _result(command)
+        if command[:3] == ["trivy", "image", "--download-db-only"]:
+            cache = Path(command[command.index("--cache-dir") + 1])
+            (cache / "db.json").write_text("{}", encoding="utf-8")
+            return _result(command)
+        if len(command) >= 3 and command[1:3] == ["image", "inspect"]:
+            return _result(
+                command,
+                json.dumps(
+                    {
+                        "Id": "sha256:" + "b" * 64,
+                        "Os": "linux",
+                        "Architecture": "amd64",
+                    }
+                ),
+            )
+        if command[:2] == ["trivy", "image"] and "--output" in command:
+            output = Path(command[command.index("--output") + 1])
+            if command[command.index("--format") + 1] == "cyclonedx":
+                payload: dict[str, object] = {
+                    "bomFormat": "CycloneDX",
+                    "specVersion": "1.6",
+                    "serialNumber": "urn:uuid:00000000-0000-0000-0000-000000000001",
+                    "metadata": {},
+                }
+            else:
+                payload = {"Results": list[object]()}
+            output.write_text(json.dumps(payload), encoding="utf-8")
+            return _result(command)
+        raise AssertionError(f"unexpected verification prepare command: {command}")
+
+
 def _fixture_project(root: Path) -> Path:
     root.mkdir()
     _git(root, "init", "-b", "main")
@@ -442,3 +753,9 @@ def _git(root: Path, *arguments: str) -> None:
         timeout=20,
     )
     assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+
+
+def _make_writable(root: Path) -> None:
+    for path in sorted(root.rglob("*"), reverse=True):
+        path.chmod(stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+    root.chmod(stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)

@@ -1,5 +1,7 @@
 # Codex AI Engineering OS 项目总文档
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001"]} -->
+
 版本：V2.0-derived
 状态：可执行文档基线
 目标：建设一个个人 AI 软件研发团队式操作系统。
@@ -60,6 +62,12 @@ Codex Host 负责模型、Session、Tool Runtime 和宿主交互；AI Engineerin
 | Document Manager | 管理文档事实、影响检查和文档索引 | Markdown 变更、完整性报告 |
 | Approval Manager | 管理 G0-G4 审批和高风险确认 | 审批记录、阻塞/放行决定 |
 | Release Manager | 汇总证据并生成发布候选物 | 候选物、校验和、回滚包 |
+| Host Operation Manager | 持久化并对账 Git、OCI 与 GitHub 外部副作用 | intent、租约、尝试、结果和恢复证据 |
+| Environment Governance | 编译项目 OCI 环境契约，审计 Compose、依赖、存储和宿主占用 | environment manifest、镜像 digest、重建和持久化证据 |
+
+### 版本矩阵
+
+0.2.1 固定使用需求 `REQ-1.6.2`、软件/CLI/Plugin `0.2.1`、Plugin API/配置/文档/Profile Schema `1.2` 和 SQLite `0007`。1.0/1.1 兼容入口在 0.2.x 内保留并返回弃用 warning；最早只可在 0.3.0 经 ADR 移除。版本事实由 Runtime 唯一版本对象提供，禁止各模块散落硬编码。
 
 ## 3. 项目事实来源
 
@@ -87,6 +95,8 @@ V1 支持 `new-project`、`feature-development`、`bug-fix`、`release`；路由
 
 禁止使用复制项目和目录重命名实现版本管理。版本、变更和回滚使用 Git Branch、Commit、Tag 和 CHANGELOG。
 
+治理文档自身也受治理：修改指令优先级、Gate、执行/安全策略、角色权限、生命周期、ID 契约或审计留存等语义，必须由 maintenance authority 发起，关联 accepted ADR、独立 Review 和受保护路径证据。仅修复 metadata、链接、错别字或排版且不改变语义时，仍需文档检查和 Review，但不强制新增 ADR。
+
 ## 6. 开源复用治理
 
 任何能力板块必须先完成开源候选分析，提取其核心抽象、流程、扩展点和边界，再选择直接使用、二次开发、提取设计思想或自研。详细矩阵见 [OPEN_SOURCE_RESEARCH.md](OPEN_SOURCE_RESEARCH.md)。未核验 License、版本和安全风险的项目不得进入正式技术栈。
@@ -100,8 +110,8 @@ V1 支持 `new-project`、`feature-development`、`bug-fix`、`release`；路由
 - G0：目标、范围和验收标准明确。
 - G1：需求、用户故事、业务规则和产品文档完成。
 - G2：架构、技术栈、API、数据库和安全设计完成。
-- G3：实现、测试、代码 Review 和安全扫描通过。
-- G4：发布候选物、CHANGELOG、ADR 和 Memory 完成。
+- G3：实现、测试、代码 Review、安全扫描、Plugin/Skill/Hook/MCP、构建安装与真实 OCI 证据全部绑定 integration Commit 并通过。
+- G4：候选/final manifest、SBOM、checksums、rollback、Release Review、Memory 与 PR/tag/assets 对账完成；发布授权先持久化，再执行外部副作用。
 
 需求冻结、架构冻结、外部依赖、破坏性迁移、敏感数据处理和生产发布必须人工确认。命令和文件操作必须受 Execution Manager 策略约束。模块职责和越权冲突以 [BOUNDARY_SPEC.md](BOUNDARY_SPEC.md) 为准；冲突默认阻塞，不允许静默覆盖。
 
@@ -116,6 +126,8 @@ V1 支持 `new-project`、`feature-development`、`bug-fix`、`release`；路由
 - [TECH_STACK.md](TECH_STACK.md)
 - [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - [ADR-0001](ADR/ADR-0001-mvp-runtime-stack.md)
+- [ADR-0004](ADR/ADR-0004-release-closure-transaction-boundaries.md)
+- [RELEASE_CLOSURE_MATRIX.md](RELEASE_CLOSURE_MATRIX.md)
 - [RUNTIME_SPEC.md](RUNTIME_SPEC.md)
 - [CONFIG_SPEC.md](CONFIG_SPEC.md)
 - [WORKFLOW_SPEC.md](WORKFLOW_SPEC.md)

@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 技术栈
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","EXEC-001","VERSION-001","MEMORY-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","EXEC-001","VERSION-001","MEMORY-001"]} -->
 
 状态：G2 评审就绪；执行镜像新 digest 必须在实现前完成扫描并由 ADR 冻结。
 
@@ -59,7 +59,7 @@
 ```yaml
 project_id: PROJECT-AI-ENGINEERING-OS
 name: Codex AI Engineering OS
-schema_version: '1.1'
+schema_version: '1.2'
 project_type: backend
 risk_level: high
 active_workflow: feature-development
@@ -72,7 +72,7 @@ approval_policy: critical-gates-human
 
 ```yaml
 name: new-project
-states: [intake, requirements, research, design, implementation, verify, release, memory]
+states: [intake, requirements, research, design, prototype, implementation, verify, release, memory, completed]
 transitions:
   - from: intake
     to: requirements
@@ -85,8 +85,8 @@ checkpoint: sqlite
 ### 任务事件
 
 ```yaml
-task_id: TASK-001
-workflow_id: WF-001
+task_id: TASK-20260831090001000000-B2C3D4E5
+workflow_id: RUN-20260831090000000000-A1B2C3D4
 from: project-manager
 to: architect
 type: artifact-request
@@ -124,14 +124,14 @@ codex-os release --candidate --run-id <run-id>
 | --- | --- | --- |
 | 需求基线 | `REQ-1.6.2` | 不与软件版本混用 |
 | 软件 / CLI / Plugin 核心 | `0.2.0` | Git tag 为 `v0.2.0`，仅 G4 后创建 |
-| Plugin API | `1.1` | 单任务保留 `next_action`，新接口增加 `next_actions` |
-| 配置 Schema | `1.1` | 兼容读取 `1.0` |
-| SQLite Schema | `0006` | 追加迁移 `0004-0006`，不得改写已发布迁移 |
+| Plugin API | `1.2` | 兼容 1.0/1.1 单动作入口并返回 warning；统一 `next_actions` 与写并发契约 |
+| 配置/文档/Profile Schema | `1.2` | 兼容读取 `1.0`/`1.1` 至 0.2.x 结束 |
+| SQLite Schema | `0007` | 追加迁移 `0007`，不得改写 `0001`～`0006` |
 
 - Python：`>=3.12,<3.13`；当前锁定环境 3.12.13，但上游已提供 3.12.14 安全版本，实现阶段必须升级并锁定完整镜像 digest。
-- 当前历史执行镜像：`python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2`；只用于重现旧证据，不能跳过镜像扫描。目标镜像为 `python:3.12.14-slim-bookworm@sha256:<G2-verified-index-digest>`，完整值必须由官方 registry manifest 与实际拉取结果共同核验。
+- 当前历史执行镜像：`python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2`；只用于重现旧证据，不能跳过镜像扫描。目标镜像为 `python:3.12.14-bookworm@sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a`；正式证据还必须记录 registry index digest、实际平台 digest、SBOM 和离线 Trivy 报告。
 - Runtime 锁定：MCP SDK 2.0.0、platformdirs 4.11.3、Pydantic 2.13.4、PyYAML 6.0.3、Typer 0.27.1。
-- 质量锁定：pip-audit 2.10.1、Pyright 1.1.411、pytest 9.1.1、pytest-cov 7.1.0、Ruff 0.16.4。
+- 质量锁定：pip-audit 2.10.1、Pyright 1.1.411、pytest 9.1.1、pytest-cov 7.1.0、Ruff 0.16.4；镜像/SBOM 使用经批准且有时效的 Trivy 离线数据库快照。
 - ERP 试点测试依赖：[FastAPI 0.141.1](https://pypi.org/project/fastapi/0.141.1/) 与 [HTTPX 0.28.1](https://pypi.org/project/httpx/0.28.1/)；仅位于开发依赖组，OS Runtime 不依赖 Web 控制面。
 - SQLite：随 Python 运行环境提供，启用 WAL、外键约束和 FTS5。
 - `0.2.0` 不引入 LangGraph、CrewAI、MetaGPT、AutoGen、OpenHands、Mem0、Zep、Penpot 或 Excalidraw 作为核心运行时依赖；对应能力采用自有接口或外部设计工具接入。

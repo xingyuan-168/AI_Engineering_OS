@@ -1,5 +1,7 @@
 # Codex Plugin 规范
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","VERSION-001"]} -->
+
 版本：V2.0-derived-plugin
 状态：可执行实现规格基线
 当前宿主：Codex Host；DeepSeek Harness 仅作为未来适配器。
@@ -36,7 +38,7 @@ Plugin 不得直接绕过 CLI Runtime 修改项目文件、SQLite 状态或执�
 
 ## 4. Host Hook 与内部事件
 
-Codex Host Hook 使用宿主支持的生命周期事件，包括 `SessionStart`、`SessionEnd`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`PreCompact`、`PostCompact`、`UserPromptSubmit` 和 `Stop`。V1 插件只注册 `SessionStart`、`PreToolUse` 和 `PostToolUse`：加载项目上下文、在工具调用前执行只读策略检查、在调用后记录审计引用。
+Codex Host Hook 使用宿主支持的生命周期事件，包括 `SessionStart`、`SessionEnd`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`PreCompact`、`PostCompact`、`UserPromptSubmit` 和 `Stop`。V1 插件只注册 `SessionStart` 和 `PreToolUse`：加载项目上下文，并在工具调用前执行只读、尽力而为的策略提示和明显破坏命令过滤。Runtime 审计来自结构化应用服务和 Host Operation，不依赖未注册的 `PostToolUse` Hook。
 
 `workflow.started`、`workflow.paused`、`task.completed`、`approval.requested` 和 `release.candidate` 等名称属于 OS 内部事件总线，追加写入 SQLite 后可由 MCP 查询；不得写入 Codex Hook 配置并冒充 Host 事件。
 
@@ -47,18 +49,21 @@ Host Hook 必须幂等、可超时、可失败隔离。Plugin Hook 未经用户�
 Plugin 向 CLI Runtime 提交结构化请求：
 
 ```yaml
-request_id: REQ-001
+request_id: REQ-20260831090004000000-E5F60718
+api_version: "1.2"
 operation: project.init | workflow.start | workflow.status | workflow.step
            | workflow.resume | approval.submit | task.complete
-           | docs.check | verification.run | release.candidate.create
-           | memory.search
+           | docs.check | verification.prepare | verification.run
+           | host_operation.execute | host_operation.reconcile
+           | database.migrate | release.candidate.create
+           | memory.submit | memory.review | memory.search
 project_id: PROJECT-001
-workflow_id: WF-001
+workflow_id: RUN-20260831090000000000-A1B2C3D4
 payload: {}
 idempotency_key: string
 ```
 
-Runtime 返回 `ok`、`request_id`、`run_id`、`run_status`、`workflow_phase`、`state_version`、`next_action`、`data` 和 `error`。Plugin 只展示或转发结果，不自行创建状态。
+Runtime 返回 `api_version=1.2`、request/correlation ID、双轴状态、`state_version`、`next_actions`、兼容 `next_action`、warnings、data 和结构化 error。Plugin 只展示或转发结果，不自行创建状态。
 
 ## 6. 权限边界
 
@@ -74,6 +79,8 @@ Plugin 默认只能读取 Skill/Agent 元数据和显示 Runtime 返回值。写
 | Plugin 次版本较低 | Runtime 较新 | 仅在兼容窗口内启用 |
 
 兼容矩阵写入 manifest 和 `CHANGELOG.md`；Hook Schema 变更必须增加版本字段。
+
+0.2.0 的 Plugin API 为 1.2。1.0/1.1 入口只在 0.2.x 兼容窗口内保留并返回弃用 warning；最早在 0.3.0 经 ADR 移除。
 
 ## 8. DeepSeek Harness 适配边界
 

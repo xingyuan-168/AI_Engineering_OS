@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 安全设计
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"security-reviewer","requirement_refs":["REQ-1.6.2","REPO-001","GATE-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","HYGIENE-001","MEMORY-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"security-reviewer","requirement_refs":["REQ-1.6.2","REPO-001","GATE-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","HYGIENE-001","MEMORY-001"]} -->
 
 安全目标是让不受信的仓库内容、Agent 输出、远端响应、依赖和日志无法绕过路径、执行、证据、审批与发布边界。所有高风险失败默认阻塞，不降级到宿主执行或人工口头确认。
 
@@ -23,6 +23,7 @@
 | `THR-001` | 非 GitHub/不可追溯仓库产生写任务 | 正式仓库预检绑定 HEAD/config/target；测试例外能力隔离 | `GITHUB_REMOTE_REQUIRED` 等 blocker |
 | `THR-002` | 路径遍历、symlink/junction 或挂载逃逸 | realpath、祖先检查、逐段 reparse point 检查、Worktree 注册表和受管 mount kind | `PATH_ESCAPE`，不执行/不清理 |
 | `THR-003` | 恶意/破坏性命令 | argv allowlist、风险分级、审批、锁定 OCI、无 shell 拼接 | `COMMAND_DENIED`/`APPROVAL_REQUIRED` |
+| `THR-009` | 宿主依赖/缓存污染与 Volume 误删 | OCI-first、宿主洁净度审计、只读共享资产、禁止 volume 删除 | `HOST_DEPENDENCY_PRESENT`/`VOLUME_DELETE_APPROVAL_REQUIRED` |
 | `THR-004` | 容器访问网络、Host、凭据或 daemon | network none、只读根、非 root、cap-drop、no-new-privileges、无 socket/凭据挂载 | execution failed/blocked |
 | `THR-005` | 伪造测试/Review/Handoff | execution/review 数据库反查、source Commit/hash、Reviewer 分离、bundle hash | `EVIDENCE_INCOMPLETE`/`REVIEW_STALE` |
 | `THR-006` | 并行写冲突或恶意覆盖 | 规范路径冲突检查、任务 Worktree、并发上限 4、集成锁、`--no-ff`、禁止 force/rebase | 串行化或 `MERGE_CONFLICT` |
@@ -47,6 +48,8 @@
 
 - 路径验证顺序：拒绝绝对输出/空/`.`/`..` -> 与 Worktree 根拼接 -> `resolve(strict=False)` -> 确认 relative_to -> 逐段检查 symlink/junction/reparse point -> 对已存在文件重新 `resolve(strict=True)`。
 - Windows 比较使用大小写不敏感的规范路径，拒绝 device path、ADS、UNC（除非项目根本身是显式批准 UNC）、保留设备名和末尾点/空格歧义。
+- 治理路径、项目追加保护规则和 Routing impact paths 在 Windows 与 Linux OCI 中使用相同的词法约束；必须在去除分隔符前拒绝 POSIX 绝对路径、Windows drive/drive-relative、UNC/device 和 ADS。保护规则匹配统一忽略大小写并规范 `./`，不能因容器宿主不同放行 Windows 路径。词法检查不替代上述真实文件、Worktree 和 symlink/junction 校验。
+- Windows 绝对项目根与 Worktree 路径在持久化前统一解析并转为正斜杠 UTF-8 文本；包含 `U+FFFD` 的新记录 fail closed。Plugin MCP launcher 固定 `PYTHONUTF8=1` 与 `PYTHONIOENCODING=utf-8`；Doctor 只报告损坏表/记录/字段，不推测恢复中文路径。
 - 禁止目录/文件规则只扫描项目自有树；排除 `.git`、`.venv`、依赖、受管 `.worktrees` 和 `.codex-os/state|logs|cache|tmp|artifacts`。
 - Git 跟踪扫描使用 `git ls-files -z`，不能依赖文件系统遍历推断 tracked 状态。
 - `.gitignore` 校验以必需类别而非固定单一模板判断，避免合法更严格规则误报。
@@ -59,10 +62,10 @@
 0.2.0 目标镜像：
 
 ```text
-python:3.12.14-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134
+python:3.12.14-bookworm@sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a
 ```
 
-该值是多架构 index digest。执行前 Adapter 必须 `image inspect` 并验证实际 digest/architecture；`--pull=never` 防止标签漂移。镜像进入配置前需要 SBOM 和漏洞扫描；critical/high 超过策略阈值且无有期、命名批准例外时 G3 失败。
+该引用是官方完整 Bookworm 构建输入。执行前 Adapter 必须保存 registry index digest 与实际平台 digest，并用 `image inspect` 验证 architecture；`--pull=never` 防止标签漂移。镜像必须生成稳定标识的 SBOM 和离线 Trivy 报告；critical/high finding 没有有期、命名批准例外时 G3 失败。
 
 ### 5.2 固定 OCI 参数
 
@@ -101,8 +104,11 @@ ExecutionService 检查 task lease、Commit 和 clean baseline，写 execution i
 
 - 依赖只从 `uv.lock` 安装，使用 `uv lock --check`；变更更新 License、SBOM、审计和 ADR（重大变化）。
 - `pip-audit` 报告与来源 Commit 绑定；无法查询 advisory 源时状态是 unavailable，不是假定通过。
-- Plugin validator 校验 manifest、MCP Schema、Skill frontmatter、Agent Profile 和 Hook fixture；Plugin 版本与核心 0.2.0/Plugin API 1.1 一致。
+- Plugin validator 校验 manifest、MCP Schema、Skill frontmatter、Agent Profile 和 Hook fixture；Plugin 版本与核心 0.2.0/Plugin API 1.2 一致。
+- 依赖与扫描缓存只能由经网络审批的 verification prepare 生成，分别绑定 `uv.lock` hash、Linux OCI 平台、Python 版本、执行镜像、时间和来源；正式 Gate 只离线消费逐文件 hash 校验且无 symlink/junction 的只读 wheelhouse、pip-audit snapshot 和非空 Trivy DB snapshot。
 - `.codex/` Hook 必须由人复核信任；Hook 只能调用受限入口，不携带 Secret，不把内部 Workflow 事件冒充 Host 生命周期事件。
+- Plugin `PreToolUse` Hook 是防御纵深和即时提示，不是权限、路径或命令安全边界。它拦截直接出现的 force push、Git ref 删除及 Windows/Unix 宽范围递归删除，但不承诺解释变量拼接、别名、splatting 或间接脚本；最终控制必须由 Runtime 的结构化 argv allowlist、风险分级、路径校验、审批和 OCI 隔离执行。项目 `.codex/hooks.json` 有意不复制插件规则；插件未启用或 Hook 未经信任时，Runtime 仍必须 fail closed。
+- OCI-first 项目禁止宿主依赖安装、编译和服务运行。共享模型/数据集必须位于批准的外部根并只读挂载；Compose build context、symlink 和 junction 必须在解析后保持项目边界。Runtime 从不自动 prune，也不删除真实 Volume。
 - 项目 `.agents/skills/` 不得创建 Plugin 同名 override；Runtime 拒绝歧义 Skill resolution。
 
 ## 9. Memory 与 Secret
@@ -117,18 +123,18 @@ Memory 默认按 `project_id` 查询；跨项目复用必须创建带来源、sc
 
 1. Release task 只在 G3 approved 后创建，并使用 release Worktree。
 2. 可提交发布文件必须位于该 Worktree；二进制制品只位于受管 artifacts 目录并被 Git 忽略。
-3. Manifest、SBOM、checksums、rollback、CHANGELOG、ADR 和 Memory 全部绑定 integration source Commit。
-4. G4 使用 GitHub API 验证 PR number/URL、head/base、head Commit、approved/merged 状态和 merge Commit；再用 Git 验证目标分支包含 integration HEAD。
+3. Manifest、SBOM、checksums、rollback、CHANGELOG、ADR 和 Memory 从 Commit 或受管审计区重读；candidate manifest 区分 integration source Commit 与 candidate Commit，并区分本地 cachebuster Plugin 源版本与精确发行包版本/hash。Plugin 源从授权 Commit 归档，OCI 在不展开 Windows 深目录的情况下流式生成 ZIP；G4 必须重新打开 ZIP 校验内嵌 manifest。final manifest 记录远端发布对账。
+4. G4 先持久化授权和 publish operation，再使用 GitHub API 验证 PR number/URL、head/base、approved/merged 状态和 merge Commit；用 Git 验证目标分支包含 PR merge Commit。
 5. release authority scope 必须精确为 `tag-and-github-release`；不接受空 reason、过期 state version 或预先批准其他 Commit。
 6. annotated tag message 包含 version、run ID、Manifest hash、merge Commit；现有不同目标同名 tag 返回冲突，不覆盖。
-7. GitHub Release 失败保持 blocked，可按相同 Manifest 幂等重试；不得因此删除 tag 或重写历史。
+7. 创建或复用 draft Release，上传后逐项核对资产 hash，再发布。结果未知或部分失败进入 reconcile_required；按相同 operation/Manifest 幂等对账，不得删除 tag 或重写历史。
 8. 本系统不保存生产部署凭据，也不提供部署入口。
 
 ## 11. 迁移与恢复安全
 
 - 迁移前锁写、checkpoint WAL、SQLite backup API、生成/验证 SHA-256，并从备份运行 integrity/FK 检查。
 - 迁移文件 checksum 与 `schema_migrations` 不同立即阻塞；不得执行修改后的旧迁移。
-- 0004-0006 各自原子；未知 Memory 状态、FTS5 不可用或 FK 失败触发备份恢复。
+- 0004-0007 各自原子；未知 Memory 状态、FTS5 不可用或 FK 失败触发“临时库恢复校验 -> 原子替换”，不得在未校验备份上覆盖活动库。
 - 旧活动 Workflow 标记 revalidation required，旧 Gate/自由文本验证不能直接发布。
 - 备份、失败库和迁移日志属于 audit-evidence，不由任务清理删除。
 
@@ -157,6 +163,7 @@ Memory 默认按 `project_id` 查询；跨项目复用必须创建带来源、sc
 - 自报 passed、伪造 execution/report/hash、G3 后 Commit 漂移、旧 Gate/旧配置升级。
 - Secret 进入文档/日志/Memory/FTS、跨项目搜索、source hash 变化。
 - PR head/base/merge 不匹配、同名 tag 不同 Commit、GitHub Release 失败和部署权限隔离。
+- managed Worktree/coordinator root 混淆、调用方自报 reviewer/approver、40/64 位 Commit、Trivy 数据过期、镜像 high/critical finding、无 `gh` 与 Podman machine 停止。
 
 ## 15. 剩余风险登记
 
@@ -165,7 +172,7 @@ Memory 默认按 `project_id` 查询；跨项目复用必须创建带来源、sc
 | `RISK-OCI-SUPPLY` | 中；registry 中锁定 digest 被发现新漏洞或签名链不可用 | ExecutionService/依赖供应链 | digest pin、SBOM、镜像扫描、默认断网、最小权限 | 中；G3 必须记录扫描时间和 findings，high/critical 未处置即阻塞；后续由新 ADR 评估签名验证 |
 | `RISK-GITHUB-ADMIN` | 中；拥有管理员权限的人绕过分支保护或篡改外部审批 | GitHub/G4 | PR 实时校验、Git 可达性校验、principal/authority 审计、禁止 Runtime force push | 中；需要仓库管理员人工复核保护规则和 Hook 信任，G4 保存复核证据 |
 | `RISK-WINDOWS-REPARSE` | 中；Windows junction/reparse/大小写别名在验证后被替换 | Host/Worktree 路径 | handle-based canonicalization、commonpath、reparse 拒绝、open-before-use、受管根目录 | 低到中；所有写/挂载路径的 TOCTOU 负向测试和真实 Windows fixture 通过后降为低 |
-| `RISK-SELF-BOOTSTRAP` | 中；旧 Runtime 正在实现其自身更强 Gate，旧证据不足 | 0003 Runtime/0006 Runtime | migration revalidation、旧文本 evidence 不满足新 Gate、所有新规则先有契约和测试 | 中；未 mock 公共 MCP E2E、真实 Podman 与 0003->0006 恢复全部通过后关闭 |
+| `RISK-SELF-BOOTSTRAP` | 中；旧 Runtime 正在实现其自身更强 Gate，旧证据不足 | 0006 Runtime/0007 Runtime | migration revalidation、旧文本 evidence 不满足新 Gate、所有新规则先有契约和测试 | 中；未 mock 公共 MCP E2E、真实 Podman 与 0006->0007 恢复全部通过后关闭 |
 | `RISK-RELEASE-EXTERNAL` | 中；tag 已推送而 GitHub Release API 暂时失败 | Git/GitHub Release | 幂等对账、同 Manifest 重试、不删除 tag、不重写历史、Workflow blocked | 低到中；GitHub Release 成功并将 release ID/hash 写入 G4 证据后关闭 |
 
 Security Reviewer 必须在 G3 对每项记录前提、来源 Commit、验证报告、处置负责人和是否接受；不得用“低风险”替代证据。未关闭的 high/critical 风险阻塞 G3，未授权的中风险阻塞 G4。

@@ -45,8 +45,13 @@ class SandboxBackend(StrEnum):
     PODMAN = "podman"
 
 
+class EnvironmentMode(StrEnum):
+    LEGACY = "legacy"
+    OCI_FIRST = "oci-first"
+
+
 class ProjectConfig(StrictModel):
-    schema_version: Literal["1.0", "1.1"] = "1.1"
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
     project_id: str = Field(pattern=r"^PROJECT-[A-Z0-9][A-Z0-9-]*$")
     name: str = Field(min_length=1, max_length=100)
     root: Path
@@ -60,6 +65,11 @@ class ProjectConfig(StrictModel):
     target_branch: str = Field(default="main", pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
     github_hosts: frozenset[str] = frozenset({"github.com"})
     max_parallel_agents: int = Field(default=4, ge=1, le=4)
+    document_version: str | None = Field(
+        default=None,
+        pattern=r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$",
+    )
+    environment_mode: EnvironmentMode = EnvironmentMode.LEGACY
 
     @field_validator("root")
     @classmethod
@@ -97,8 +107,8 @@ class ProjectConfig(StrictModel):
 
 
 class ExecutionPolicy(StrictModel):
-    schema_version: Literal["1.0", "1.1"] = "1.1"
-    sandbox: SandboxBackend = SandboxBackend.DOCKER
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
+    sandbox: SandboxBackend = SandboxBackend.PODMAN
     network: NetworkMode = NetworkMode.DISABLED
     allowed_network_hosts: frozenset[str] = frozenset()
     allowed_mounts: frozenset[str] = frozenset({"worktree", "artifacts", "cache"})

@@ -1,5 +1,7 @@
 # Skill 实现规格
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","AGENT-001"]} -->
+
 版本：V2.0-derived-skill
 状态：可执行实现规格基线
 
@@ -81,7 +83,11 @@ Skill 注册时校验名称、版本、Schema、路径和权限。Plugin 的 `sk
 
 ## 8. 首批 Skill
 
-`requirement-analysis`、`open-source-research`、`architecture-design`、`product-design`、`interaction-design`、`ui-design`、`api-design`、`database-design`、`memory-manager`、`agent-manager`、`execution-manager`、`code-review`、`testing`、`security-review`、`release-manager`。
+0.2.0 随 Plugin 交付以下 21 个 Skill：
+
+`agent-manager`、`api-design`、`architecture-design`、`backend-implementation`、`bug-fix-orchestrator`、`code-review`、`database-design`、`execution-manager`、`feature-development-orchestrator`、`frontend-implementation`、`html-prototype`、`interaction-design`、`memory-manager`、`new-project-orchestrator`、`open-source-research`、`product-design`、`release-manager`、`requirement-analysis`、`security-review`、`testing`、`ui-design`。
+
+该清单必须与 `plugins/ai-engineering-os/skills/` 的目录集合完全一致；新增、删除或改名 Skill 时，同一提交必须更新本节、Plugin 校验和公共契约测试。
 
 ## 9. 完成定义
 

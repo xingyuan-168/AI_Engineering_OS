@@ -8,6 +8,7 @@ from typing import Any, cast
 from typer.testing import CliRunner
 
 from codex_ai_os.cli.app import app
+from codex_ai_os.infrastructure.database import Database
 
 runner = CliRunner()
 
@@ -40,7 +41,7 @@ def test_init_status_and_check_docs_json_contract(tmp_path: Path) -> None:
     status_result = runner.invoke(app, ["status", str(tmp_path), "--json"])
     assert status_result.exit_code == 0, status_result.output
     status_payload = _json_output(status_result.output)
-    assert status_payload["data"]["schema_version"] == "0006"
+    assert status_payload["data"]["schema_version"] == "0007"
     assert status_payload["data"]["events"] == 1
 
     docs_result = runner.invoke(app, ["check-docs", str(tmp_path), "--json"])
@@ -106,6 +107,17 @@ def test_workflow_cli_returns_dual_state_and_next_action(tmp_path: Path) -> None
     assert payload["next_action"]["kind"] == "model_task"
     assert payload["next_action"]["branch"].startswith("agent/product-manager/")
     assert ".worktrees" in payload["next_action"]["worktree"]
+    database = Database(tmp_path / ".codex-os" / "state" / "state.db")
+    with database.read_connection() as connection:
+        before_row = connection.execute(
+            "SELECT state_version, workflow_phase, run_status FROM workflow_runs "
+            "WHERE id = ?",
+            (payload["run_id"],),
+        ).fetchone()
+        assert before_row is not None
+        before = tuple(before_row)
+        events_before = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    backups_before = tuple((tmp_path / ".codex-os" / "state" / "backups").glob("*"))
 
     stepped = runner.invoke(
         app,
@@ -119,6 +131,19 @@ def test_workflow_cli_returns_dual_state_and_next_action(tmp_path: Path) -> None
     )
     assert stepped.exit_code == 0
     assert _json_output(stepped.output)["next_action"] == payload["next_action"]
+    with database.read_connection() as connection:
+        after_row = connection.execute(
+            "SELECT state_version, workflow_phase, run_status FROM workflow_runs "
+            "WHERE id = ?",
+            (payload["run_id"],),
+        ).fetchone()
+        assert after_row is not None
+        after = tuple(after_row)
+        events_after = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    backups_after = tuple((tmp_path / ".codex-os" / "state" / "backups").glob("*"))
+    assert after == before
+    assert events_after == events_before
+    assert backups_after == backups_before
 
 
 def test_approval_cli_refuses_gate_before_evidence(tmp_path: Path) -> None:
@@ -180,7 +205,7 @@ def _use_legacy_fixture_config(root: Path) -> None:
     config = root / ".codex-os" / "project.yaml"
     config.write_text(
         config.read_text(encoding="utf-8").replace(
-            "schema_version: '1.1'", "schema_version: '1.0'"
+            "schema_version: '1.2'", "schema_version: '1.0'"
         ),
         encoding="utf-8",
     )

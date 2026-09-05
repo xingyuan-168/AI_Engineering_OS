@@ -1,5 +1,7 @@
 # 运行与发布
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001","EXEC-001"]} -->
+
 ## 本地运行
 
 1. 安装 Python、uv 和 Git。
@@ -29,15 +31,7 @@ V1 只验收 Windows。安装前必须通过 Python 3.12、uv、Git、Docker Des
 
 详细发布检查见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)，数据库恢复见 [MIGRATION_SPEC.md](MIGRATION_SPEC.md)。
 
-## 发布检查清单
-
-- [ ] 版本标签和构建物校验和已生成。
-- [ ] G0-G4 门禁均有审批或验证证据。
-- [ ] 单元、集成、端到端和安全检查通过。
-- [ ] 依赖清单、License 和 SBOM 已归档。
-- [ ] CHANGELOG、ADR 和回滚说明已更新。
-- [ ] 发布目标、执行人和时间窗口已确认。
-- [ ] 发布后健康检查和失败处理责任人已明确。
+发布检查项的唯一事实源是 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)；本文件只描述运行、恢复和发布流程，不复制清单内容。
 
 ## 发布后记录
 

@@ -1,5 +1,7 @@
 # Codex AI Engineering OS 实施计划
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
+
 版本：V2.0-derived
 状态：M0-M6 实现完成；V1 发布候选受环境门禁阻塞
 实施方式：个人本地 MVP，纵向闭环优先，关键门禁人工确认，每个逻辑变更提交并立即推送。
@@ -24,7 +26,7 @@
 
 - 绑定并审计 GitHub 远端，建立 `main` 文档基线和里程碑分支。
 - 明确 `workflow_phase`/`run_status`、G0-G4、Host Hook/内部事件、Skill 路径和迁移语义。
-- 固定 Python 3.12、uv 和 Docker Desktop 前置条件；环境缺失必须由 `doctor` 明确阻塞。
+- 固定 Python 3.12、uv 和策略所选 Docker/Podman OCI Adapter 前置条件；环境缺失必须由 `doctor` 明确阻塞。
 - 新增 `AGENTS.md` 与 ADR-0002，固化事实源和 Git 交付规则。
 
 产物：可推送仓库基线、收敛后的规格、仓库指令、环境预检和 ADR。

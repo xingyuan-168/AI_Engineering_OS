@@ -14,6 +14,8 @@ from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
+from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.operations import HostOperationStore
 
 runner = CliRunner()
 
@@ -134,6 +136,24 @@ def test_cli_wrappers_cover_verification_handoff_cleanup_and_g4(
             return current
 
         def review_handoff(self, _review: Any) -> Any:
+            assert _review.expected_handoff_version == 7
+            assert _review.idempotency_key == "handoff-review-idem"
+            assert str(_review.reviewer).startswith("os:")
+            assert _review.reviewer != "reviewer"
+            return current
+
+        def execute_host_operation(
+            self,
+            operation_id: str,
+            *,
+            expected_operation_version: int,
+            idempotency_key: str,
+            invocation: Any,
+        ) -> Any:
+            assert operation_id == "OP-1"
+            assert expected_operation_version == 3
+            assert idempotency_key == "host-op-idem"
+            assert str(invocation.principal).startswith("os:")
             return current
 
     monkeypatch.setattr(cli_app, "WorkflowEngine", _Engine)
@@ -184,12 +204,218 @@ def test_cli_wrappers_cover_verification_handoff_cleanup_and_g4(
             "review.md",
             "--report-hash",
             "b" * 64,
+            "--expected-handoff-version",
+            "7",
+            "--idempotency-key",
+            "handoff-review-idem",
             "--project-root",
             str(root),
             "--json",
         ],
     )
     assert handoff.exit_code == 0, handoff.stdout
+    assert _payload(handoff.stdout)["warnings"]
+    host_operation = runner.invoke(
+        cli_app.app,
+        [
+            "host-operation",
+            "execute",
+            "OP-1",
+            "--expected-operation-version",
+            "3",
+            "--idempotency-key",
+            "host-op-idem",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert host_operation.exit_code == 0, host_operation.stdout
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    prepared = runner.invoke(
+        cli_app.app,
+        [
+            "verification",
+            "prepare",
+            current.run.id,
+            "--expected-state-version",
+            str(current.run.state_version),
+            "--idempotency-key",
+            "prepare-cli",
+            "--network-approval-ref",
+            "APPROVED-NETWORK",
+            "--expires-at",
+            "2099-01-01T00:00:00+00:00",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert prepared.exit_code == 0, prepared.stdout
+    prepared_payload = _payload(prepared.stdout)
+    assert prepared_payload["next_action"]["kind"] == "host_operation"
+    prepared_operation = prepared_payload["data"]["operation"]
+    operation_store = HostOperationStore(Database(root / ".codex-os" / "state" / "state.db"))
+    running_operation = operation_store.acquire(
+        str(prepared_operation["operation_id"]),
+        expected_version=int(prepared_operation["state_version"]),
+        lease_owner="test",
+    )
+    unknown_operation = operation_store.mark_outcome_unknown(
+        running_operation.operation_id,
+        expected_version=running_operation.state_version,
+        lease_owner="test",
+    )
+    reconciled = runner.invoke(
+        cli_app.app,
+        [
+            "host-operation",
+            "reconcile",
+            unknown_operation.operation_id,
+            "--expected-operation-version",
+            str(unknown_operation.state_version),
+            "--idempotency-key",
+            "prepare-cli",
+            "--outcome",
+            "not_applied",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert reconciled.exit_code == 0, reconciled.stdout
+    assert _payload(reconciled.stdout)["next_action"]["kind"] == "host_operation"
+    migrated = runner.invoke(
+        cli_app.app,
+        [
+            "database",
+            "migrate",
+            "--expected-schema-version",
+            "0007",
+            "--target-schema-version",
+            "0007",
+            "--idempotency-key",
+            "migrate-cli",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert migrated.exit_code == 0, migrated.stdout
+    assert _payload(migrated.stdout)["data"]["operation"]["status"] == "succeeded"
+
+    class _ReleaseCandidateService:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def create(self, run_id: str) -> Any:
+            assert run_id == current.run.id
+            return SimpleNamespace(
+                id=f"RC-{run_id}",
+                version="0.2.0",
+                source_commit="a" * 40,
+                candidate_commit=None,
+                release_worktree=str(root / ".worktrees" / "release"),
+                manifest_path="release/manifest.json",
+                manifest_hash="b" * 64,
+                artifact_root=str(root / ".codex-os" / "artifacts" / run_id),
+                artifacts={"dist.whl": "c" * 64},
+                sbom_path=".codex-os/artifacts/sbom.cdx.json",
+                sbom_hash="d" * 64,
+                checksums_path=".codex-os/artifacts/checksums.sha256",
+                checksums_hash="e" * 64,
+                rollback_path="release/rollback.md",
+                rollback_hash="f" * 64,
+                created=True,
+            )
+
+    monkeypatch.setattr(cli_app, "ReleaseCandidateService", _ReleaseCandidateService)
+    release = runner.invoke(
+        cli_app.app,
+        [
+            "release",
+            "candidate",
+            current.run.id,
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert release.exit_code == 0, release.stdout
+    assert _payload(release.stdout)["data"]["candidate_id"] == f"RC-{current.run.id}"
+
+    memory_content = root / "docs" / "CLI_MEMORY.md"
+    memory_source = root / "docs" / "ADR" / "0098-cli-source.md"
+    memory_content.write_text(
+        "# Durable CLI decision\n\nUse source-linked evidence.\n",
+        encoding="utf-8",
+    )
+    memory_source.write_text("# Source\n\nAccepted decision.\n", encoding="utf-8")
+    submitted = runner.invoke(
+        cli_app.app,
+        [
+            "memory",
+            "submit",
+            "--record-type",
+            "decision",
+            "--title",
+            "CLI source-linked decision",
+            "--content-ref",
+            "docs/CLI_MEMORY.md",
+            "--source-ref",
+            "docs/ADR/0098-cli-source.md",
+            "--confidence",
+            "0.95",
+            "--tag",
+            "cli",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert submitted.exit_code == 0, submitted.stdout
+    memory_id = str(_payload(submitted.stdout)["data"]["record"]["id"])
+    reviewed = runner.invoke(
+        cli_app.app,
+        [
+            "memory",
+            "review",
+            memory_id,
+            "--reviewer",
+            "owner",
+            "--decision",
+            "activate",
+            "--reason",
+            "source verified",
+            "--expected-version",
+            "0",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert reviewed.exit_code == 0, reviewed.stdout
+    searched = runner.invoke(
+        cli_app.app,
+        [
+            "memory",
+            "search",
+            "CLI",
+            "--record-type",
+            "decision",
+            "--status",
+            "active",
+            "--tag",
+            "cli",
+            "--source-ref",
+            "docs/CLI_MEMORY.md",
+            "--project-root",
+            str(root),
+            "--json",
+        ],
+    )
+    assert searched.exit_code == 0, searched.stdout
+    assert _payload(searched.stdout)["data"]["results"][0]["id"] == memory_id
     invalid_handoff = runner.invoke(
         cli_app.app,
         [

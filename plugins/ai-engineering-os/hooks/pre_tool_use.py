@@ -1,4 +1,4 @@
-"""Block a narrow set of commands forbidden by repository governance."""
+"""Block obvious destructive host commands as a defense-in-depth guard."""
 
 from __future__ import annotations
 
@@ -28,6 +28,69 @@ _FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"\brm\s+-[^\s]*r[^\s]*f[^\r\n]*\s(?:/|~|\$HOME)(?:\s|$)", re.I),
         "Recursive deletion of a broad root or home target is forbidden.",
+    ),
+    (
+        re.compile(
+            r"\b(?:rmdir|rd)\b(?=[^\r\n]*/s(?:\s|$))(?=[^\r\n]*/q(?:\s|$))[^\r\n]*",
+            re.I,
+        ),
+        "Recursive forced directory deletion is forbidden on the Windows host.",
+    ),
+    (
+        re.compile(
+            r"\b(?:del|erase)\b(?=[^\r\n]*/f(?:\s|$))(?=[^\r\n]*/s(?:\s|$))[^\r\n]*",
+            re.I,
+        ),
+        "Recursive forced file deletion is forbidden on the Windows host.",
+    ),
+    (
+        re.compile(
+            r"\bRemove-Item\b(?=[^\r\n]*-(?:Recurse|r)(?:\s|$))"
+            r"(?=[^\r\n]*-(?:Force|fo)(?:\s|$))[^\r\n]*",
+            re.I,
+        ),
+        "PowerShell recursive forced deletion is forbidden on the Windows host.",
+    ),
+    (
+        re.compile(r"\bgit\s+push\b[^\r\n]*(?:--delete(?:\s|$)|\s:[^\s]+)", re.I),
+        "Deleting a remote ref with git push is forbidden.",
+    ),
+    (
+        re.compile(r"\bgit\s+branch\b[^\r\n]*(?:^|\s)-D(?:\s|$)", re.I),
+        "Forced local branch deletion is forbidden.",
+    ),
+    (
+        re.compile(r"\bgit\s+update-ref\b[^\r\n]*(?:^|\s)(?:-d|--delete)(?:\s|$)", re.I),
+        "Deleting a Git ref directly is forbidden.",
+    ),
+    (
+        re.compile(
+            r"\b(?:python(?:3)?\s+-m\s+)?pip(?:3)?\s+(?:install|wheel)\b|"
+            r"\b(?:npm|pnpm|yarn)\s+(?:i|install|add|build)\b|"
+            r"\bpoetry\s+install\b|\bcargo\s+(?:install|build)\b",
+            re.I,
+        ),
+        "Project dependency installation and builds must run through the governed OCI environment.",
+    ),
+    (
+        re.compile(
+            r"\b(?:docker|podman)(?:-compose|\s+compose)\b[^\r\n]*\bdown\b"
+            r"[^\r\n]*(?:\s-v(?:\s|$)|--volumes?\b)",
+            re.I,
+        ),
+        "Compose volume deletion is forbidden from the Agent path.",
+    ),
+    (
+        re.compile(r"\b(?:docker|podman)\s+volume\s+(?:rm|prune)\b", re.I),
+        "Persistent OCI volume deletion requires an independent operator workflow.",
+    ),
+    (
+        re.compile(
+            r"\b(?:docker|podman)\s+(?:system|container)\s+prune\b"
+            r"[^\r\n]*(?:-a\b|--all\b|--volumes?\b)",
+            re.I,
+        ),
+        "Broad OCI prune operations are forbidden from the Agent path.",
     ),
 )
 

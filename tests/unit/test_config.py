@@ -4,6 +4,7 @@ import pytest
 
 from codex_ai_os.domain.config import (
     DEFAULT_EXECUTION_POLICY,
+    EnvironmentMode,
     GitPushPolicy,
     NetworkMode,
     ProjectConfig,
@@ -12,7 +13,9 @@ from codex_ai_os.domain.config import (
 )
 from codex_ai_os.infrastructure.config import (
     ConfigError,
+    ProjectRootError,
     load_execution_policy,
+    load_project_config,
     load_yaml_model,
     merge_execution_policy,
 )
@@ -29,6 +32,8 @@ def test_project_config_resolves_source_inside_root(tmp_path: Path) -> None:
     assert config.root == tmp_path.resolve()
     assert config.source_of_truth == (tmp_path / "docs").resolve()
     assert config.git_push_policy is GitPushPolicy.REMOTE_REQUIRED
+    assert config.environment_mode is EnvironmentMode.LEGACY
+    assert DEFAULT_EXECUTION_POLICY.sandbox is SandboxBackend.PODMAN
 
 
 def test_project_config_rejects_source_outside_root(tmp_path: Path) -> None:
@@ -39,6 +44,44 @@ def test_project_config_rejects_source_outside_root(tmp_path: Path) -> None:
             root=tmp_path,
             source_of_truth=Path("..") / "outside",
         )
+
+
+def test_project_loader_resolves_portable_root(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".codex-os"
+    config_dir.mkdir()
+    (tmp_path / "docs").mkdir()
+    (config_dir / "project.yaml").write_text(
+        "schema_version: '1.2'\n"
+        "project_id: PROJECT-PORTABLE\n"
+        "name: portable\n"
+        "root: .\n"
+        "source_of_truth: docs\n",
+        encoding="utf-8",
+    )
+
+    config = load_project_config(tmp_path)
+
+    assert config.root == tmp_path.resolve()
+    assert config.source_of_truth == (tmp_path / "docs").resolve()
+    assert config.environment_mode is EnvironmentMode.LEGACY
+
+
+def test_project_loader_rejects_managed_worktree_and_guides_to_coordinator(
+    tmp_path: Path,
+) -> None:
+    coordinator = tmp_path / "coordinator"
+    worktree = tmp_path / "managed"
+    git_dir = coordinator / ".git" / "worktrees" / "managed"
+    git_dir.mkdir(parents=True)
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {git_dir.as_posix()}\n", encoding="utf-8")
+    (git_dir / "commondir").write_text("../..\n", encoding="utf-8")
+
+    with pytest.raises(ProjectRootError, match="use coordinator root") as caught:
+        load_project_config(worktree)
+
+    assert caught.value.code == "MANAGED_WORKTREE_ROOT"
+    assert caught.value.coordinator_root == coordinator.resolve()
 
 
 def test_yaml_loader_rejects_unknown_fields(tmp_path: Path) -> None:
@@ -60,12 +103,13 @@ def test_yaml_loader_rejects_unknown_fields(tmp_path: Path) -> None:
     ("override", "message"),
     [
         ({"allowed_commands": ["git", "curl"]}, "allowed_commands"),
+        ({"allowed_commands": ["git", "cmd", "powershell"]}, "allowed_commands"),
         ({"allowed_mounts": ["worktree", "host-root"]}, "allowed_mounts"),
         ({"network": NetworkMode.ALLOWLIST}, "network"),
         ({"allow_host_execution": True}, "host execution"),
         ({"max_duration_seconds": 1801}, "cannot increase"),
         ({"approval_for": ["delete"]}, "cannot remove"),
-        ({"sandbox": "podman"}, "sandbox"),
+        ({"sandbox": "docker"}, "sandbox"),
     ],
 )
 def test_policy_merge_rejects_relaxation(override: dict[str, object], message: str) -> None:

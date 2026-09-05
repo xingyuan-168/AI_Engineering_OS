@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -16,18 +17,18 @@ from codex_ai_os.domain.governance import (
     ReviewDecision,
     ReviewEvidenceInput,
 )
-from codex_ai_os.domain.workflow import Gate
+from codex_ai_os.domain.workflow import ChangeKind, Gate, PushStatus, TaskCompletion
 from codex_ai_os.infrastructure.evidence import EvidenceError, GateBundle
 
 
 def test_migrated_gate_artifacts_are_reverified_and_bound(tmp_path: Path) -> None:
     root = _project(tmp_path / "migration")
     engine = WorkflowEngine(root)
-    current = engine.start("Revalidate a migrated approval")
+    current = engine.start("Revalidate a migrated approval", document_version_target="0.2.0")
     assert current.active_task is not None
     metadata = json.dumps(
         {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "document_version": "0.2.0",
             "status": "review-ready",
             "owner": "fixture-owner",
@@ -192,8 +193,8 @@ def test_review_gate_bundle_and_document_revalidation_fail_closed(tmp_path: Path
     report = root / "reviews" / "report.md"
     report.parent.mkdir()
     report.write_text("# Review\n\nAccepted.\n", encoding="utf-8")
-    report_hash = hashlib.sha256(report.read_bytes()).hexdigest()
     head = _git_output(root, "rev-parse", "HEAD")
+    report_hash = hashlib.sha256(report.read_bytes()).hexdigest()
     review = ReviewEvidenceInput(
         review_type="code",
         reviewer="reviewer",
@@ -218,6 +219,26 @@ def test_review_gate_bundle_and_document_revalidation_fail_closed(tmp_path: Path
             task_id=None,
             review=missing_report,
         )
+    with pytest.raises(EvidenceError, match="missing or unsafe"):
+        store.record_review(
+            project_id=current.run.project_id,
+            run_id=current.run.id,
+            task_id=None,
+            review=review,
+        )
+    _git(root, "add", "reviews/report.md")
+    _git(root, "commit", "-m", "test: add review report")
+    head = _git_output(root, "rev-parse", "HEAD")
+    committed_report = subprocess.check_output(
+        ["git", "-C", str(root), "show", f"{head}:reviews/report.md"]
+    )
+    review = review.model_copy(
+        update={
+            "reviewed_commit": head,
+            "report_hash": hashlib.sha256(committed_report).hexdigest(),
+        }
+    )
+    report.write_text("# Review\n\nTampered current file.\n", encoding="utf-8")
     store.record_review(
         project_id=current.run.project_id,
         run_id=current.run.id,
@@ -241,7 +262,11 @@ def test_review_gate_bundle_and_document_revalidation_fail_closed(tmp_path: Path
             (head, current.active_task.id),
         )
         connection.commit()
-    findings = store._document_findings(current.run.id, Gate.G0, head)
+    findings = store._document_findings(
+        current.run.id,
+        head,
+        frozenset({"docs/PROJECT_MASTER.md", "docs/SCOPE.md"}),
+    )
     assert findings
     assert store._is_ancestor(head, head) is True
     assert store._is_ancestor("f" * 40, head) is False
@@ -260,6 +285,157 @@ def test_review_gate_bundle_and_document_revalidation_fail_closed(tmp_path: Path
         bundle_hash="a" * 64,
     )
     store.require_complete(complete)
+
+
+def test_gate_preflight_is_read_only_and_matches_approval(tmp_path: Path) -> None:
+    root = _project(tmp_path / "preflight")
+    engine = WorkflowEngine(root)
+    current = engine.start("Validate exact G0 preflight")
+    assert current.active_task is not None
+    assert current.next_action is not None
+    assert current.next_action.worktree is not None
+    assert current.next_action.gate_requirements is not None
+    assert current.next_action.gate_requirements["gate"] == "G0"
+    worktree = Path(current.next_action.worktree)
+    metadata = json.dumps(
+        {
+            "schema_version": "1.2",
+            "document_version": "0.0.1",
+            "status": "review-ready",
+            "owner": "product-manager",
+            "requirement_refs": ["REQ-G0"],
+        },
+        separators=(",", ":"),
+    )
+    for relative in ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"):
+        (worktree / relative).write_text(
+            f"# Gate document\n\n<!-- codex-os-document: {metadata} -->\n\nApproved content.\n",
+            encoding="utf-8",
+        )
+    _git(worktree, "add", "docs/PROJECT_MASTER.md", "docs/SCOPE.md")
+    _git(worktree, "commit", "-m", "docs: prepare G0 evidence")
+    head = _git_output(worktree, "rev-parse", "HEAD")
+    artifacts: list[ArtifactEvidenceInput] = []
+    hashes: dict[str, str] = {}
+    for relative in ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"):
+        content = subprocess.check_output(
+            ["git", "-C", str(worktree), "show", f"{head}:{relative}"]
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        hashes[relative] = digest
+        artifacts.append(
+            ArtifactEvidenceInput(
+                path=relative,
+                artifact_type="governance-document",
+                sha256=digest,
+                source_commit=head,
+            )
+        )
+    waiting = engine.complete_task(
+        current.run.id,
+        TaskCompletion(
+            task_id=current.active_task.id,
+            change_kind=ChangeKind.REPOSITORY,
+            branch=current.next_action.branch,
+            commit_sha=head,
+            push_status=PushStatus.LOCAL_ONLY,
+            artifact_paths_and_hashes=hashes,
+            artifacts=tuple(artifacts),
+        ),
+        expected_task_version=current.active_task.state_version,
+        idempotency_key="preflight-complete",
+    )
+    assert waiting.next_action is not None
+    assert waiting.next_action.gate_requirements is not None
+    with engine.store.database.read_connection() as connection:
+        before = int(
+            connection.execute("SELECT COUNT(*) FROM gate_evidence_bundles").fetchone()[0]
+        )
+    result = WorkflowEngine(root, readonly=True).gate_preflight(
+        waiting.run.id,
+        gate=Gate.G0,
+        expected_state_version=waiting.run.state_version,
+    )
+    with engine.store.database.read_connection() as connection:
+        after = int(
+            connection.execute("SELECT COUNT(*) FROM gate_evidence_bundles").fetchone()[0]
+        )
+    assert result["valid"] is False
+    assert before == after == 0
+    assert any(
+        action.get("operation") == "set_document_version"
+        for action in cast(list[dict[str, object]], result["repair_actions"])
+    )
+    for relative in ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"):
+        path = worktree / relative
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                '"document_version":"0.0.1"',
+                '"document_version":"0.1.0"',
+            ),
+            encoding="utf-8",
+        )
+    _git(worktree, "add", "docs/PROJECT_MASTER.md", "docs/SCOPE.md")
+    _git(worktree, "commit", "-m", "docs: repair G0 document versions")
+    repaired_head = _git_output(worktree, "rev-parse", "HEAD")
+    repaired_artifacts: list[ArtifactEvidenceInput] = []
+    repaired_hashes: dict[str, str] = {}
+    for relative in ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"):
+        content = subprocess.check_output(
+            ["git", "-C", str(worktree), "show", f"{repaired_head}:{relative}"]
+        )
+        digest = hashlib.sha256(content).hexdigest()
+        repaired_hashes[relative] = digest
+        repaired_artifacts.append(
+            ArtifactEvidenceInput(
+                path=relative,
+                artifact_type="governance-document",
+                sha256=digest,
+                source_commit=repaired_head,
+            )
+        )
+    completed_task = engine.store.get_task(current.active_task.id)
+    amendment = TaskCompletion(
+        task_id=current.active_task.id,
+        change_kind=ChangeKind.REPOSITORY,
+        branch=current.next_action.branch,
+        commit_sha=repaired_head,
+        push_status=PushStatus.LOCAL_ONLY,
+        artifact_paths_and_hashes=repaired_hashes,
+        artifacts=tuple(repaired_artifacts),
+    )
+    amended = engine.amend_task_evidence(
+        waiting.run.id,
+        amendment,
+        expected_task_version=completed_task.state_version,
+        expected_state_version=waiting.run.state_version,
+        idempotency_key="amend-g0-evidence",
+    )
+    replayed = engine.amend_task_evidence(
+        waiting.run.id,
+        amendment,
+        expected_task_version=completed_task.state_version,
+        expected_state_version=waiting.run.state_version,
+        idempotency_key="amend-g0-evidence",
+    )
+    assert replayed.run.state_version == amended.run.state_version
+    result = WorkflowEngine(root, readonly=True).gate_preflight(
+        amended.run.id,
+        gate=Gate.G0,
+        expected_state_version=amended.run.state_version,
+    )
+    assert result["valid"] is True
+    approved = engine.submit_approval(
+        amended.run.id,
+        gate=Gate.G0,
+        approved=True,
+        reviewer="independent-user",
+        reason="preflight snapshot reviewed",
+        expected_state_version=amended.run.state_version,
+        idempotency_key="approve-g0",
+        evidence_bundle_hash=str(result["evidence_bundle_hash"]),
+    )
+    assert approved.run.workflow_phase.value == "requirements"
 
 
 def _artifact(path: str, digest: str) -> ArtifactEvidenceInput:

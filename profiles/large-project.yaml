@@ -1,4 +1,4 @@
-schema_version: "1.0"
+schema_version: "1.2"
 name: large-project
 description: Add multi-Agent coordination, independent review, risk, and recovery evidence.
 project_types: [backend, frontend, fullstack, desktop, generic]
@@ -12,3 +12,26 @@ required_artifacts:
 additional_reviewers: [security-reviewer, reviewer]
 min_agents: 3
 approval_required: true
+task_templates:
+  - key: database-migrations
+    agent: database-engineer
+    skill: database-design
+    prompt: Implement the approved additive migrations and recovery tests.
+    impact_patterns:
+      - src/codex_ai_os/infrastructure/migrations/**
+      - tests/migrations/**
+  - key: implementation-tests
+    agent: qa
+    skill: testing
+    prompt: Implement independent integration and governance regression tests.
+    impact_patterns:
+      - tests/integration/**
+      - tests/governance/**
+      - tests/unit/**
+gate_requirements:
+  - gate: G2
+    artifacts:
+      - docs/RISK_REGISTER.md
+      - docs/AGENT_HANDOFF.md
+  - gate: G3
+    reviews: [security]

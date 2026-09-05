@@ -1,8 +1,8 @@
 # AI Engineering OS 0.2.0 数据库与迁移设计
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","VERSION-001","MEMORY-001","ROUTING-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","VERSION-001","MEMORY-001","ROUTING-001"]} -->
 
-SQLite 保存运行状态、事件、索引、结构化证据和 provenance；Markdown/Git 保存事实正文。Schema 通过现有 `0001-0003` 和新增 `0004-0006` 追加迁移到版本 `0006`，不得改写已发布迁移。
+SQLite 保存运行状态、事件、索引、结构化证据和 provenance；Markdown/Git 保存事实正文。Schema 通过 `0001`～`0007` 追加迁移到版本 `0007`，不得改写任何已发布迁移。
 
 ## 1. 数据库运行约束
 
@@ -170,25 +170,51 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 INSERT/UPDATE/DELETE triggers 保持 external-content FTS 同步。只有 `active` 文档进入默认查询；deleted 移除 search document 但保留 memory tombstone/reviews/events。查询必须先绑定当前 `project_id` 和允许状态，再拼接经过 FTS5 参数化的 MATCH 表达式。
 
-## 6. 事务边界
+## 6. `0007_release_closure.sql`
 
-### 6.1 任务完成
+### 6.1 `host_operations` 与 `api_call_audits`
+
+`host_operations`：`operation_id` 主键、project/run/task/group/handoff/release 外键、`kind=integration_prepare|integration_merge|release_prepare|release_publish|verification_prepare|database_migrate`、`idempotency_key`、`request_hash`、`status=pending|running|succeeded|failed|reconcile_required`、`expected_state_version`、`expected_task_version`、`expected_operation_version`、`lease_owner`、`lease_expires_at`、`attempt_count`、`request_json`、`result_json`、`error_code`、`created_at`、`started_at`、`ended_at`、`updated_at`。`(project_id,kind,idempotency_key)` 唯一；同一幂等键的 request hash 不同必须冲突。
+
+`release_prepare` 的 request 固定 integration source Commit、G3 bundle hash、执行镜像与 verification cache manifest/hash；result 固定 candidate manifest/hash、候选目录和逐资产 hash。Release task 首次提交候选 manifest 后，Runtime 从 Git object 复算 manifest hash并写入 `candidate_commit`，不得以活动 Worktree 的未提交文件替代。
+
+`api_call_audits`：`call_id` 主键、request/correlation ID、principal、operation、project/run/task/operation ID、status/error code、state version、duration、脱敏 request/response 摘要、`created_at`。表和日志均不得保存 token、Authorization header、Secret 参数或完整带凭据 URL。
+
+### 6.2 既有表的 1.2 扩展
+
+- `memory_records` 确保存在 `state_version NOT NULL DEFAULT 0`，迁移保留旧状态历史并按实际记录初始化，不伪造 Review。
+- `routing_decisions` 增加七维规范化输入、各维得分、总分、canonical profile、人工覆盖、规则/Profile 版本和理由字段。
+- `release_records` 增加 `integration_source_commit`、`candidate_commit`、candidate/final manifest path/hash、registry index/platform digest、远端 tag/Release/asset 对账 JSON、publish operation ID 和 reconciliation 时间。
+- `check_evidence` 增加或规范化 `started_at`、`ended_at`，并以约束保证 `ended_at >= started_at`；非零退出码只能对应 failed 状态。
+- 所有写模型的版本列使用单调递增整数；迁移不把旧记录的缺失证据解释为新版本已验证。
+
+### 6.3 Handoff trigger 重建
+
+`0007` 删除并重建受影响 trigger，但不修改历史迁移文件。已 accepted Handoff 的审核事实不可逆：merge/push Host Operation 失败只允许将 integration merge 和 run 标记 blocked/reconcile_required，禁止把 Handoff 改为 rejected。只有 producer 产生新 Commit 后才能创建新的 ready Handoff version。
+
+### 6.4 旧 Workflow 重验证
+
+升级时保留所有 task、handoff、approval、event 和 evidence。仍活动且不能证明 1.2 证据/版本不变量的 Workflow 设置 `migration_revalidation_required=1` 与 `MIGRATION_REVALIDATION_REQUIRED` blocker；不得为了满足新 FK 或 Gate 人工创建 Task Group、Review 或 Evidence。
+
+## 7. 事务边界
+
+### 7.1 任务完成
 
 `BEGIN IMMEDIATE` -> 验证 task expected version/status -> 插入 artifacts/check refs -> 更新 task completed/version -> 创建 handoff ready/version 0 -> 追加事件 -> COMMIT。不得在此事务推进 Workflow。
 
-### 6.2 Handoff accepted 与合并
+### 7.2 Handoff accepted 与合并
 
-事务 A 保存 Review 和 merge intent，提交；外部 Git 持锁合并；事务 B 以 integration head before 和 lock token 条件更新 merge result、Workflow integration head 与事件。若事务 B 失败，恢复器通过 Git parents/HEAD 对账后幂等补写。
+事务 A 保存 Review、期望版本和 `integration_merge` Host Operation，提交；Host 取得租约后执行外部 Git 持锁合并/推送；事务 B 以 integration head before、operation version 和 lock token 条件更新 merge result、Workflow integration head 与事件。若 push 或事务 B 失败，operation 进入 failed/reconcile_required，恢复器通过 Git parents/HEAD/remote ref 对账后幂等补写；accepted Handoff 不回退。
 
-### 6.3 join barrier
+### 7.3 join barrier
 
 `BEGIN IMMEDIATE` -> 查询 group 全任务/Handoff/merge -> 验证全部 accepted+merged -> `UPDATE task_groups ... WHERE state_version=?` -> `UPDATE workflow_runs ... WHERE state_version=?` -> 追加 group/workflow 事件 -> COMMIT。任一版本冲突整体回滚并重算。
 
-### 6.4 Gate approval
+### 7.4 Gate approval
 
-在同事务读取 complete bundle、核验 bundle hash/state version、插入 approval、更新 Workflow 双轴状态/version、将旧 bundle 标记 stale、追加事件。G4 的 GitHub 查询在事务前完成并作为短期、Commit-bound evidence 保存。
+在同事务读取 complete bundle、核验 bundle hash/state version、插入 approval、记录下一 Host Operation、更新 Workflow 双轴状态/version、将旧 bundle 标记 stale、追加事件。G4 在持久化授权后验证已合并 PR；发布结果通过同一 operation 的对账状态写回。
 
-### 6.5 数据库强制不变量
+### 7.5 数据库强制不变量
 
 应用服务负责给出友好错误，但以下约束必须由 SQLite 的 `CHECK`、FK、唯一索引或 trigger 再次强制：
 
@@ -202,25 +228,27 @@ INSERT/UPDATE/DELETE triggers 保持 external-content FTS 同步。只有 `activ
 
 跨多行的 DAG 环检测与 Git parent 可达性仍由协调器执行，但写入结果受上述 FK、版本条件和 trigger 保护；绕过应用层直接写库也不能推进治理状态。
 
-## 7. 备份、迁移与恢复
+## 8. 备份、迁移与恢复
 
 1. 获取项目级迁移锁并关闭写入口。
-2. `PRAGMA wal_checkpoint(TRUNCATE)` 后使用 SQLite backup API 创建 `.codex-os/state/backups/state-<utc>-pre-0004.db`。
+2. `PRAGMA wal_checkpoint(TRUNCATE)` 后使用 SQLite backup API 创建 `.codex-os/state/backups/state-<utc>-pre-0007.db`。
 3. 生成 `.sha256`，重新打开备份并运行 `integrity_check`、`foreign_key_check`、读取 `schema_migrations`。
-4. 校验迁移文件 checksum，按 0004/0005/0006 各自独立事务执行并记录。
-5. 执行 post-migration integrity/foreign-key/FTS rebuild test；失败保留失败库并用已校验备份原子恢复。
+4. 校验迁移文件 checksum，按 0004/0005/0006/0007 各自独立事务执行并记录。
+5. 执行 post-migration integrity/foreign-key/FTS rebuild test；失败时先把备份恢复到同目录临时数据库，完成 integrity/FK/FTS/关键查询校验，再原子替换活动库；保留失败库供审计。
 6. 重复运行时已记录相同 checksum 的迁移跳过；同版本不同 checksum 返回 `MIGRATION_CHECKSUM_MISMATCH`。
+
+显式 `0006 -> 0007` 升级先从 `0007` 迁移 SQL 预建并严格校验同构的 `host_operations` 表，使 `database_migrate` intent 在备份和迁移副作用之前持久化。0007 正常执行时仅跳过该已验证的重复建表语句；其余语句、迁移 checksum 和历史文件保持不变。迁移后若进程在完成 Operation 前退出，恢复器在 integrity/FK/FTS 校验通过后将同一 Operation 置为 `reconcile_required` 并完成对账。
 
 回滚不执行反向 DROP/ALTER。发布前失败恢复备份；发布后 Schema 回滚需要新 forward migration 或恢复整个版本备份并进入只读维护模式。
 
-## 8. 数据保留与隐私
+## 9. 数据保留与隐私
 
 - events、approvals、reviews、merge、release 与 migration 证据按项目策略保留，不被普通清理删除。
 - execution stdout/stderr、SBOM 和报告正文位于受管制品区，SQLite 只保存脱敏引用/hash。
 - remote URL、命令参数和日志在写库前脱敏；token、密码、私钥和原始聊天禁止入库/FTS。
 - Memory delete 保存 tombstone 和审计；法定删除需求通过受控 purge Workflow 与独立审批处理。
 
-## 9. 索引与性能
+## 10. 索引与性能
 
 除上述索引外，至少建立：
 
@@ -229,14 +257,16 @@ INSERT/UPDATE/DELETE triggers 保持 external-content FTS 同步。只有 `activ
 - `integration_merges(run_id,status,updated_at)`、`worktrees(run_id,kind,status)`。
 - `check_evidence(run_id,source_commit,status)`、`review_evidence(run_id,reviewed_commit,decision)`。
 - `release_records(run_id,status,updated_at)`、`memory_records(project_id,status,updated_at)`。
+- `host_operations(run_id,status,lease_expires_at)`、`host_operations(project_id,kind,idempotency_key)`、`api_call_audits(project_id,created_at)`。
 
 状态查询必须在单个项目/run 范围内分页；日志正文和制品不通过 SQLite result 返回。
 
-## 10. Schema 验收
+## 11. Schema 验收
 
-- 从空库运行 0001-0006、从真实 0003 备份升级、重复执行、checksum 冲突、每条迁移失败恢复。
+- 从空库运行 0001-0007、从真实 0006 备份升级、重复执行、checksum 冲突、备份恢复、原子替换和每条迁移失败恢复。
 - `integrity_check=ok`、`foreign_key_check` 空、FTS5 可创建/rebuild/query。
 - task/group/workflow 乐观锁并发只有一个提交成功；失败方收到 `STATE_VERSION_CONFLICT`。
 - ready Handoff 不能解锁依赖；accepted+merged 的全组才能越过 join。
 - 旧活动 Workflow 强制 migration revalidation；旧文本验证不能满足 Gate。
 - Memory 状态迁移、Secret 拦截、项目隔离、来源变化和 deleted tombstone 全部有自动化测试。
+- Host Operation 覆盖 lease 过期接管、结果未知对账、merge 后 push 失败、部分 Release 资产和重复幂等请求；任何恢复路径都不改写已接受的审核事实。

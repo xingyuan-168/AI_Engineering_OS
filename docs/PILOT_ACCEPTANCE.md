@@ -1,5 +1,7 @@
 # ERP 采购模块试点验收
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"qa","requirement_refs":["REQ-1.6.2","RELEASE-001"]} -->
+
 实施结果见 [ERP_PILOT_REPORT.md](ERP_PILOT_REPORT.md)。
 
 版本：V2.0-derived-pilot

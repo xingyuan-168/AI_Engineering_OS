@@ -1,4 +1,4 @@
-schema_version: "1.0"
+schema_version: "1.2"
 name: backend-project
 description: Add API, database, migration, backend implementation, and service verification evidence.
 project_types: [backend, fullstack]
@@ -11,3 +11,23 @@ required_artifacts:
 additional_reviewers: [database-engineer, qa, security-reviewer, reviewer]
 min_agents: 3
 approval_required: false
+task_templates:
+  - key: backend-implementation
+    agent: backend-engineer
+    skill: backend-implementation
+    prompt: Implement the approved backend application and persistence slice.
+    impact_patterns:
+      - src/codex_ai_os/application/**
+      - src/codex_ai_os/infrastructure/**
+      - src/codex_ai_os/adapters/**
+      - src/codex_ai_os/domain/**
+      - src/codex_ai_os/cli/**
+      - tests/backend/**
+      - pyproject.toml
+      - uv.lock
+gate_requirements:
+  - gate: G2
+    artifacts:
+      - docs/API_SPEC.md
+      - docs/DATABASE.md
+      - docs/MIGRATION_SPEC.md

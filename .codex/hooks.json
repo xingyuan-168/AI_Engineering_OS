@@ -1,4 +1,4 @@
 {
-  "description": "AI Engineering OS project hooks",
+  "description": "Project hook layer intentionally empty; enforcement hooks come from the enabled and user-trusted AI Engineering OS plugin, while Runtime policy remains the security boundary.",
   "hooks": {}
 }

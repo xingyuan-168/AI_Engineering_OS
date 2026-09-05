@@ -25,9 +25,12 @@ from codex_ai_os.infrastructure.worktrees import WorktreeStore
 
 
 class ExecutionServiceError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self, code: str, message: str, *, record: ExecutionRecord | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.record = record
 
 
 class ExecutionService:
@@ -100,6 +103,7 @@ class ExecutionService:
             raise ExecutionServiceError(
                 record.error_code or "EXECUTION_FAILED",
                 f"sandbox command failed with exit code {record.exit_code}",
+                record=record,
             )
         return record
 

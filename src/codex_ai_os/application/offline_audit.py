@@ -15,7 +15,9 @@ from typing import Any, cast
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
-SNAPSHOT_SCHEMA_VERSION = "1.1"
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
+
+SNAPSHOT_SCHEMA_VERSION = RUNTIME_VERSIONS.api
 MAX_SNAPSHOT_AGE = timedelta(hours=24)
 
 
@@ -30,6 +32,7 @@ def build_snapshot(
     audit_report: Mapping[str, Any],
     tool_version: str,
     generated_at: datetime | None = None,
+    target_platform: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a validated snapshot from a successful online pip-audit JSON report."""
 
@@ -41,15 +44,20 @@ def build_snapshot(
     if timestamp.tzinfo is None:
         raise AuditSnapshotError("generated_at must include a timezone")
     report = dict(audit_report)
+    platform_payload = dict(target_platform) if target_platform is not None else {
+        "system": platform.system().lower(),
+        "machine": platform.machine().lower(),
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+    }
+    if set(platform_payload) != {"system", "machine", "python"} or not all(
+        platform_payload.values()
+    ):
+        raise AuditSnapshotError("target_platform must define system, machine, and python")
     return {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "kind": "dependency-audit-snapshot",
         "generated_at": timestamp.astimezone(UTC).isoformat(),
-        "platform": {
-            "system": platform.system().lower(),
-            "machine": platform.machine().lower(),
-            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-        },
+        "platform": platform_payload,
         "tool": {"name": "pip-audit", "version": tool_version, "exit_code": 0},
         "lock_sha256": _sha256(lock_content),
         "requirements_sha256": _sha256(requirements_content),

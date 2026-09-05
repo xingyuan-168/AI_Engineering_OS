@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 
 from codex_ai_os.domain.config import RiskLevel
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.operations import HostOperationKind
 from codex_ai_os.domain.workflow import (
     Gate,
     RunStatus,
@@ -19,6 +21,7 @@ from codex_ai_os.domain.workflow import (
     WorkflowRun,
 )
 from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.operations import HostOperationStore
 
 
 class WorkflowNotFoundError(LookupError):
@@ -34,7 +37,7 @@ class WorkflowStore:
         self.database = database
 
     def project_config_hash(self, project_id: str) -> str:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute(
                 "SELECT config_hash FROM projects WHERE id = ?", (project_id,)
             ).fetchone()
@@ -42,10 +45,27 @@ class WorkflowStore:
             raise WorkflowNotFoundError(f"project not registered: {project_id}")
         return str(row["config_hash"])
 
+    def idempotency_request_hash(self, idempotency_key: str) -> str | None:
+        with self.database.read_connection() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM events WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value: object = json.loads(str(row["payload_json"]))
+        except json.JSONDecodeError:
+            return ""
+        if not isinstance(value, dict):
+            return ""
+        request_hash = cast(dict[object, object], value).get("request_hash")
+        return request_hash if isinstance(request_hash, str) else ""
+
     def find_active_run(
         self, project_id: str, workflow_name: str, goal: str
     ) -> WorkflowRun | None:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM workflow_runs
@@ -57,7 +77,14 @@ class WorkflowStore:
             ).fetchone()
         return _run_from_row(row) if row is not None else None
 
-    def create_run(self, run: WorkflowRun, task: TaskRecord) -> WorkflowRun:
+    def create_run(
+        self,
+        run: WorkflowRun,
+        task: TaskRecord | None,
+        *,
+        idempotency_key: str | None = None,
+        request_hash: str | None = None,
+    ) -> WorkflowRun:
         with self.database.connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
@@ -93,6 +120,76 @@ class WorkflowStore:
                         int(run.migration_revalidation_required),
                     ),
                 )
+                if task is not None:
+                    _insert_task(connection, task)
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=None,
+                    event_type=("workflow.started" if task is not None else "workflow.created"),
+                    idempotency_key=(
+                        idempotency_key
+                        or (
+                            f"{run.id}:0:"
+                            f"{'workflow.started' if task is not None else 'workflow.created'}"
+                        )
+                    ),
+                    payload={
+                        "workflow_phase": run.workflow_phase.value,
+                        **({"request_hash": request_hash} if request_hash is not None else {}),
+                    },
+                )
+                if task is not None:
+                    _insert_event(
+                        connection,
+                        project_id=run.project_id,
+                        run_id=run.id,
+                        task_id=task.id,
+                        event_type="task.created",
+                        idempotency_key=f"{run.id}:0:task.created:{task.id}",
+                        payload={"agent": task.agent, "input_hash": task.input_hash},
+                    )
+                connection.commit()
+            except sqlite3.Error:
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
+    def run_id_for_idempotency(self, idempotency_key: str) -> str | None:
+        with self.database.read_connection() as connection:
+            row = connection.execute(
+                "SELECT run_id FROM events WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None or row["run_id"] is None:
+            return None
+        return str(row["run_id"])
+
+    def begin_run(
+        self,
+        *,
+        run: WorkflowRun,
+        task: TaskRecord,
+        checkpoint: dict[str, Any],
+        idempotency_key: str,
+        request_hash: str,
+    ) -> WorkflowRun:
+        if run.run_status is not RunStatus.CREATED:
+            raise WorkflowConflictError("only a created workflow can begin")
+        now = _utc_now()
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _assert_run_version(connection, run.id, run.state_version)
+                _update_run(
+                    connection,
+                    run,
+                    target_phase=run.workflow_phase,
+                    target_status=RunStatus.RUNNING,
+                    checkpoint=checkpoint,
+                    now=now,
+                )
                 _insert_task(connection, task)
                 _insert_event(
                     connection,
@@ -100,26 +197,161 @@ class WorkflowStore:
                     run_id=run.id,
                     task_id=None,
                     event_type="workflow.started",
-                    idempotency_key=f"{run.id}:0:workflow.started",
-                    payload={"workflow_phase": run.workflow_phase.value},
+                    idempotency_key=idempotency_key,
+                    payload={
+                        "workflow_phase": run.workflow_phase.value,
+                        "request_hash": request_hash,
+                    },
+                )
+                _insert_task_created_event(connection, run, task, run.state_version + 1)
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
+    def cancel_transition(
+        self,
+        *,
+        run: WorkflowRun,
+        reason: str,
+        requested_by: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> WorkflowRun:
+        now = _utc_now()
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _assert_run_version(connection, run.id, run.state_version)
+                published = connection.execute(
+                    "SELECT operation_id FROM host_operations WHERE run_id = ? "
+                    "AND kind = 'release_publish' AND status = 'succeeded' LIMIT 1",
+                    (run.id,),
+                ).fetchone()
+                if published is not None:
+                    raise WorkflowConflictError(
+                        "published release side effects must be reconciled, not cancelled"
+                    )
+                connection.execute(
+                    "UPDATE tasks SET status = 'cancelled', state_version = state_version + 1, "
+                    "updated_at = ? WHERE run_id = ? AND status IN ('pending', 'running')",
+                    (now, run.id),
+                )
+                connection.execute(
+                    "UPDATE host_operations SET status = 'failed', "
+                    "error_code = 'WORKFLOW_CANCELLED', "
+                    "state_version = state_version + 1, ended_at = ?, updated_at = ? "
+                    "WHERE run_id = ? AND status = 'pending'",
+                    (now, now, run.id),
+                )
+                rows = connection.execute(
+                    "SELECT operation_id FROM host_operations WHERE run_id = ? "
+                    "AND status IN ('running', 'reconcile_required') "
+                    "ORDER BY created_at, operation_id",
+                    (run.id,),
+                ).fetchall()
+                outstanding_operations = [str(row["operation_id"]) for row in rows]
+                cancellation: dict[str, Any] = {
+                    "state": "requested" if outstanding_operations else "completed",
+                    "reason": reason,
+                    "requested_by": requested_by,
+                    "requested_at": now,
+                    "completed_at": None if outstanding_operations else now,
+                    "outstanding_task_ids": [],
+                    "outstanding_operation_ids": outstanding_operations,
+                }
+                checkpoint: dict[str, Any] = {
+                    **run.checkpoint,
+                    "next_action": None,
+                    "next_actions": [],
+                    "cancel_request": cancellation,
+                    "pending_gate": None,
+                }
+                target_status = (
+                    RunStatus.PAUSED if outstanding_operations else RunStatus.CANCELLED
+                )
+                _update_run(
+                    connection,
+                    run,
+                    target_phase=run.workflow_phase,
+                    target_status=target_status,
+                    checkpoint=checkpoint,
+                    now=now,
                 )
                 _insert_event(
                     connection,
                     project_id=run.project_id,
                     run_id=run.id,
-                    task_id=task.id,
-                    event_type="task.created",
-                    idempotency_key=f"{run.id}:0:task.created:{task.id}",
-                    payload={"agent": task.agent, "input_hash": task.input_hash},
+                    task_id=None,
+                    event_type=(
+                        "workflow.cancel_requested"
+                        if outstanding_operations
+                        else "workflow.cancelled"
+                    ),
+                    idempotency_key=idempotency_key,
+                    payload={"request_hash": request_hash, **cancellation},
                 )
                 connection.commit()
-            except sqlite3.Error:
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
+    def finalize_cancellation_if_ready(self, run_id: str) -> WorkflowRun:
+        run = self.get_run(run_id)
+        request_value = run.checkpoint.get("cancel_request")
+        if not isinstance(request_value, dict):
+            return run
+        request = cast(dict[str, Any], request_value)
+        if request.get("state") != "requested":
+            return run
+        with self.database.read_connection() as connection:
+            outstanding = connection.execute(
+                "SELECT operation_id FROM host_operations WHERE run_id = ? "
+                "AND status IN ('pending', 'running', 'reconcile_required') LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        if outstanding is not None:
+            return run
+        now = _utc_now()
+        cancellation: dict[str, Any] = {
+            **request,
+            "state": "completed",
+            "completed_at": now,
+            "outstanding_task_ids": [],
+            "outstanding_operation_ids": [],
+        }
+        checkpoint: dict[str, Any] = {**run.checkpoint, "cancel_request": cancellation}
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _assert_run_version(connection, run.id, run.state_version)
+                _update_run(
+                    connection,
+                    run,
+                    target_phase=run.workflow_phase,
+                    target_status=RunStatus.CANCELLED,
+                    checkpoint=checkpoint,
+                    now=now,
+                )
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=None,
+                    event_type="workflow.cancelled",
+                    idempotency_key=f"{run.id}:{run.state_version + 1}:workflow.cancelled",
+                    payload=cancellation,
+                )
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
                 connection.rollback()
                 raise
         return self.get_run(run.id)
 
     def get_run(self, run_id: str) -> WorkflowRun:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute(
                 "SELECT * FROM workflow_runs WHERE id = ?", (run_id,)
             ).fetchone()
@@ -128,14 +360,14 @@ class WorkflowStore:
         return _run_from_row(row)
 
     def get_task(self, task_id: str) -> TaskRecord:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if row is None:
             raise WorkflowNotFoundError(f"task not found: {task_id}")
         return _task_from_row(row)
 
     def active_task(self, run_id: str) -> TaskRecord | None:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM tasks
@@ -147,7 +379,7 @@ class WorkflowStore:
         return _task_from_row(row) if row is not None else None
 
     def active_tasks(self, run_id: str) -> tuple[TaskRecord, ...]:
-        with self.database.connection() as connection:
+        with self.database.read_connection() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM tasks
@@ -487,14 +719,60 @@ class WorkflowStore:
         evidence_bundle_id: str | None = None,
         evidence_bundle_hash: str | None = None,
         release_authority: dict[str, Any] | None = None,
+        host_operation_kind: HostOperationKind | None = None,
+        host_operation_idempotency_key: str | None = None,
+        host_operation_request: dict[str, Any] | None = None,
+        host_operation_release_id: str | None = None,
     ) -> WorkflowRun:
         now = _utc_now()
         new_version = run.state_version + 1
         decision = "approved" if approved else "rejected"
+        operation_values = (
+            host_operation_kind,
+            host_operation_idempotency_key,
+            host_operation_request,
+        )
+        if any(value is not None for value in operation_values) and not all(
+            value is not None for value in operation_values
+        ):
+            raise WorkflowConflictError("host operation intent is incomplete")
+        effective_checkpoint = dict(checkpoint)
         with self.database.connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 _assert_run_version(connection, run.id, run.state_version)
+                operation_id: str | None = None
+                if host_operation_kind is not None:
+                    assert host_operation_idempotency_key is not None
+                    assert host_operation_request is not None
+                    operation = HostOperationStore(
+                        self.database
+                    ).ensure_pending_in_transaction(
+                        connection,
+                        project_id=run.project_id,
+                        run_id=run.id,
+                        release_id=host_operation_release_id,
+                        kind=host_operation_kind,
+                        idempotency_key=host_operation_idempotency_key,
+                        request=host_operation_request,
+                        expected_state_version=new_version,
+                    )
+                    operation_id = operation.operation_id
+                    action = {
+                        "kind": "host_operation",
+                        "operation_id": operation.operation_id,
+                        "prompt": (
+                            f"Execute or reconcile persisted {operation.kind.value} "
+                            "Host Operation."
+                        ),
+                        "risk_level": "high",
+                        "requires_repository_change": True,
+                        "expected_state_version": new_version,
+                        "expected_operation_version": operation.state_version,
+                    }
+                    effective_checkpoint["next_action"] = action
+                    effective_checkpoint["next_actions"] = [action]
+                    effective_checkpoint["pending_host_operation_id"] = operation_id
                 connection.execute(
                     """
                     INSERT INTO approvals(
@@ -510,7 +788,7 @@ class WorkflowStore:
                         decision,
                         reviewer,
                         reason,
-                        _json(checkpoint.get("evidence_refs", [])),
+                        _json(effective_checkpoint.get("evidence_refs", [])),
                         new_version,
                         now,
                         evidence_bundle_id,
@@ -545,7 +823,7 @@ class WorkflowStore:
                     run,
                     target_phase=target_phase,
                     target_status=target_status,
-                    checkpoint=checkpoint,
+                    checkpoint=effective_checkpoint,
                     now=now,
                 )
                 if next_task is not None:
@@ -558,7 +836,225 @@ class WorkflowStore:
                     task_id=next_task.id if next_task is not None else None,
                     event_type=f"approval.{decision}",
                     idempotency_key=f"{run.id}:{new_version}:approval:{gate.value}",
-                    payload={"gate": gate.value, "reviewer": reviewer, "reason": reason},
+                    payload={
+                        "gate": gate.value,
+                        "reviewer": reviewer,
+                        "reason": reason,
+                        "operation_id": operation_id,
+                    },
+                )
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
+    def amend_task_evidence(
+        self,
+        *,
+        run: WorkflowRun,
+        task: TaskRecord,
+        completion: TaskCompletion,
+        expected_task_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        checkpoint: dict[str, Any],
+        verified_git_evidence: dict[str, Any],
+        evidence_writer: Callable[[sqlite3.Connection], None],
+    ) -> WorkflowRun:
+        """Atomically append replacement evidence before the pending Gate is approved."""
+
+        now = _utc_now()
+        completion_json = completion.model_dump_json()
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                existing = connection.execute(
+                    "SELECT payload_json FROM events WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing is not None:
+                    payload_value: object = json.loads(str(existing["payload_json"]))
+                    if isinstance(payload_value, dict) and cast(
+                        dict[object, object], payload_value
+                    ).get("request_hash") == request_hash:
+                        connection.rollback()
+                        return self.get_run(run.id)
+                    raise WorkflowConflictError(
+                        "idempotency key was already used with different evidence"
+                    )
+                _assert_run_version(connection, run.id, run.state_version)
+                current_task = connection.execute(
+                    "SELECT status, state_version, head_commit FROM tasks WHERE id = ?",
+                    (task.id,),
+                ).fetchone()
+                if (
+                    current_task is None
+                    or str(current_task["status"]) != TaskStatus.COMPLETED.value
+                    or int(current_task["state_version"]) != expected_task_version
+                    or str(current_task["head_commit"] or "").casefold()
+                    != str(task.head_commit or "").casefold()
+                ):
+                    raise WorkflowConflictError("task evidence amendment version conflict")
+                accepted = connection.execute(
+                    "SELECT 1 FROM handoffs WHERE task_id = ? AND status = 'accepted' LIMIT 1",
+                    (task.id,),
+                ).fetchone()
+                merged = connection.execute(
+                    "SELECT 1 FROM integration_merges WHERE task_id = ? LIMIT 1",
+                    (task.id,),
+                ).fetchone()
+                operation = connection.execute(
+                    """
+                    SELECT 1 FROM host_operations
+                    WHERE run_id = ? AND (task_id = ? OR task_id IS NULL)
+                      AND status IN ('pending', 'running', 'succeeded', 'reconcile_required')
+                    LIMIT 1
+                    """,
+                    (run.id, task.id),
+                ).fetchone()
+                if accepted is not None or merged is not None or operation is not None:
+                    raise WorkflowConflictError(
+                        "task evidence cannot change after handoff, merge, or host operation"
+                    )
+
+                evidence_writer(connection)
+                changed = connection.execute(
+                    """
+                    UPDATE tasks
+                    SET output_ref = ?, head_commit = ?, branch = ?,
+                        review_status = ?, state_version = state_version + 1,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'completed' AND state_version = ?
+                    """,
+                    (
+                        completion_json,
+                        completion.commit_sha,
+                        completion.branch,
+                        "verified" if completion.verification_results else "pending",
+                        now,
+                        task.id,
+                        expected_task_version,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise WorkflowConflictError("task evidence amendment version conflict")
+                for path, digest in completion.artifact_paths_and_hashes.items():
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO artifacts(
+                            id, run_id, task_id, path, kind, content_hash,
+                            source_commit, status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'verified', ?)
+                        """,
+                        (
+                            new_id("ARTIFACT"),
+                            run.id,
+                            task.id,
+                            path,
+                            _artifact_kind(path),
+                            digest,
+                            completion.commit_sha,
+                            now,
+                        ),
+                    )
+                connection.execute(
+                    """
+                    UPDATE handoffs
+                    SET artifact_refs_json = ?, commit_refs_json = ?, tests_json = ?,
+                        updated_at = ?, state_version = state_version + 1
+                    WHERE task_id = ? AND status = 'ready'
+                    """,
+                    (
+                        _json(completion.artifact_paths_and_hashes),
+                        _json(verified_git_evidence),
+                        _json(completion.verification_results),
+                        now,
+                        task.id,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE gate_evidence_bundles SET status = 'stale' "
+                    "WHERE run_id = ? AND status IN ('building', 'complete')",
+                    (run.id,),
+                )
+                updated = connection.execute(
+                    """
+                    UPDATE workflow_runs
+                    SET checkpoint_json = ?, state_version = state_version + 1, updated_at = ?
+                    WHERE id = ? AND state_version = ?
+                    """,
+                    (_json(checkpoint), now, run.id, run.state_version),
+                ).rowcount
+                if updated != 1:
+                    raise WorkflowConflictError("workflow evidence amendment conflict")
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=task.id,
+                    event_type="task.evidence_amended",
+                    idempotency_key=idempotency_key,
+                    payload={
+                        "request_hash": request_hash,
+                        "old_commit": task.head_commit,
+                        "new_commit": completion.commit_sha,
+                        "branch": completion.branch,
+                        "artifact_hashes": completion.artifact_paths_and_hashes,
+                        "git_verification": verified_git_evidence,
+                    },
+                )
+                connection.commit()
+            except (sqlite3.Error, WorkflowConflictError):
+                connection.rollback()
+                raise
+        return self.get_run(run.id)
+
+    def complete_release_publish(
+        self,
+        *,
+        run: WorkflowRun,
+        operation_id: str,
+        publication: dict[str, Any],
+    ) -> WorkflowRun:
+        now = _utc_now()
+        checkpoint = {
+            **run.checkpoint,
+            "next_action": {"kind": "complete"},
+            "next_actions": [{"kind": "complete"}],
+            "pending_host_operation_id": None,
+            "release_publication": publication,
+        }
+        with self.database.connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                _assert_run_version(connection, run.id, run.state_version)
+                operation = connection.execute(
+                    "SELECT status FROM host_operations WHERE operation_id = ? AND run_id = ?",
+                    (operation_id, run.id),
+                ).fetchone()
+                if operation is None or str(operation["status"]) != "succeeded":
+                    raise WorkflowConflictError(
+                        "release publication operation is not succeeded"
+                    )
+                _update_run(
+                    connection,
+                    run,
+                    target_phase=WorkflowPhase.COMPLETED,
+                    target_status=RunStatus.COMPLETED,
+                    checkpoint=checkpoint,
+                    now=now,
+                )
+                _insert_event(
+                    connection,
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    task_id=None,
+                    event_type="release.published",
+                    idempotency_key=(
+                        f"{run.id}:{run.state_version + 1}:release.published"
+                    ),
+                    payload={"operation_id": operation_id, **publication},
                 )
                 connection.commit()
             except (sqlite3.Error, WorkflowConflictError):
@@ -741,8 +1237,9 @@ def _insert_task(connection: sqlite3.Connection, task: TaskRecord) -> None:
         """
         INSERT INTO tasks(
             id, run_id, agent, status, input_hash, branch, worktree,
-            output_ref, review_status, state_version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            output_ref, review_status, state_version, created_at, updated_at,
+            allowed_paths_json, producer, skill, prompt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task.id,
@@ -757,6 +1254,10 @@ def _insert_task(connection: sqlite3.Connection, task: TaskRecord) -> None:
             task.state_version,
             task.created_at,
             task.updated_at,
+            _json(task.allowed_paths),
+            task.producer,
+            task.skill,
+            task.prompt,
         ),
     )
 

@@ -1,8 +1,8 @@
 # AI Engineering OS 0.2.0 系统架构
 
-<!-- codex-os-document: {"schema_version":"1.1","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
 
-本架构实现 [ADR-0003](ADR/ADR-0003-governance-runtime-boundary.md)。它保留现有 Python 状态机、SQLite、Git 证据、Worktree、Plugin 和 OCI 沙箱，不引入第二个模型客户端。
+本架构实现 [ADR-0003](ADR/ADR-0003-governance-runtime-boundary.md) 与 [ADR-0004](ADR/ADR-0004-release-closure-transaction-boundaries.md)。它保留现有 Python 状态机、SQLite、Git 证据、Worktree、Plugin 和 OCI 沙箱，不引入第二个模型客户端。
 
 ## 1. 定位与事实源
 
@@ -45,7 +45,7 @@ Codex Host
   -> Adapters
        Git/GitHub/Worktree/Docker/Podman/File System
   -> Infrastructure
-       SQLite repositories + append-only events + migrations 0001-0006
+       SQLite repositories + append-only events + migrations 0001-0007
 ```
 
 Runtime 不调用模型 API。Codex Host 根据 `next_actions` 选择子 Agent；每个 action 是包含 Agent、Skill、输入、输出 Schema、允许路径、Branch 和 Worktree 的确定性任务契约。
@@ -63,6 +63,7 @@ Runtime 不调用模型 API。Codex Host 根据 `next_actions` 选择子 Agent�
 | `CMP-REL` | Release/Version Service | Release Worktree、Manifest、SBOM/hash、PR/merge/tag/Release 验证 | 生产部署、无 G4 发布 |
 | `CMP-MEM` | Memory Service | 候选、复核、生命周期、FTS5、来源变化和项目隔离 | 保存 Secret、原始聊天或自动改写 Git 历史 |
 | `CMP-STORE` | SQLite repositories | 乐观锁、事务、事件、索引、迁移与恢复 | 保存 Markdown 事实正文 |
+| `CMP-OPS` | Host Operation Service | 持久化外部副作用 intent、租约、重试、对账和脱敏调用审计 | 在事务内执行 Git/OCI/GitHub 或把未知结果当作失败重跑 |
 
 ## 4. 正式仓库准备度
 
@@ -141,7 +142,7 @@ Group: pending -> running -> joining -> completed | blocked | failed
 
 ### 5.4 集成与 join
 
-accepted Handoff 进入单消费者合并队列。Runtime 在 SQLite 获取带过期时间的集成锁，确认 integration HEAD 未漂移、任务分支包含被审 Commit、Worktree 干净，然后 `git merge --no-ff --no-edit <task-branch>`。成功保存 merge Commit 与父 Commit；冲突执行 `git merge --abort`，标记 conflicted 并返回生产者，不自动修改任务分支。
+accepted Handoff 进入单消费者合并队列。Runtime 先在同一 SQLite 事务中记录 accepted 审核事实、期望版本和 `integration_merge` Host Operation，再获取带过期时间的集成锁，确认 integration HEAD 未漂移、任务分支包含被审 Commit、Worktree 干净，然后 `git merge --no-ff --no-edit <task-branch>`。成功保存 merge Commit 与父 Commit；冲突执行 `git merge --abort`，标记 conflicted 并返回生产者，不自动修改任务分支。本地 merge 成功但 push 失败时保存 merge Commit 和 push pending；Handoff 仍为 accepted，恢复器检查 ancestry 和 remote ref 后仅补推送。
 
 每个任务完成在 `WHERE state_version=?` 条件下更新任务版本。协调器另起事务重算 group：只有所有任务 Handoff accepted 且 merge 状态 merged，才将 group 置 completed、递增 Workflow `state_version` 并越过 join barrier。
 
@@ -163,21 +164,21 @@ Gate Service 从数据库读取证据，不接收调用方自报的 `passed`。b
 | G0 | 目标、范围、成功标准、风险、Routing Decision |
 | G1 | 需求、用户故事、业务规则、范围、非草案元数据和可测试验收 |
 | G2 | 官方研究、版本/License、技术栈、架构、API、数据库、安全、迁移和 Accepted ADR |
-| G3 | pytest/coverage、Ruff、Pyright、Secret、依赖、OCI、安全 Review、代码 Review，全部绑定 integration HEAD |
-| G4 | Manifest、SBOM、checksums、rollback、CHANGELOG、ADR 索引、Memory、GitHub PR/merge、版本和发布授权 |
+| G3 | pytest/coverage、Ruff、Pyright、文档、Secret、依赖、Bandit、Plugin/Skill/Hook/MCP、构建安装、镜像扫描、真实 OCI、安全 Review 和代码 Review，全部绑定 integration HEAD |
+| G4 | candidate/final manifest、SBOM、checksums、rollback、release review、CHANGELOG、ADR 索引、Release Memory、GitHub PR/merge/tag/assets 对账、版本和发布授权 |
 
 ## 7. 受控执行
 
 ExecutionRequest 必须绑定 `run_id/task_id/worktree_id`、命令 argv、风险、镜像 digest、超时和受管挂载。ExecutionService 验证任务租约、Worktree 归属/干净基线、命令 allowlist 与审批后，选择 Docker 或 Podman Adapter。
 
-`0.2.0` 目标镜像锁定为：
+`0.2.0` 目标镜像锁定为完整官方 Bookworm 引用：
 
 ```text
-python:3.12.14-slim-bookworm@
-sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134
+python:3.12.14-bookworm@
+sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a
 ```
 
-该 index digest 由 Docker Registry v2 对标签 `3.12.14-slim-bookworm` 的 `Docker-Content-Digest` 于 2026-08-24 核验。实现仍必须实际拉取、inspect、生成 SBOM/漏洞报告并通过策略阈值后替换历史 3.12.13 digest。
+该引用是构建输入，不等于扫描通过。正式 G3 必须实际拉取并记录 registry index digest 和宿主平台 digest，生成 SBOM 与离线 Trivy 报告；任何未获批准的 high/critical finding、缓存过期或 digest 不一致都保持 blocked。
 
 容器固定 `--network none --read-only --cap-drop ALL --security-opt no-new-privileges`、非 root UID/GID、PID/CPU/内存/时长限制；只挂载当前任务 Worktree 和按类型批准的 artifacts/cache。日志先脱敏再落盘，数据库只保存引用与 hash。执行结束重新检查 Git dirty；异常 dirty 使验证失败。
 
@@ -185,9 +186,9 @@ sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134
 
 G3 后创建专用 Release task/Worktree。CHANGELOG、Release Manifest 和回滚文档在该 Worktree 提交并经 Handoff Review/集成合并；Wheel、源码包、SBOM、checksums 写入 `.codex-os/artifacts/<run-id>/`。
 
-Manifest 绑定 `REQ-1.6.2`、软件/CLI/Plugin `0.2.0`、Plugin API/配置 `1.1`、SQLite `0006`、integration build Commit、PR、merge Commit、目标 tag、文档/配置/lock/制品 hash 和 Memory IDs。
+Manifest 绑定 `REQ-1.6.2`、软件/CLI/Plugin `0.2.0`、Plugin API/配置/文档/Profile `1.2`、SQLite `0007`、integration source Commit、candidate Commit、PR merge Commit、目标 tag、文档/配置/lock/制品 hash 和 Memory IDs。candidate manifest 与 final manifest 分开，后者包含发布资产和远端对账结果。
 
-G4 顺序：验证完整证据 -> 验证 GitHub PR head/base/merge -> 验证目标分支包含 integration HEAD -> 记录独立发布授权 -> 创建/推送 annotated tag -> 创建 GitHub Release。任一步失败保持 blocked，重复调用按 Manifest hash 幂等恢复。部署不在本系统权限内。
+G4 顺序：持久化独立发布授权与 `release_publish` Host Operation -> 验证完整证据和已合并 GitHub PR -> 验证目标分支包含 PR merge Commit -> 创建/核对 annotated tag -> 创建或复用 draft GitHub Release -> 生成 final manifest -> 上传并逐项复核资产 -> 发布 Release -> 完成 Workflow。任一步失败保持 blocked，重复调用按请求/Manifest hash 和远端状态幂等恢复。部署不在本系统权限内。
 
 ## 9. Memory 与 Routing
 
@@ -201,14 +202,14 @@ Profile Router 将 `frontend-project`、`backend-project`、`large-project` 组�
 
 - 所有写接口使用 `idempotency_key = hash(project_id, operation, normalized_input, expected_version)`。
 - Workflow、Task、TaskGroup、Handoff Review、Integration Merge 与 Memory Review 使用独立乐观版本。
-- SQLite 写事务使用 `BEGIN IMMEDIATE`、外键开启和短事务；Git/OCI/GitHub 外部操作先写 intent，完成后写 result，恢复器根据 intent/result 对账。
+- SQLite 写事务使用 `BEGIN IMMEDIATE`、外键开启和短事务；Git/OCI/GitHub 外部操作以 `pending/running/succeeded/failed/reconcile_required` Host Operation 先写 intent，完成后写 result，恢复器根据租约、request hash、attempt 与远端事实对账。
 - 进程崩溃时：未完成执行标记 interrupted；过期任务/合并租约可由同一 run 接管；不确定 Git 合并通过 HEAD/parents 重建，不重复合并。
 - 配置、HEAD、source hash 或证据变化会使相关 repository report、Review、Gate approval 和 release authorization 失效。
 - 自动恢复不执行删除、force push、rebase、tag、Release 或部署。
 
 ## 11. 迁移与回滚
 
-启动 0.2.0 时，在任何状态写入前复制数据库到 `.codex-os/state/backups/` 并写 SHA-256；验证备份可打开、foreign_key_check 和 integrity_check 后，依次应用 0004-0006。每条迁移在单独事务中记录 checksum。
+启动 0.2.0 时，在任何状态写入前复制数据库到 `.codex-os/state/backups/` 并写 SHA-256；验证备份可打开、foreign_key_check 和 integrity_check 后，依次应用 0004-0007。每条迁移在单独事务中记录 checksum。恢复必须先写入临时数据库并完成 integrity、foreign-key、FTS 与关键查询校验，再原子替换活动库。
 
 迁移失败关闭写服务并保留原库/失败副本；恢复通过校验后的备份原子替换。活动旧 Workflow 在下一次转换进入 `MIGRATION_REVALIDATION_REQUIRED`，新 Gate bundle 审计完成后才恢复。应用降级不反向执行 destructive SQL，只恢复备份或使用前一版本只读模式。
 
@@ -234,14 +235,14 @@ Adapter 均通过 Protocol 注入，单元测试使用 deterministic fake；公�
 | `domain/workflow.py` | Workflow/Task/TaskGroup/Handoff/Review/NextActions 状态契约 |
 | `application/repository.py` | Repository Governance Service |
 | `application/coordination.py` | DAG、调度、Review、join、集成与清理用例 |
-| `application/gates.py` | Gate bundle 构建与校验 |
-| `application/release.py` | Release Worktree、Manifest 与 G4 验证 |
+| `application/workflow.py` / `infrastructure/evidence.py` | Workflow 转换、Gate bundle 构建与 Commit-bound 证据校验 |
+| `application/release.py` / `application/g4.py` | Release Worktree、Manifest、Host Operation 与 G4 对账 |
 | `application/execution.py` | 受控执行主路径；保留现有 Adapter |
-| `infrastructure/migrations/0004-0006.sql` | 追加 Schema |
-| `infrastructure/*_repository.py` | 原子持久化与乐观锁 |
-| `adapters/github.py` | GitHub remote/PR/merge/tag/Release 查询与操作 |
-| `cli/app.py` / `cli/mcp_server.py` | Plugin API 1.1 适配；不包含业务规则 |
+| `infrastructure/migrations/0004-0007*.sql` | 追加 Schema；历史迁移不可改写 |
+| `infrastructure/workflows.py` / `coordination.py` / `worktrees.py` / `memory.py` | 原子持久化、乐观锁、租约与恢复 |
+| `application/repository.py` / `coordination.py` / `g4.py` | Git/GitHub remote、PR、merge、tag 和 Release 查询与操作 |
+| `cli/app.py` / `cli/mcp_server.py` | Plugin API 1.2 适配；共用输入模型、应用服务和响应封装 |
 
 ## 15. G2 完成定义
 
-本架构只有在 [API_SPEC.md](API_SPEC.md)、[DATABASE.md](DATABASE.md)、[SECURITY.md](SECURITY.md)、[OPEN_SOURCE_RESEARCH.md](OPEN_SOURCE_RESEARCH.md)、[TECH_STACK.md](TECH_STACK.md) 和 Accepted [ADR-0003](ADR/ADR-0003-governance-runtime-boundary.md) 内容一致，且所有公共输入/输出、失败、并发、迁移、回滚、信任边界与测试缝均无占位契约时，才可作为实现授权。
+本架构只有在 [API_SPEC.md](API_SPEC.md)、[DATABASE.md](DATABASE.md)、[SECURITY.md](SECURITY.md)、[OPEN_SOURCE_RESEARCH.md](OPEN_SOURCE_RESEARCH.md)、[TECH_STACK.md](TECH_STACK.md)、Accepted [ADR-0003](ADR/ADR-0003-governance-runtime-boundary.md) 与 [ADR-0004](ADR/ADR-0004-release-closure-transaction-boundaries.md) 内容一致，且所有公共输入/输出、失败、并发、迁移、回滚、信任边界与测试缝均无占位契约时，才可作为实现授权。

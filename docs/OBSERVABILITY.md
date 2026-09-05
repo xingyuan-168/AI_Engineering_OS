@@ -1,5 +1,7 @@
 # 可观测性规格
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001"]} -->
+
 版本：V2.0-derived-observability
 状态：可执行实现规格基线
 
@@ -11,13 +13,13 @@
 
 ```json
 {
-  "event_id": "EVT-001",
+  "event_id": "EVENT-20260831090002000000-C3D4E5F6",
   "event_type": "execution.completed",
   "timestamp": "2026-08-20T12:00:00Z",
   "project_id": "PROJECT-001",
-  "workflow_id": "WF-001",
-  "task_id": "TASK-001",
-  "run_id": "RUN-001",
+  "workflow_id": "RUN-20260831090000000000-A1B2C3D4",
+  "task_id": "TASK-20260831090001000000-B2C3D4E5",
+  "run_id": "RUN-20260831090000000000-A1B2C3D4",
   "actor": "agent:architect",
   "status": "completed",
   "duration_ms": 1200,
@@ -70,10 +72,12 @@
 
 ## 7. 保留和导出
 
-- 事件和审批默认保留 180 天，发布和安全事件至少保留 365 天。
+- 事件和审批在活动存储中至少保留 180 天，发布和安全事件至少保留 365 天；这两个数字是最短热保留期，不是自动删除期限。
+- 被 Workflow、Gate、ADR、Memory、Release 或安全事件引用的记录不得到期删除。超过热保留期后只能进入带 hash、索引和恢复说明的审计归档。
+- 0.2.x 不提供自动 purge；未来删除必须使用独立、获批且可审计的维护 Workflow。
 - 日志按项目分目录，单文件达到 20 MB 时滚动。
 - 支持导出 JSONL 审计包，导出前执行 Secret 扫描。
-- 删除索引不得删除 Git 事实来源；删除操作本身写入审计事件。
+- 删除索引不得删除 Git 事实来源或被引用的审计链；删除操作本身写入审计事件。
 
 ## 8. 完成定义
 

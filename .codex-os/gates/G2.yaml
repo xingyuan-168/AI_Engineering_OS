@@ -1,0 +1,12 @@
+schema_version: '1.2'
+gate: G2
+documents:
+  - docs/OPEN_SOURCE_RESEARCH.md
+  - docs/TECH_STACK.md
+  - docs/ARCHITECTURE.md
+  - docs/API_SPEC.md
+  - docs/DATABASE.md
+  - docs/MIGRATION_SPEC.md
+  - docs/SECURITY.md
+  - docs/ADR/README.md
+git: {source_commit_required: true, push_required: true, enforce_allowed_paths: true}

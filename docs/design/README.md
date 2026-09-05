@@ -1,5 +1,7 @@
 # 设计文档中心
 
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"frontend-engineer","requirement_refs":["REQ-1.6.2","FRONTEND-001"]} -->
+
 状态：可执行设计基线
 适用范围：未来控制台、桌面端或 Web/App 项目；当前 CLI MVP 复用其中的信息架构和状态模型。
 

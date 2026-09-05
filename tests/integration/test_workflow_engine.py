@@ -17,6 +17,7 @@ from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine, WorkflowError
 from codex_ai_os.application.worktree import WorktreeServiceError
 from codex_ai_os.domain.config import ProjectType
+from codex_ai_os.domain.operations import HostOperationKind
 from codex_ai_os.domain.workflow import (
     ChangeKind,
     Gate,
@@ -28,12 +29,12 @@ from codex_ai_os.domain.workflow import (
 from codex_ai_os.infrastructure.workflows import WorkflowConflictError
 
 
-def _engine(tmp_path: Path) -> WorkflowEngine:
+def _engine(tmp_path: Path, *, project_type: ProjectType = ProjectType.BACKEND) -> WorkflowEngine:
     ProjectInitializer().initialize(
         tmp_path,
         project_id="PROJECT-WORKFLOW",
         name="Workflow pilot",
-        project_type=ProjectType.BACKEND,
+        project_type=project_type,
         schema_version="1.0",
     )
     return WorkflowEngine(
@@ -131,6 +132,202 @@ def test_start_is_idempotent_for_same_active_goal(tmp_path: Path) -> None:
     assert first.active_task == second.active_task
 
 
+def test_create_begin_and_cancel_are_staged_and_idempotent(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+
+    created = engine.create(
+        "Build staged ERP procurement API",
+        idempotency_key="create-staged-workflow",
+    )
+    replayed = engine.create(
+        "Build staged ERP procurement API",
+        idempotency_key="create-staged-workflow",
+    )
+
+    assert created.run.id == replayed.run.id
+    assert created.run.run_status is RunStatus.CREATED
+    assert created.run.state_version == 0
+    assert created.active_task is None
+    assert created.next_actions == ()
+
+    begun = engine.begin(
+        created.run.id,
+        expected_state_version=0,
+        idempotency_key="begin-staged-workflow",
+    )
+    begin_replay = engine.begin(
+        created.run.id,
+        expected_state_version=0,
+        idempotency_key="begin-staged-workflow",
+    )
+    assert begun.run.run_status is RunStatus.RUNNING
+    assert begun.active_task is not None
+    assert begin_replay.active_task is not None
+    assert begun.active_task.id == begin_replay.active_task.id
+
+    cancelled = engine.cancel(
+        created.run.id,
+        reason="User withdrew the local workflow",
+        expected_state_version=begun.run.state_version,
+        idempotency_key="cancel-staged-workflow",
+    )
+    cancellation = cancelled.run.checkpoint["cancel_request"]
+    assert cancelled.run.run_status is RunStatus.CANCELLED
+    assert cancelled.active_task is None
+    assert cancelled.next_actions == ()
+    assert cancellation["state"] == "completed"
+    assert cancellation["reason"] == "User withdrew the local workflow"
+
+
+def test_staged_workflow_rejects_conflicting_requests(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    created = engine.create("Create safely", idempotency_key="create-safe")
+
+    with pytest.raises(WorkflowError) as changed_create:
+        engine.create("Different goal", idempotency_key="create-safe")
+    assert changed_create.value.code == "IDEMPOTENCY_CONFLICT"
+
+    with pytest.raises(WorkflowError) as stale_begin:
+        engine.begin(
+            created.run.id,
+            expected_state_version=1,
+            idempotency_key="begin-stale",
+        )
+    assert stale_begin.value.code == "STATE_VERSION_CONFLICT"
+
+    with pytest.raises(WorkflowError) as stale_cancel:
+        engine.cancel(
+            created.run.id,
+            reason="stale",
+            expected_state_version=1,
+            idempotency_key="cancel-stale",
+        )
+    assert stale_cancel.value.code == "STATE_VERSION_CONFLICT"
+
+
+def test_created_workflow_can_cancel_without_allocating_resources(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    created = engine.create("Cancel before begin", idempotency_key="create-before-cancel")
+
+    cancelled = engine.cancel(
+        created.run.id,
+        reason="No longer needed",
+        expected_state_version=created.run.state_version,
+        idempotency_key="cancel-before-begin",
+    )
+
+    assert cancelled.run.run_status is RunStatus.CANCELLED
+    assert cancelled.active_task is None
+    assert cancelled.run.checkpoint["cancel_request"]["state"] == "completed"
+
+
+def test_cancel_waits_for_running_host_operation_reconciliation(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    created = engine.create("Cancel with operation", idempotency_key="create-operation")
+    operation = engine.operations.ensure_pending(
+        project_id=engine.config.project_id,
+        run_id=created.run.id,
+        kind=HostOperationKind.INTEGRATION_PREPARE,
+        idempotency_key="operation-to-cancel",
+        request={"source_commit": "a" * 40},
+    )
+    running = engine.operations.acquire(
+        operation.operation_id,
+        expected_version=operation.state_version,
+        lease_owner="test",
+    )
+
+    cancelling = engine.cancel(
+        created.run.id,
+        reason="Wait for host operation",
+        expected_state_version=created.run.state_version,
+        idempotency_key="cancel-running-operation",
+    )
+    assert cancelling.run.run_status is RunStatus.PAUSED
+    assert cancelling.run.checkpoint["cancel_request"]["state"] == "requested"
+    assert cancelling.run.checkpoint["cancel_request"]["outstanding_operation_ids"] == [
+        operation.operation_id
+    ]
+
+    engine.operations.mark_failed(
+        operation.operation_id,
+        expected_version=running.state_version,
+        lease_owner="test",
+        error_code="SAFE_STOP",
+    )
+    finalized = engine.store.finalize_cancellation_if_ready(created.run.id)
+    assert finalized.run_status is RunStatus.CANCELLED
+    assert finalized.checkpoint["cancel_request"]["state"] == "completed"
+
+
+def test_cancel_cannot_hide_published_release(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    created = engine.create("Published workflow", idempotency_key="create-published")
+    operation = engine.operations.ensure_pending(
+        project_id=engine.config.project_id,
+        run_id=created.run.id,
+        kind=HostOperationKind.RELEASE_PUBLISH,
+        idempotency_key="published-operation",
+        request={"tag": "v0.2.0"},
+    )
+    running = engine.operations.acquire(
+        operation.operation_id,
+        expected_version=operation.state_version,
+        lease_owner="test",
+    )
+    engine.operations.mark_succeeded(
+        operation.operation_id,
+        expected_version=running.state_version,
+        lease_owner="test",
+        result={"tag": "v0.2.0"},
+    )
+
+    with pytest.raises(WorkflowError) as blocked:
+        engine.cancel(
+            created.run.id,
+            reason="Cannot erase publication",
+            expected_state_version=created.run.state_version,
+            idempotency_key="cancel-published",
+        )
+    assert blocked.value.code == "CANCELLATION_BLOCKED_EXTERNAL_COMMITMENT"
+
+
+def test_start_and_gate_concurrency_inputs_fail_closed(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    with pytest.raises(WorkflowError) as empty:
+        engine.start(" ")
+    assert empty.value.code == "CONFIG_INVALID"
+    with pytest.raises(WorkflowError, match="unsupported workflow"):
+        engine.start("goal", workflow_name="unknown")
+    with pytest.raises(WorkflowError) as unknown_profile:
+        engine.start("goal", profiles=("unknown-profile",))
+    assert unknown_profile.value.code == "CONFIG_INVALID"
+
+    started = engine.start("Approve with concurrency binding")
+    completed = _complete_current(engine, started.run.id)
+    with pytest.raises(WorkflowError) as stale:
+        engine.submit_approval(
+            completed.run.id,
+            gate=Gate.G0,
+            approved=False,
+            reviewer="user",
+            reason="stale",
+            expected_state_version=completed.run.state_version + 1,
+            idempotency_key="reject-g0",
+        )
+    assert stale.value.code == "STATE_VERSION_CONFLICT"
+    with pytest.raises(WorkflowError, match="idempotency_key"):
+        engine.submit_approval(
+            completed.run.id,
+            gate=Gate.G0,
+            approved=False,
+            reviewer="user",
+            reason="blank key",
+            expected_state_version=completed.run.state_version,
+            idempotency_key=" ",
+        )
+
+
 @pytest.mark.parametrize(
     ("workflow_name", "phase"),
     [
@@ -219,6 +416,32 @@ def test_full_new_project_gate_sequence(tmp_path: Path) -> None:
     assert '"verified_at":"2026-08-21T00:00:00+00:00"' in str(event_payload)
 
 
+def test_frontend_workflow_requires_prototype_before_g2(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, project_type=ProjectType.FRONTEND)
+    result = engine.start("Build governed frontend")
+    run_id = result.run.id
+
+    result = _complete_current(engine, run_id, "1")
+    engine.submit_approval(run_id, gate=Gate.G0, approved=True, reviewer="user", reason="ok")
+    result = _complete_current(engine, run_id, "2")
+    engine.submit_approval(run_id, gate=Gate.G1, approved=True, reviewer="user", reason="ok")
+    result = _complete_current(engine, run_id, "3")
+    assert result.run.workflow_phase is WorkflowPhase.DESIGN
+    result = _complete_current(engine, run_id, "4")
+
+    assert result.run.workflow_phase is WorkflowPhase.PROTOTYPE
+    assert result.run.run_status is RunStatus.RUNNING
+    assert result.next_action is not None
+    assert result.next_action.skill == "html-prototype"
+    assert result.next_action.gate is None
+
+    result = _complete_current(engine, run_id, "5")
+    assert result.run.workflow_phase is WorkflowPhase.PROTOTYPE
+    assert result.run.run_status is RunStatus.NEEDS_APPROVAL
+    assert result.next_action is not None
+    assert result.next_action.gate is Gate.G2
+
+
 def test_gate_cannot_be_bypassed_or_mismatched(tmp_path: Path) -> None:
     engine = _engine(tmp_path)
     started = engine.start("Build ERP procurement API")
@@ -251,12 +474,32 @@ def test_task_completion_is_idempotent_and_conflicting_evidence_is_rejected(
     assert started.active_task is not None
     completion = _completion(started.active_task.id)
 
-    first = engine.complete_task(started.run.id, completion)
-    repeated = engine.complete_task(started.run.id, completion)
+    with pytest.raises(WorkflowError) as stale:
+        engine.complete_task(
+            started.run.id,
+            completion,
+            expected_task_version=started.active_task.state_version + 1,
+            idempotency_key="complete-intake",
+        )
+    assert stale.value.code == "STATE_VERSION_CONFLICT"
+
+    first = engine.complete_task(
+        started.run.id,
+        completion,
+        expected_task_version=started.active_task.state_version,
+        idempotency_key="complete-intake",
+    )
+    repeated = engine.complete_task(
+        started.run.id,
+        completion,
+        expected_task_version=started.active_task.state_version,
+        idempotency_key="complete-intake",
+    )
 
     assert repeated.run.state_version == first.run.state_version
-    with pytest.raises(WorkflowError, match="different evidence"):
+    with pytest.raises(WorkflowError, match="different evidence") as conflicting:
         engine.complete_task(started.run.id, _completion(started.active_task.id, "b"))
+    assert conflicting.value.code == "IDEMPOTENCY_CONFLICT"
 
 
 def test_rejected_gate_blocks_and_resume_creates_new_task(tmp_path: Path) -> None:
@@ -294,8 +537,7 @@ def test_pause_and_resume_preserve_the_active_task(tmp_path: Path) -> None:
     assert resumed.active_task.id == started.active_task.id
     with engine.store.database.connection() as connection:
         pause_events = connection.execute(
-            "SELECT COUNT(*) FROM events WHERE run_id = ? "
-            "AND event_type = 'workflow.paused'",
+            "SELECT COUNT(*) FROM events WHERE run_id = ? AND event_type = 'workflow.paused'",
             (started.run.id,),
         ).fetchone()[0]
     assert pause_events == 1
@@ -358,8 +600,7 @@ def test_worktree_allocation_failure_blocks_run_and_task(tmp_path: Path) -> None
             "SELECT status FROM tasks ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         blocked_events = connection.execute(
-            "SELECT COUNT(*) FROM events WHERE event_type IN "
-            "('task.blocked', 'workflow.blocked')"
+            "SELECT COUNT(*) FROM events WHERE event_type IN ('task.blocked', 'workflow.blocked')"
         ).fetchone()[0]
     assert run[0] == "blocked"
     assert task[0] == "blocked"
@@ -428,9 +669,7 @@ def test_real_pushed_git_evidence_creates_verified_handoff(tmp_path: Path) -> No
     _git(task_worktree, "commit", "-m", "docs: add intake evidence")
     _git(task_worktree, "push", "-u", "origin", started.active_task.branch)
     commit_sha = _git(task_worktree, "rev-parse", "HEAD")
-    committed = _git_bytes(
-        task_worktree, "show", f"{commit_sha}:docs/PROJECT_MASTER.md"
-    )
+    committed = _git_bytes(task_worktree, "show", f"{commit_sha}:docs/PROJECT_MASTER.md")
     digest = hashlib.sha256(committed).hexdigest()
 
     result = engine.complete_task(

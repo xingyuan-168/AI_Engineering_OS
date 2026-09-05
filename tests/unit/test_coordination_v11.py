@@ -11,7 +11,12 @@ from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
 from codex_ai_os.domain.coordination import HandoffReviewInput, TaskBlueprint
-from codex_ai_os.domain.governance import ReviewDecision
+from codex_ai_os.domain.governance import (
+    ReviewDecision,
+    ReviewFinding,
+    ReviewFindingSeverity,
+    ReviewFindingStatus,
+)
 from codex_ai_os.infrastructure.coordination import (
     CoordinationError,
     CoordinationStore,
@@ -114,6 +119,113 @@ def test_coordination_dag_rejection_resubmission_and_blocking(tmp_path: Path) ->
     view = store.group_view(group.id)
     assert view.status == "blocked"
     assert docs.id in view.blocked_task_ids
+
+
+def test_accepted_handoff_creates_idempotent_merge_operation_and_preserves_push_failure(
+    tmp_path: Path,
+) -> None:
+    root = _project(tmp_path / "operation")
+    engine = WorkflowEngine(root)
+    run = engine.start("Persist accepted handoff operation").run
+    store = CoordinationStore(engine.store.database)
+    group, tasks = store.create_group(
+        run_id=run.id,
+        name="operation-review",
+        phase="implementation",
+        base_commit="a" * 40,
+        blueprints=(_blueprint("backend", "backend-engineer", ("src/backend/",)),),
+    )
+    task = tasks[0]
+    handoff_id = store.submit_handoff(
+        task_id=task.id,
+        source_commit="b" * 40,
+        artifact_refs={"src/backend/app.py": "c" * 64},
+        checks=("pytest",),
+    )
+    with engine.store.database.read_connection() as connection:
+        handoff = connection.execute(
+            "SELECT state_version FROM handoffs WHERE id = ?", (handoff_id,)
+        ).fetchone()
+    assert handoff is not None
+    expected_version = int(handoff["state_version"])
+
+    with pytest.raises(CoordinationError, match="expected Handoff version"):
+        store.review_handoff(
+            _review(
+                handoff_id,
+                "reviewer",
+                "b" * 40,
+                "accepted",
+                expected_handoff_version=expected_version + 1,
+                idempotency_key="handoff-review-stale",
+            )
+        )
+
+    review = _review(
+        handoff_id,
+        "reviewer",
+        "b" * 40,
+        "accepted",
+        expected_handoff_version=expected_version,
+        idempotency_key="handoff-review-accepted",
+    )
+    accepted = store.review_handoff(review)
+    assert accepted.operation_id is not None
+
+    replayed = store.review_handoff(review)
+    assert replayed.operation_id == accepted.operation_id
+
+    with pytest.raises(CoordinationError, match="idempotency key"):
+        store.review_handoff(
+            _review(
+                handoff_id,
+                "reviewer",
+                "b" * 40,
+                "accepted",
+                report_hash="5" * 64,
+                expected_handoff_version=expected_version,
+                idempotency_key="handoff-review-accepted",
+            )
+        )
+
+    blocked = store.record_merge(
+        decision=accepted,
+        source_branch="agent/backend/backend",
+        integration_branch=f"workflow/{run.id}/integration",
+        integration_head_before="a" * 40,
+        merge_commit="d" * 40,
+        parent_commits=("a" * 40, "b" * 40),
+        status="blocked",
+        error_code="REMOTE_UNREACHABLE",
+    )
+    assert blocked.status == "blocked"
+    with engine.store.database.read_connection() as connection:
+        handoff_after = connection.execute(
+            "SELECT status FROM handoffs WHERE id = ?", (handoff_id,)
+        ).fetchone()
+        task_after = connection.execute(
+            "SELECT status, review_status FROM tasks WHERE id = ?", (task.id,)
+        ).fetchone()
+        operation = connection.execute(
+            "SELECT kind, status FROM host_operations WHERE operation_id = ?",
+            (accepted.operation_id,),
+        ).fetchone()
+        run_after = connection.execute(
+            "SELECT run_status, integration_head FROM workflow_runs WHERE id = ?",
+            (run.id,),
+        ).fetchone()
+    assert handoff_after is not None
+    assert task_after is not None
+    assert operation is not None
+    assert run_after is not None
+    assert handoff_after["status"] == "accepted"
+    assert task_after["status"] == "completed"
+    assert task_after["review_status"] == "accepted"
+    assert operation["kind"] == "integration_merge"
+    assert operation["status"] == "pending"
+    assert run_after["run_status"] == "blocked"
+    assert run_after["integration_head"] == "d" * 40
+    assert group.id == blocked.id
 
 
 def test_coordination_rejects_invalid_groups_and_cycles(tmp_path: Path) -> None:
@@ -274,14 +386,25 @@ def _review(
     *,
     report_ref: str = "reviews/report.md",
     report_hash: str = "4" * 64,
+    expected_handoff_version: int | None = None,
+    idempotency_key: str | None = None,
 ) -> HandoffReviewInput:
     return HandoffReviewInput(
         handoff_id=handoff_id,
+        expected_handoff_version=expected_handoff_version,
+        idempotency_key=idempotency_key,
         reviewer=reviewer,
         reviewed_commit=commit,
         decision=ReviewDecision(decision),
         reason=f"{decision} after evidence review",
-        findings=("finding",),
+        findings=(
+            ReviewFinding(
+                id="FINDING-1",
+                severity=ReviewFindingSeverity.MEDIUM,
+                status=ReviewFindingStatus.OPEN,
+                summary="finding",
+            ),
+        ),
         risks=("risk",),
         report_ref=report_ref,
         report_hash=report_hash,

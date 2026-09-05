@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontend Implementation"
+  short_description: "Help with Frontend Implementation tasks"
+  default_prompt: "Use $frontend-implementation to implement an approved UI slice with tests."
