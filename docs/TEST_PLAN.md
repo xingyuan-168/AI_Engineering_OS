@@ -123,4 +123,11 @@ Podman 使用本机不可变 image ID `4a545b585af74088149994e3319fdc270e3a3f131
 Linux 下 Windows 绝对路径识别和尚未接入环境证据的旧自举 E2E。
 这些失败仍需后续修复，不能据此宣称完整测试通过或更新本机安装。
 
+同日路径防护修复后，将上述三个文件与 `tests/unit/test_governance_policy.py`、
+`tests/unit/test_routing_edges.py`、`tests/unit/test_project_profiles.py` 合并执行，
+相同 OCI 参数和 pytest 选项下为 `53 passed`（11.92 秒）。覆盖双平台绝对路径、
+盘符相对路径、UNC/device/ADS、Windows 设备名、大小写和点前缀、中文正常路径，
+并分别对 legacy 与 OCI-first fixture 断言精确 G3 检查集合。
+相关 Ruff、Pyright、54 份文档和 Secret Scan 通过；这不消除其余发布/环境 E2E 阻塞。
+
 测试完成必须提供 Branch、Commit、remote/push、命令、退出码、报告路径/hash、开始/结束时间、跳过数和覆盖率。所有活跃规格的完成定义和 Requirement 必须有有效追溯记录；任何 required check 缺失、跳过、来源 Commit 不一致或证据不可复算，都不能将 0.2.1 标记为发布完成。

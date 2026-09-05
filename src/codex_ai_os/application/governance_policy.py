@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from fnmatch import fnmatchcase
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -521,10 +521,10 @@ def _require_monotonic_gate(
 
 
 def _normalize_impact_path(value: str) -> str:
-    normalized = value.replace("\\", "/").strip("/")
-    if not normalized or normalized.startswith(".") or ".." in normalized.split("/"):
+    normalized = value.replace("\\", "/").strip()
+    if _unsafe_repository_path(normalized) or normalized.startswith("."):
         raise GovernancePolicyError("ROUTING_PATH_UNMAPPED", f"unsafe impact path: {value}")
-    return normalized
+    return PurePosixPath(normalized).as_posix()
 
 
 def _matches(path: str, pattern: str) -> bool:
@@ -561,40 +561,44 @@ def _effective_role_boundaries(
 
 def _normalize_policy_pattern(value: str) -> str:
     normalized = value.replace("\\", "/").strip()
-    while "//" in normalized:
-        normalized = normalized.replace("//", "/")
     literal = normalized.replace("**", "x").replace("*", "x")
-    path = Path(literal)
-    if (
-        not normalized
-        or path.is_absolute()
-        or normalized.startswith("/")
-        or ".." in normalized.split("/")
-    ):
+    if _unsafe_repository_path(literal):
         raise GovernancePolicyError(
             "CONFIG_INVALID", f"unsafe governance path pattern: {value}"
         )
-    return normalized.strip("/")
+    return PurePosixPath(normalized).as_posix()
 
 
 def _normalize_governed_path(value: str) -> str:
     normalized = value.replace("\\", "/").strip()
-    while "//" in normalized:
-        normalized = normalized.replace("//", "/")
-    path = Path(normalized)
-    if (
-        not normalized
-        or path.is_absolute()
-        or normalized.startswith("/")
-        or ".." in normalized.split("/")
-    ):
+    if _unsafe_repository_path(normalized):
         raise GovernancePolicyError(
             "PATH_POLICY_VIOLATION", f"unsafe governed path: {value}"
         )
-    return normalized.removeprefix("./").strip("/")
+    return PurePosixPath(normalized).as_posix()
+
+
+def _unsafe_repository_path(value: str) -> bool:
+    """Apply Windows and POSIX lexical rules regardless of the runtime host."""
+    return (
+        not value
+        or PurePosixPath(value) == PurePosixPath(".")
+        or PurePosixPath(value).is_absolute()
+        or bool(PureWindowsPath(value).drive)
+        or PureWindowsPath(value).is_reserved()
+        or ":" in value  # Also excludes NTFS alternate data streams.
+        or "\ufffd" in value
+        or any(ord(character) < 32 for character in value)
+        or any(
+            part == ".." or (part not in {"", "."} and part.endswith((".", " ")))
+            for part in value.split("/")
+        )
+    )
 
 
 def _policy_pattern_matches(pattern: str, path: str) -> bool:
+    # Windows governed files must remain protected when checked inside Linux OCI.
+    pattern, path = pattern.casefold(), path.casefold()
     if pattern.startswith("**/"):
         tail = pattern[3:]
         if tail.endswith("/**"):
