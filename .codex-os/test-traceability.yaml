@@ -11,7 +11,7 @@ entries:
   - id: TRACE-GATE-EVIDENCE
     requirement_refs: [GATE-001]
     specification_paths: [docs/WORKFLOW_SPEC.md, docs/TEST_PLAN.md]
-    test_paths: [tests/unit/test_evidence_edges.py, tests/unit/test_formal_checks.py, tests/integration/test_workflow_engine.py]
+    test_paths: [tests/unit/test_evidence_edges.py, tests/unit/test_gate_evidence_freshness.py, tests/unit/test_formal_checks.py, tests/integration/test_workflow_engine.py]
   - id: TRACE-AGENT-COORDINATION
     requirement_refs: [AGENT-001, HANDOFF-001, WORKTREE-001, ROUTING-001]
     specification_paths: [docs/AGENT_SPEC.md, docs/AGENT_HANDOFF.md, docs/WORKTREE_SPEC.md, docs/WORKFLOW_ROUTING_RULES.md]

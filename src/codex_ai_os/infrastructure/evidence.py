@@ -371,7 +371,7 @@ class EvidenceStore:
                 gate=Gate(str(approval["gate"])),
                 state_version=int(approval["state_version"]),
                 source_commit=str(source["source_commit"]),
-                document_version_target=RUNTIME_VERSIONS.software,
+                document_version_target=self._document_version_for_run(run_id),
             )
             if bundle.status != "complete" or bundle.missing:
                 continue
@@ -475,37 +475,43 @@ class EvidenceStore:
         with self.database.read_connection() as connection:
             artifacts = connection.execute(
                 """
-                SELECT path, artifact_type, content_hash, source_commit, id
+                SELECT path, artifact_type, content_hash, source_commit, id, status
                 FROM artifact_evidence
-                WHERE run_id = ? AND status = 'verified'
-                ORDER BY created_at DESC, path, content_hash
+                WHERE run_id = ?
+                ORDER BY rowid DESC
                 """,
                 (run_id,),
             ).fetchall()
             checks = connection.execute(
                 """
-                SELECT check_name, report_hash, source_commit, id FROM check_evidence
-                WHERE run_id = ? AND status = 'passed' AND exit_code = 0
-                ORDER BY executed_at DESC, check_name, report_hash
+                SELECT check_name, report_path, report_hash, source_commit, id,
+                    status, exit_code FROM check_evidence
+                WHERE run_id = ?
+                ORDER BY rowid DESC
                 """,
                 (run_id,),
             ).fetchall()
             reviews = connection.execute(
                 """
-                SELECT review_type, report_hash, reviewed_commit, id FROM (
-                    SELECT review_type, report_hash, reviewed_commit, id, created_at
+                SELECT review_type, report_ref, report_hash, reviewed_commit, id,
+                    decision FROM (
+                    SELECT review_type, report_ref, report_hash, reviewed_commit,
+                        id, rowid AS attempt_order, decision
                     FROM review_evidence
-                    WHERE run_id = ? AND decision = 'accepted'
+                    WHERE run_id = ?
                     UNION ALL
                     SELECT 'ux-prototype' AS review_type,
+                        COALESCE(json_extract(payload_json, '$.report_path'),
+                            '.codex-os/artifacts/' || run_id || '/prototype-review-' ||
+                            json_extract(payload_json, '$.request_hash') || '.json') AS report_ref,
                         json_extract(payload_json, '$.report_hash') AS report_hash,
                         json_extract(payload_json, '$.reviewed_commit') AS reviewed_commit,
-                        event_id AS id, created_at
+                        event_id AS id, rowid AS attempt_order,
+                        json_extract(payload_json, '$.review.decision') AS decision
                     FROM events
                     WHERE run_id = ? AND event_type = 'prototype.reviewed'
-                      AND json_extract(payload_json, '$.review.decision') = 'accepted'
                 )
-                ORDER BY created_at DESC, review_type, report_hash
+                ORDER BY attempt_order DESC
                 """,
                 (run_id, run_id),
             ).fetchall()
@@ -522,23 +528,46 @@ class EvidenceStore:
                 source_column="reviewed_commit",
                 key_column="review_type",
             )
+            attempts = {
+                "artifacts": [(str(row["id"]), str(row["status"])) for row in artifacts],
+                "checks": [(str(row["id"]), str(row["status"])) for row in checks],
+                "reviews": [(str(row["id"]), str(row["decision"])) for row in reviews],
+            }
             artifacts = [
                 row
                 for row in artifacts
-                if str(row["artifact_type"]) != "html-prototype"
-                or str(row["source_commit"]).casefold() == source_commit.casefold()
+                if row["status"] == "verified"
+                and (
+                    row["artifact_type"] != "html-prototype"
+                    or str(row["source_commit"]).casefold() == source_commit.casefold()
+                )
+                and self._content_matches(
+                    str(row["path"]), str(row["content_hash"]), source_commit
+                )
             ]
             checks = [
                 row
                 for row in checks
-                if str(row["check_name"]) != "html-prototype-validator"
-                or str(row["source_commit"]).casefold() == source_commit.casefold()
+                if row["status"] == "passed" and row["exit_code"] == 0
+                and (
+                    (gate is not Gate.G3 and row["check_name"] != "html-prototype-validator")
+                    or str(row["source_commit"]).casefold() == source_commit.casefold()
+                )
+                and self._content_matches(
+                    str(row["report_path"]), str(row["report_hash"]), source_commit
+                )
             ]
             reviews = [
                 row
                 for row in reviews
-                if str(row["review_type"]) != "ux-prototype"
-                or str(row["reviewed_commit"]).casefold() == source_commit.casefold()
+                if row["decision"] == "accepted"
+                and (
+                    (gate is not Gate.G3 and row["review_type"] != "ux-prototype")
+                    or str(row["reviewed_commit"]).casefold() == source_commit.casefold()
+                )
+                and self._content_matches(
+                    str(row["report_ref"]), str(row["report_hash"]), source_commit
+                )
             ]
 
             artifact_paths = tuple(str(row["path"]) for row in artifacts)
@@ -596,6 +625,7 @@ class EvidenceStore:
                 "records": sorted(record_hashes.items()),
                 "policy_hash": policy.policy_hash,
                 "requirements_hash": requirements_hash,
+                "evidence_attempts": attempts,
                 "missing": missing,
             }
             bundle_hash = hashlib.sha256(
@@ -896,6 +926,14 @@ class EvidenceStore:
         )
         return result.returncode == 0
 
+    def _content_matches(self, relative: str, expected_hash: str, source_commit: str) -> bool:
+        """Re-read selected evidence; never fall back to an older successful attempt."""
+        try:
+            self._verify_report(self.root, relative, expected_hash, source_commit=source_commit)
+        except (EvidenceError, OSError, ValueError):
+            return False
+        return True
+
     def _verify_report(
         self,
         worktree: Path,
@@ -905,7 +943,7 @@ class EvidenceStore:
         source_commit: str | None = None,
     ) -> None:
         base = self.root if relative.startswith(".codex-os/artifacts/") else worktree
-        if source_commit is not None and base == worktree:
+        if source_commit is not None and not relative.startswith(".codex-os/artifacts/"):
             content = self._committed_file(worktree, source_commit, relative)
         else:
             candidate = (base / relative).resolve()

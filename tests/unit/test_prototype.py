@@ -209,6 +209,35 @@ def test_prototype_review_records_exact_commit_evidence(tmp_path: Path) -> None:
     assert "check:html-prototype-validator" not in bundle.missing
     assert "review:ux-prototype" not in bundle.missing
 
+    # Older cached plugins did not include report_path in their event payload.
+    with engine.store.database.connection() as connection:
+        connection.execute(
+            "UPDATE events SET payload_json = json_remove(payload_json, '$.report_path') "
+            "WHERE run_id = ? AND event_type = 'prototype.reviewed'",
+            (started.run.id,),
+        )
+        connection.commit()
+    compatible = engine.evidence_store.evaluate_gate_bundle(
+        run_id=started.run.id, gate=Gate.G2,
+        state_version=reviewed.state_version, source_commit=head,
+    )
+    assert "review:ux-prototype" not in compatible.missing
+
+    rejected = service.submit(
+        run_id=started.run.id, task_id=task_id,
+        expected_task_version=2, expected_state_version=2,
+        idempotency_key="prototype-review-rejected",
+        prototype_path=prototype_path, prototype_hash=digest,
+        reviewed_commit=head, decision=ReviewDecision.REJECTED,
+        reviewer="ux-owner", reason="reconsidered interaction review",
+        invocation=InvocationContext.local(InvocationSource.CLI),
+    )
+    denied = engine.evidence_store.evaluate_gate_bundle(
+        run_id=started.run.id, gate=Gate.G2,
+        state_version=rejected.state_version, source_commit=head,
+    )
+    assert "review:ux-prototype" in denied.missing
+
 
 def _valid_prototype() -> bytes:
     states = "".join(

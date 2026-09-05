@@ -13,5 +13,6 @@
 - [ADR-0005：治理权威、规格一致性与自修改规则](ADR-0005-governance-authority-and-specification-consistency.md)
 - [ADR-0006：分阶段 Workflow 生命周期与安全取消](ADR-0006-staged-workflow-lifecycle.md)
 - [ADR-0007：OCI-First 项目环境治理](ADR-0007-oci-first-project-environments.md)
+- [ADR-0008：治理证据、授权和环境操作可靠性](ADR-0008-governance-reliability.md)
 
 新增 ADR 必须使用唯一编号，记录状态、上下文、选项、决定和后果；不得覆盖既有历史。

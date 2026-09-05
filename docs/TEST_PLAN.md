@@ -103,4 +103,24 @@
 
 ## 10. 完成定义
 
+### Gate Evidence 新鲜度回归
+
+`tests/unit/test_gate_evidence_freshness.py` 验证后一次失败/拒绝覆盖旧成功、
+修复后的新 Review 可以重新接受、G3 检查与 Review 绑定精确 Commit、
+审批前重新计算审计报告 hash，以及继承的文档必须与目标 Commit 内容一致。
+尝试顺序使用持久化插入顺序，不信任调用方时间戳；失败尝试也参与 bundle hash。
+`tests/unit/test_evidence_edges.py` 同时验证迁移重建使用 Workflow 保存的文档目标版本，
+不随运行时升级改变历史要求。上述测试是开发回归，不替代正式 G3/OCI 发布证据。
+
+2026-09-05 开发验证记录：上述三个测试文件在独立克隆中执行，`13 passed`；
+命令为 `python -m pytest tests/unit/test_gate_evidence_freshness.py tests/unit/test_evidence_edges.py tests/unit/test_prototype.py -q -p no:cacheprovider`。
+Podman 使用本机不可变 image ID `4a545b585af74088149994e3319fdc270e3a3f13181d23ed955a2a42261ee17b`，
+`--network=none --read-only --user=65532:65532 --cap-drop=ALL --security-opt=no-new-privileges:true`，
+只读挂载验证克隆及现有离线依赖目录。相关 Ruff、Pyright、54 份文档检查和 Secret Scan（267 个 Git 文件、0 finding）通过。
+扩大到正式检查、G4、治理策略及 Workflow 集成/E2E 时为 `54 passed, 6 failed`；
+未应用本次补丁、但保留原有 0.2.1 未提交改动的对照快照复现完全相同的 6 项失败：
+容器内 host-negative 测试假设、两项旧 G4 版本 fixture、环境 Gate 检查集合、
+Linux 下 Windows 绝对路径识别和尚未接入环境证据的旧自举 E2E。
+这些失败仍需后续修复，不能据此宣称完整测试通过或更新本机安装。
+
 测试完成必须提供 Branch、Commit、remote/push、命令、退出码、报告路径/hash、开始/结束时间、跳过数和覆盖率。所有活跃规格的完成定义和 Requirement 必须有有效追溯记录；任何 required check 缺失、跳过、来源 Commit 不一致或证据不可复算，都不能将 0.2.1 标记为发布完成。

@@ -448,6 +448,7 @@ class PrototypeReviewService:
                                 **report_payload,
                                 "request_hash": request_hash,
                                 "report_hash": report_hash,
+                                "report_path": report_path,
                             }
                         ),
                         now,

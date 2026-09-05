@@ -24,7 +24,7 @@ from codex_ai_os.infrastructure.evidence import EvidenceError, GateBundle
 def test_migrated_gate_artifacts_are_reverified_and_bound(tmp_path: Path) -> None:
     root = _project(tmp_path / "migration")
     engine = WorkflowEngine(root)
-    current = engine.start("Revalidate a migrated approval")
+    current = engine.start("Revalidate a migrated approval", document_version_target="0.2.0")
     assert current.active_task is not None
     metadata = json.dumps(
         {
