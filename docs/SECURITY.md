@@ -54,6 +54,7 @@
 - Git 跟踪扫描使用 `git ls-files -z`，不能依赖文件系统遍历推断 tracked 状态。
 - `.gitignore` 校验以必需类别而非固定单一模板判断，避免合法更严格规则误报。
 - 自动清理不接受 glob、未解析环境变量或用户传入任意绝对路径；数据库 registry ID 是唯一清理入口。
+- 工作区不保留归档/历史文档树（`docs/archive/`、`input/` 等），Git 历史是唯一存档；本地构建产物版本必须与 `RUNTIME_VERSIONS.software` 一致。两项均由 `repository_check` 的 `UNDECLARED_LEGACY_DOCS`/`STALE_ARTIFACT` finding 强制（BR-070/071/072）。
 
 ## 5. ExecutionService 安全格
 

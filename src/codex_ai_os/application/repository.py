@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from codex_ai_os.domain.config import GitPushPolicy, ProjectConfig
 from codex_ai_os.domain.governance import RepositoryCheckReport, RepositoryFinding
 from codex_ai_os.domain.ids import new_id
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 
@@ -70,6 +71,14 @@ _TRACKED_POLLUTION = re.compile(
 )
 _FORBIDDEN_FILE = re.compile(
     r"^(?:final|backup)\.py$|^fix_.+_v\d+\.py$|^test_new\.py$|\.bak$",
+    re.IGNORECASE,
+)
+# Legacy document trees must not exist in the worktree; Git history is the only
+# archive (see BR-070).
+_FORBIDDEN_LEGACY_DOC_TREES = ("docs/archive", "input")
+# wheel `distribution-version-...whl` and sdist `distribution-version.tar.gz`.
+_ARTIFACT_VERSION = re.compile(
+    r"^[^-]+-([0-9]+\.[0-9]+\.[0-9]+(?:\+[0-9A-Za-z.]+)?)(?:-[^-]+)*\.(?:whl|tar\.gz)$",
     re.IGNORECASE,
 )
 _SECRET = re.compile(
@@ -244,6 +253,7 @@ class RepositoryGovernanceService:
 
     def _hygiene_findings(self) -> list[RepositoryFinding]:
         findings: list[RepositoryFinding] = []
+        findings.extend(self._stale_artifact_findings())
         gitignore = self.root / ".gitignore"
         if not gitignore.is_file():
             findings.append(_finding("GITIGNORE_INCOMPLETE", ".gitignore is required"))
@@ -328,6 +338,16 @@ class RepositoryGovernanceService:
                             path=relative.as_posix(),
                         )
                     )
+                if relative.as_posix().casefold() in _FORBIDDEN_LEGACY_DOC_TREES:
+                    findings.append(
+                        _finding(
+                            "UNDECLARED_LEGACY_DOCS",
+                            "archived or legacy document tree is forbidden in the "
+                            "worktree; Git history is the only archive",
+                            path=relative.as_posix(),
+                        )
+                    )
+                    continue
                 kept.append(name)
             directories[:] = kept
             for name in files:
@@ -339,6 +359,27 @@ class RepositoryGovernanceService:
                             path=(relative_dir / name).as_posix(),
                         )
                     )
+        return findings
+
+    def _stale_artifact_findings(self) -> list[RepositoryFinding]:
+        """BR-071: local build artifacts must match the current runtime version."""
+        findings: list[RepositoryFinding] = []
+        dist = self.root / "dist"
+        if not dist.is_dir():
+            return findings
+        for item in sorted(dist.iterdir()):
+            match = _ARTIFACT_VERSION.match(item.name)
+            if match is None or match.group(1).split("+", 1)[0] == RUNTIME_VERSIONS.software:
+                continue
+            findings.append(
+                _finding(
+                    "STALE_ARTIFACT",
+                    "build artifact version "
+                    f"{match.group(1)} does not match runtime version "
+                    f"{RUNTIME_VERSIONS.software}; rebuild or delete stale artifacts",
+                    path=f"dist/{item.name}",
+                )
+            )
         return findings
 
     def _persist(self, report: RepositoryCheckReport, *, run_id: str | None) -> None:

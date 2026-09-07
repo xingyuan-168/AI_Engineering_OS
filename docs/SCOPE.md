@@ -127,6 +127,7 @@
 
 - 无 Git、无 remote、非 GitHub remote、远端不可达、HEAD 未推送、目标分支缺失、脏工作树和未解决冲突。
 - 禁止目录/文件、跟踪缓存/日志/Secret、缺失 `.gitignore`、符号链接或 junction 逃逸、未知临时文件和扫描排除项。
+- 工作区出现 `docs/archive/`、`input/` 等归档文档树时 `UNDECLARED_LEGACY_DOCS` 阻塞；`dist/` 内存在与 `RUNTIME_VERSIONS.software` 不符的旧构建产物时 `STALE_ARTIFACT` 阻塞（BR-072）。
 
 ### 6.2 Workflow 与并发
 

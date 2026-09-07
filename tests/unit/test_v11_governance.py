@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import stat
 import subprocess
 from datetime import UTC, datetime
@@ -58,6 +59,36 @@ def test_fixture_repository_check_detects_hygiene_and_tracked_pollution(tmp_path
     _git(root, "commit", "-m", "test: add forbidden fixture")
     tracked = RepositoryGovernanceService(root).check()
     assert tracked.repository_ready is False
+
+
+def test_repository_check_blocks_legacy_doc_trees_and_stale_artifacts(
+    tmp_path: Path,
+) -> None:
+    root = _fixture_project(tmp_path / "fixture")
+    (root / "docs" / "archive").mkdir(parents=True)
+    (root / "docs" / "archive" / "legacy.md").write_text("# Legacy\n", encoding="utf-8")
+    legacy = RepositoryGovernanceService(root).check()
+    assert "UNDECLARED_LEGACY_DOCS" in {finding.code for finding in legacy.findings}
+
+    dist = root / "dist"
+    dist.mkdir()
+    stale_wheel = dist / "codex_ai_engineering_os-0.1.0-py3-none-any.whl"
+    stale_wheel.write_bytes(b"stale wheel")
+    stale = RepositoryGovernanceService(root).check()
+    codes = {finding.code for finding in stale.findings}
+    assert {"UNDECLARED_LEGACY_DOCS", "STALE_ARTIFACT"} <= codes
+    assert stale.repository_ready is False
+
+    stale_wheel.unlink()
+    current_wheel = (
+        dist / f"codex_ai_engineering_os-{RUNTIME_VERSIONS.software}-py3-none-any.whl"
+    )
+    current_wheel.write_bytes(b"current wheel")
+    shutil.rmtree(root / "docs" / "archive")
+    clean = RepositoryGovernanceService(root).check()
+    clean_codes = {finding.code for finding in clean.findings}
+    assert "UNDECLARED_LEGACY_DOCS" not in clean_codes
+    assert "STALE_ARTIFACT" not in clean_codes
 
 
 def test_formal_repository_check_accepts_github_and_rejects_other_hosts(

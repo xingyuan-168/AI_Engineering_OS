@@ -101,7 +101,13 @@
 - `BR-066`：项目类型或 impact paths 表明存在前端页面时必须启用 `frontend-project`，不得通过显式 Profile 或人工 override 移除原型门禁。
 - `BR-067`：前端实现前必须提交 Commit-bound、离线自包含的 HTML 交互原型；`html-prototype-validator` 和非生产者的 `ux-prototype` accepted Review 均为 G2 必需证据，原型 Commit 或 hash 变化立即使确认失效。
 
-## 11. 规则例外与优先级
+## 11. 版本与仓库硬规则
+
+- `BR-070`：远程 GitHub 仓库是唯一版本管理与唯一发布事实源。项目进入开发阶段的唯一前置是 `repository_check` 全部通过（`github.com` 或允许的 GHE 远端存在且可达、当前 HEAD 已推送、目标分支存在、工作树干净、无未解决冲突）；该前置由 Runtime 代码强制并阻塞全部写任务，`bug-fix` 与 `release` 入口共用同一前置，不接受配置放宽或口头确认。
+- `BR-071`：每个版本迭代、功能变更和 BUG 修复必须以 Git Commit 提交并推送到远端（`GitEvidenceService` 校验 `push_status=pushed` 并真实比对远端分支 SHA），同时按影响检查同步对应事实文档与 CHANGELOG；未推送的完成声明不构成完成。
+- `BR-072`：本地工作区只保留最新文档、源码与必需文件：归档/历史文档树（`docs/archive/`、`input/` 等复制式旧文档目录）禁止存在，Git 历史是唯一存档；本地构建产物（`dist/`）版本必须与 `RUNTIME_VERSIONS.software` 一致，旧版本产物即卫生违规；上述检查由 `repository_check` 的 `UNDECLARED_LEGACY_DOCS` 与 `STALE_ARTIFACT` finding 强制并阻塞写任务。
+
+## 12. 规则例外与优先级
 
 1. 例外必须记录适用范围、原因、风险、替代控制、批准人和失效日期；例外不能删除审计记录或绕过 Gate。
 2. 安全、数据完整性、证据真实性和发布授权规则不可由普通项目参数关闭。
