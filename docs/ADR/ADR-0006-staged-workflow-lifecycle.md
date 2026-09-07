@@ -1,6 +1,6 @@
 # ADR-0006：分阶段 Workflow 生命周期与安全取消
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"accepted","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","GATE-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"accepted","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","GATE-001"]} -->
 
 ## 状态
 

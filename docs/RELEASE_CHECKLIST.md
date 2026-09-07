@@ -1,6 +1,6 @@
 # 发布检查清单
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001"]} -->
 
 版本：V2.0-derived-release
 状态：可执行实现规格基线

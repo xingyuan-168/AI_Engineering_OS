@@ -1,6 +1,6 @@
 # 运行与发布
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001","EXEC-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001","EXEC-001"]} -->
 
 ## 本地运行
 

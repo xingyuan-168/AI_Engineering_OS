@@ -1,6 +1,6 @@
 # Codex AI Engineering OS 实施计划
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
 
 版本：V2.0-derived
 状态：M0-M6 实现完成；V1 发布候选受环境门禁阻塞

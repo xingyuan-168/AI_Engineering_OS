@@ -1,6 +1,6 @@
 # OCI-First 项目环境治理
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","ENV-001","EXEC-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","ENV-001","EXEC-001"]} -->
 
 ## 1. 目标与边界
 

@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 收口证据快照
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001","GATE-001","EXEC-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"approved","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001","GATE-001","EXEC-001"]} -->
 
 ## 证据边界
 

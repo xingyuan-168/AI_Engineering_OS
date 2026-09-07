@@ -1,6 +1,6 @@
 # ADR-0005：治理权威、规格一致性与自修改规则
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","DOC-001","VERSION-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","DOC-001","VERSION-001"]} -->
 
 - 状态：Accepted
 - 日期：2026-08-31
