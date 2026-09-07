@@ -68,7 +68,7 @@
 
 ## 6. CLI 诊断
 
-`codex-os status` 必须显示 Workflow 状态、当前任务、阻塞原因、待审批、最近事件、检查点和产物。`codex-os doctor` 必须检查 Python/uv、Git、Docker/Podman、SQLite、配置 Schema、目录权限、磁盘空间和安全工具。
+`codex-os status` 必须显示 Workflow 状态、当前任务、阻塞原因、待审批、最近事件、检查点和产物。`codex-os doctor` 必须检查 Python/uv、Git、Docker/Podman、SQLite、配置 Schema、目录权限、磁盘空间和安全工具，并报告 `plugin-hooks` 防御纵深状态（Hook 清单声明脚本是否落盘；Codex 宿主保留注册与信任职责，Runtime 策略不依赖该检查）。
 
 ## 7. 保留和导出
 

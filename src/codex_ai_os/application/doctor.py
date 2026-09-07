@@ -74,8 +74,60 @@ class DoctorService:
                 self._podman_check(),
                 self._command_check("codex", required=False, version_args=("--version",)),
                 self._path_encoding_check(),
+                self._plugin_hooks_check(),
             )
         )
+
+    def _plugin_hooks_check(self) -> DoctorCheck:
+        """Report whether plugin defense-in-depth hook scripts are present.
+
+        The Codex host owns plugin registration and trust; Runtime policy
+        stays the security boundary regardless of this check (fail closed).
+        """
+        manifest = (
+            self.project_root / "plugins" / "ai-engineering-os" / "hooks" / "hooks.json"
+        )
+        if not manifest.is_file():
+            return DoctorCheck(
+                "plugin-hooks",
+                False,
+                True,
+                "plugin hooks manifest not found in this checkout; Codex host manages plugin registration",
+            )
+        try:
+            declared = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return DoctorCheck("plugin-hooks", False, False, f"hooks manifest unreadable: {exc}")
+        plugin_root = manifest.parent.parent
+        missing: list[str] = []
+        total = 0
+        for entries in declared.get("hooks", {}).values():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                for hook in entry.get("hooks", []) if isinstance(entry, dict) else []:
+                    command = str(hook.get("commandWindows") or hook.get("command") or "")
+                    script = command.replace("${PLUGIN_ROOT}", str(plugin_root))
+                    if '"' in script:
+                        script = script.split('"')[1]
+                    else:
+                        parts = script.split()
+                        script = parts[-1] if parts else ""
+                    if not script:
+                        continue
+                    total += 1
+                    if not Path(script).is_file():
+                        missing.append(Path(script).name)
+        if total == 0:
+            return DoctorCheck("plugin-hooks", False, False, "hooks manifest declares no scripts")
+        if missing:
+            return DoctorCheck(
+                "plugin-hooks",
+                False,
+                False,
+                f"declared hook scripts missing on disk: {sorted(set(missing))}",
+            )
+        return DoctorCheck("plugin-hooks", False, True, f"{total} declared hook scripts present")
 
     def _path_encoding_check(self) -> DoctorCheck:
         database_path = self.project_root / ".codex-os" / "state" / "state.db"
