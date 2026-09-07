@@ -17,6 +17,9 @@ class HostOperationKind(StrEnum):
     RELEASE_PUBLISH = "release_publish"
     VERIFICATION_PREPARE = "verification_prepare"
     DATABASE_MIGRATE = "database_migrate"
+    ENVIRONMENT_ADOPT = "environment_adopt"
+    ENVIRONMENT_PREPARE = "environment_prepare"
+    ENVIRONMENT_VERIFY = "environment_verify"
 
 
 class HostOperationStatus(StrEnum):
@@ -51,6 +54,8 @@ class HostOperation(StrictModel):
     lease_owner: str | None = None
     lease_expires_at: str | None = None
     attempt_count: int = Field(ge=0)
+    execution_generation: int = Field(default=0, ge=0)
+    authorization_id: str | None = None
     request: dict[str, Any]
     result: dict[str, Any]
     error_code: str | None = None

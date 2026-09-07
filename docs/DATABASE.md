@@ -2,7 +2,16 @@
 
 <!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","VERSION-001","MEMORY-001","ROUTING-001"]} -->
 
-SQLite 保存运行状态、事件、索引、结构化证据和 provenance；Markdown/Git 保存事实正文。Schema 通过 `0001`～`0007` 追加迁移到版本 `0007`，不得改写任何已发布迁移。
+SQLite 保存运行状态、事件、索引、结构化证据和 provenance；Markdown/Git 保存事实正文。Schema 通过 `0001`～`0008` 追加迁移到版本 `0008`，不得改写任何已发布迁移。
+
+### 0.2.1 可靠性迁移
+
+依据 ADR-0008，新增正式环境操作类型、`runtime_actors`、`operation_authorizations`、
+`operation_attempts`、`operation_resources` 和 `evidence_contexts`。授权限定项目、任务、
+Commit、请求 hash、范围、主机及有效期；执行代次与资源/证据通过外键绑定。
+Host Operation 重建保留原表名称及 ID，原始记录另存只读审计快照。
+可明确识别的旧环境操作转换 kind，但必须重新验证；未知环境操作及旧运行中操作
+进入对账，不能凭旧结果补造新上下文。活动 Workflow 保留历史并要求重新验证。
 
 ## 1. 数据库运行约束
 

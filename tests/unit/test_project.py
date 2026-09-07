@@ -2,6 +2,7 @@ from pathlib import Path
 
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.domain.config import EnvironmentMode, ProjectType, SandboxBackend
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import load_environment_contract, load_execution_policy
 from codex_ai_os.infrastructure.database import Database
 
@@ -43,7 +44,7 @@ def test_project_initialization_is_idempotent_and_preserves_user_content(tmp_pat
     assert (tmp_path / ".dockerignore").is_file()
     assert (tmp_path / "docs" / "ENVIRONMENT.md").is_file()
     assert (tmp_path / ".codex-os" / "gates" / "oci-first" / "G3.yaml").is_file()
-    assert Database(first.database_path).current_version() == "0007"
+    assert Database(first.database_path).current_version() == RUNTIME_VERSIONS.sqlite_schema
     config_text = (tmp_path / ".codex-os" / "project.yaml").read_text(encoding="utf-8")
     assert "schema_version: '1.2'" in config_text
     assert "root: ." in config_text

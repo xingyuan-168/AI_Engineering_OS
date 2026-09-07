@@ -95,7 +95,10 @@ class Database:
             backup_path = self._backup(connection) if existed_before and pending else None
 
             for migration in pending:
+                rebuild = migration.version == "0008" and migration.name == "operation_reliability"
                 try:
+                    if rebuild:
+                        connection.execute("PRAGMA foreign_keys = OFF")
                     connection.execute("BEGIN IMMEDIATE")
                     for statement in _split_sql(migration.sql):
                         if _creates_table(statement, "host_operations") and self._table_exists(
@@ -106,6 +109,9 @@ class Database:
                             )
                             continue
                         connection.execute(statement)
+                    violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+                    if violations:
+                        raise sqlite3.IntegrityError("migration foreign-key validation failed")
                     connection.execute(
                         """
                         INSERT INTO schema_migrations(
@@ -130,6 +136,9 @@ class Database:
                     )
                     failure.__cause__ = exc
                     break
+                finally:
+                    if rebuild:
+                        connection.execute("PRAGMA foreign_keys = ON")
 
             if failure is None:
                 try:
@@ -160,7 +169,7 @@ class Database:
             (
                 migration
                 for migration in migrations
-                if migration.version == RUNTIME_VERSIONS.sqlite_schema
+                if migration.version == "0007"
             ),
             None,
         )
@@ -172,7 +181,7 @@ class Database:
         target_index = versions.index(target.version)
         predecessor = versions[target_index - 1] if target_index > 0 else None
         current = self.current_version()
-        if current == target.version:
+        if current is not None and current >= target.version:
             return
         if predecessor is None or current != predecessor:
             raise MigrationError(
@@ -428,8 +437,14 @@ def _split_sql(script: str) -> list[str]:
 
 
 def _creates_table(statement: str, table: str) -> bool:
+    normalized = " ".join(statement.split()).casefold()
     prefix = f"create table {table}".casefold()
-    return " ".join(statement.split()).casefold().startswith(prefix)
+    if not normalized.startswith(prefix):
+        return False
+    suffix = normalized[len(prefix) :]
+    # Match the exact table name only: host_operations_next or
+    # host_operations_legacy_snapshots must not count as host_operations.
+    return not suffix or not (suffix[0].isalnum() or suffix[0] == "_")
 
 
 def _normalized_sql(statement: str) -> str:

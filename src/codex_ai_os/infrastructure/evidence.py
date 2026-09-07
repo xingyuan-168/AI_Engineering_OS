@@ -584,6 +584,29 @@ class EvidenceStore:
             record_hashes: dict[str, str] = {}
             if routing is not None:
                 record_hashes["routing-decision"] = str(routing["decision_hash"])
+            if "environment-reconciliation" in requirements.records:
+                environment_operation = connection.execute(
+                    """
+                    SELECT operation_id, kind, request_hash, result_json, state_version
+                    FROM host_operations
+                    WHERE run_id = ? AND kind LIKE 'environment\\_%' ESCAPE '\\'
+                      AND status = 'succeeded'
+                    ORDER BY updated_at DESC LIMIT 1
+                    """,
+                    (run_id,),
+                ).fetchone()
+                if environment_operation is not None:
+                    record_hashes["environment-reconciliation"] = hashlib.sha256(
+                        "\x1f".join(
+                            (
+                                str(environment_operation["operation_id"]),
+                                str(environment_operation["kind"]),
+                                str(environment_operation["request_hash"]),
+                                str(environment_operation["state_version"]),
+                                str(environment_operation["result_json"] or ""),
+                            )
+                        ).encode("utf-8")
+                    ).hexdigest()
             document_findings = self._document_findings(
                 run_id,
                 source_commit,

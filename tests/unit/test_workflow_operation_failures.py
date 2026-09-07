@@ -26,6 +26,7 @@ from codex_ai_os.domain.config import GitPushPolicy, ProjectType
 from codex_ai_os.domain.governance import G4ApprovalInput
 from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
 from codex_ai_os.domain.operations import HostOperation, HostOperationKind
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import WorkflowRun
 from codex_ai_os.infrastructure.coordination import CoordinationError
 
@@ -373,7 +374,7 @@ def _approval_payload() -> dict[str, object]:
         "pr_number": 42,
         "pr_url": "https://github.com/example/ai-os/pull/42",
         "merge_commit": "e" * 40,
-        "version": "0.2.0",
+        "version": RUNTIME_VERSIONS.software,
         "release_authority": {
             "authorized": True,
             "scope": "tag-and-github-release",

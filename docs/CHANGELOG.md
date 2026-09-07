@@ -5,6 +5,7 @@
 ## [Unreleased] - 2026-08-26
 
 - 0.2.1 adopts OCI-first project environments: new projects scaffold an explicit Podman/Docker contract, legacy projects require governed adoption, and G2-G4 bind Compose, image, persistence, rebuild and host-cleanliness evidence (ADR-0007).
+- Runtime and Plugin core versions advance to 0.2.1 while API/config/Profile Schema remain 1.2 and SQLite remains 0007; this repository now carries its own digest-pinned, internal-network Compose contract for self-verification.
 
 ### Added
 

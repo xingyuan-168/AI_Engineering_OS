@@ -46,6 +46,7 @@ from codex_ai_os.domain.governance import (
 )
 from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
 from codex_ai_os.domain.operations import ReconciliationOutcome
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import ChangeKind, Gate, PushStatus, TaskCompletion
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
@@ -1204,7 +1205,9 @@ def host_operation_reconcile_command(
 @database_app.command("migrate")
 def database_migrate_command(
     expected_schema_version: Annotated[str, typer.Option("--expected-schema-version")],
-    target_schema_version: Annotated[str, typer.Option("--target-schema-version")] = "0007",
+    target_schema_version: Annotated[
+        str, typer.Option("--target-schema-version")
+    ] = RUNTIME_VERSIONS.sqlite_schema,
     idempotency_key: Annotated[str, typer.Option("--idempotency-key")] = "database-migrate",
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,

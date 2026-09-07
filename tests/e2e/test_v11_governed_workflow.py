@@ -27,7 +27,8 @@ from codex_ai_os.domain.governance import (
     ReviewEvidenceInput,
 )
 from codex_ai_os.domain.invocation import InvocationContext, InvocationSource
-from codex_ai_os.domain.operations import HostOperationStatus
+from codex_ai_os.domain.operations import HostOperationKind, HostOperationStatus
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.domain.workflow import (
     ActionKind,
     ChangeKind,
@@ -39,6 +40,7 @@ from codex_ai_os.domain.workflow import (
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.evidence import EvidenceStore
 from codex_ai_os.infrastructure.memory import MemoryStore
+from codex_ai_os.infrastructure.operations import HostOperationStore
 
 
 class _SuccessfulSandbox:
@@ -46,14 +48,15 @@ class _SuccessfulSandbox:
         for mount in request.mounts:
             if mount.kind.value == "artifacts":
                 mount.source.mkdir(parents=True, exist_ok=True)
-                (mount.source / "codex_ai_engineering_os-0.2.0-py3-none-any.whl").write_bytes(
-                    b"governed-wheel"
-                )
-                (mount.source / "codex_ai_engineering_os-0.2.0.tar.gz").write_bytes(
-                    b"governed-sdist"
-                )
+                (
+                    mount.source
+                    / f"codex_ai_engineering_os-{RUNTIME_VERSIONS.software}-py3-none-any.whl"
+                ).write_bytes(b"governed-wheel")
+                (
+                    mount.source / f"codex_ai_engineering_os-{RUNTIME_VERSIONS.software}.tar.gz"
+                ).write_bytes(b"governed-sdist")
                 source = mount.source / ".plugin-source.zip"
-                archive = mount.source / "ai-engineering-os-plugin-0.2.0.zip"
+                archive = mount.source / f"ai-engineering-os-plugin-{RUNTIME_VERSIONS.plugin}.zip"
                 with zipfile.ZipFile(source) as source_bundle, zipfile.ZipFile(
                     archive, "w"
                 ) as bundle:
@@ -66,7 +69,7 @@ class _SuccessfulSandbox:
                         content = source_bundle.read(info)
                         if relative == ".codex-plugin/plugin.json":
                             manifest = json.loads(content.decode("utf-8"))
-                            manifest["version"] = "0.2.0"
+                            manifest["version"] = RUNTIME_VERSIONS.plugin
                             content = (
                                 json.dumps(
                                     manifest,
@@ -106,12 +109,19 @@ class _GitHubRunner:
             return self._result(command)
         if command[:2] == ["git", "merge-base"]:
             return self._result(command)
-        if command[:3] == ["git", "rev-parse", "refs/tags/v0.2.0^{}"]:
+        if command[:3] == [
+            "git",
+            "rev-parse",
+            f"refs/tags/{RUNTIME_VERSIONS.git_tag}^{{}}",
+        ]:
             return self._result(command, returncode=1)
         if command[:2] == ["git", "tag"]:
             return self._result(command)
         if command[:3] == ["git", "ls-remote", "--tags"]:
-            output = f"{'a' * 40}\trefs/tags/v0.2.0\n{'e' * 40}\trefs/tags/v0.2.0^{{}}\n"
+            output = (
+                f"{'a' * 40}\trefs/tags/{RUNTIME_VERSIONS.git_tag}\n"
+                f"{'e' * 40}\trefs/tags/{RUNTIME_VERSIONS.git_tag}^{{}}\n"
+            )
             return self._result(command, stdout=output)
         if command[:3] == ["gh", "pr", "view"]:
             with Database(self.root / ".codex-os" / "state" / "state.db").connection() as db:
@@ -140,9 +150,9 @@ class _GitHubRunner:
                 stdout=json.dumps(
                     {
                         "id": "R_fixture",
-                        "url": "https://github.com/example/ai-os/releases/tag/v0.2.0",
+                        "url": f"https://github.com/example/ai-os/releases/tag/{RUNTIME_VERSIONS.git_tag}",
                         "isDraft": self.draft,
-                        "tagName": "v0.2.0",
+                        "tagName": RUNTIME_VERSIONS.git_tag,
                         "assets": [
                             {
                                 "id": index,
@@ -194,6 +204,14 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     shutil.copytree(
         Path(__file__).parents[2] / "plugins" / "ai-engineering-os",
         root / "plugins" / "ai-engineering-os",
+    )
+    # The governed environment contract becomes a G2 requirement, so the fixture
+    # must finalize its scaffold documents before the first commit binds them.
+    (root / "docs" / "ENVIRONMENT.md").write_text(
+        _doc("Environment", ("Compose", "digest", "持久化", "备份恢复")), encoding="utf-8"
+    )
+    (root / "docker" / "README.md").write_text(
+        _doc("OCI environment", ("Compose", "Dockerfile", "镜像 digest")), encoding="utf-8"
     )
     _git(root, "add", ".")
     _git(root, "commit", "-m", "chore: initialize governed fixture")
@@ -255,22 +273,48 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
             "docs/TECH_STACK.md": _doc("Stack", ("Python", "SQLite", "Podman")),
         },
     )
-    current, _ = _complete(
+    design_action = current.next_action
+    assert design_action is not None
+    design_files = {
+        "docs/ARCHITECTURE.md": _doc("Architecture", ("定位", "组件", "信任边界", "恢复")),
+        "docs/API_SPEC.md": _doc("API", ("接口", "错误", "兼容")),
+        "docs/DATABASE.md": _doc("Database", ("迁移", "事务", "恢复")),
+        "docs/MIGRATION_SPEC.md": _doc("Migration", ("迁移", "回滚", "校验")),
+        "docs/SECURITY.md": _doc("Security", ("信任", "威胁", "风险")),
+        "docs/ADR/README.md": _doc("ADR Index", ("Decision", "Status", "Owner")),
+        "docs/PRODUCT_DESIGN.md": _doc("Product Design", ("用户", "范围", "验收")),
+        "docs/INTERACTION_DESIGN.md": _doc("Interaction Design", ("流程", "状态", "错误")),
+        "docs/UI_DESIGN.md": _doc("UI Design", ("布局", "组件", "无障碍")),
+        "docs/RISK_REGISTER.md": _doc("Risk Register", ("风险", "影响", "处置")),
+        "docs/AGENT_HANDOFF.md": _doc("Agent Handoff", ("任务", "证据", "审核")),
+    }
+    design_commit = _commit_files(design_action, design_files)
+    environment_checks = (
+        VerificationService(root, execution_service=execution)
+        .run(
+            run_id=current.run.id,
+            task_id=str(design_action.task_id),
+            checks=(("environment-contract", ("python", "--version")),),
+        )
+        .checks
+    )
+    environment_artifacts = (
+        ".codex-os/environment.yaml",
+        ".dockerignore",
+        "compose.yaml",
+        "docker/README.md",
+    )
+    current = _complete_committed_action(
         engine,
         current,
+        design_action,
+        design_commit,
         {
-            "docs/ARCHITECTURE.md": _doc("Architecture", ("定位", "组件", "信任边界", "恢复")),
-            "docs/API_SPEC.md": _doc("API", ("接口", "错误", "兼容")),
-            "docs/DATABASE.md": _doc("Database", ("迁移", "事务", "恢复")),
-            "docs/MIGRATION_SPEC.md": _doc("Migration", ("迁移", "回滚", "校验")),
-            "docs/SECURITY.md": _doc("Security", ("信任", "威胁", "风险")),
-            "docs/ADR/README.md": _doc("ADR Index", ("Decision", "Status", "Owner")),
-            "docs/PRODUCT_DESIGN.md": _doc("Product Design", ("用户", "范围", "验收")),
-            "docs/INTERACTION_DESIGN.md": _doc("Interaction Design", ("流程", "状态", "错误")),
-            "docs/UI_DESIGN.md": _doc("UI Design", ("布局", "组件", "无障碍")),
-            "docs/RISK_REGISTER.md": _doc("Risk Register", ("风险", "影响", "处置")),
-            "docs/AGENT_HANDOFF.md": _doc("Agent Handoff", ("任务", "证据", "审核")),
+            **{path: "document" for path in design_files},
+            "docs/ENVIRONMENT.md": "document",
+            **{path: "environment-contract" for path in environment_artifacts},
         },
+        checks=environment_checks,
     )
     assert current.next_action is not None
     assert current.next_action.skill == "html-prototype"
@@ -368,30 +412,62 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     verify_action = current.next_actions[0]
     verify_commit = _commit_files(
         verify_action,
-        {"reports/TEST_RESULTS.json": '{"status":"passed"}\n'},
+        {
+            "reports/TEST_RESULTS.json": '{"status":"passed"}\n',
+            "reports/environment-prepare-evidence.json": '{"status":"prepared"}\n',
+            "reports/environment-rebuild-report.json": '{"status":"rebuilt"}\n',
+        },
     )
+    environment_checks = ("host-cleanliness", "compose-build", "container-recreate",
+                          "storage-persistence", "environment-smoke")
     verification = VerificationService(root, execution_service=execution).run(
         run_id=current.run.id,
         task_id=str(verify_action.task_id),
-        checks=DEFAULT_CHECKS,
+        checks=DEFAULT_CHECKS
+        + tuple((name, ("python", "--version")) for name in environment_checks),
     )
     current = _complete_committed_action(
         engine,
         current,
         verify_action,
         verify_commit,
-        {"reports/TEST_RESULTS.json": "verification-report"},
+        {
+            "reports/TEST_RESULTS.json": "verification-report",
+            "reports/environment-prepare-evidence.json": "environment-prepare-evidence",
+            "reports/environment-rebuild-report.json": "environment-rebuild-report",
+        },
         checks=verification.checks,
-    )
-    evidence = EvidenceStore(engine.store.database, root)
-    _record_review(
-        root, evidence, current.run.id, str(verify_action.task_id), verify_commit, "code"
-    )
-    _record_review(
-        root, evidence, current.run.id, str(verify_action.task_id), verify_commit, "security"
     )
     current = _review_handoff(root, engine, _only_ready_handoff(engine, current.run.id))
     assert current.run.run_status.value == "needs_approval"
+    # ADR-0008 requires G3 evidence to bind the exact integration baseline, so the
+    # governed flow re-runs verification and reviews on the integration merge commit.
+    baseline_commit = str(current.run.checkpoint.get("last_commit_sha") or "")
+    assert baseline_commit
+    verification = VerificationService(root, execution_service=execution).run(
+        run_id=current.run.id,
+        task_id=str(verify_action.task_id),
+        checks=DEFAULT_CHECKS
+        + tuple((name, ("python", "--version")) for name in environment_checks),
+        baseline_commit=baseline_commit,
+    )
+    raise AssertionError(
+        "DEBUG vsource=" + verification.source_commit[:8]
+        + " valid=" + repr(verification.valid)
+        + " blockers=" + repr(verification.blockers)
+        + " checks=" + repr([
+            (c.name, str(c.source_commit)[:8],
+             c.status.value if hasattr(c.status, "value") else str(c.status), c.exit_code)
+            for c in verification.checks
+        ])
+    )
+    evidence = EvidenceStore(engine.store.database, root)
+    _record_review(
+        root, evidence, current.run.id, str(verify_action.task_id), baseline_commit, "code"
+    )
+    _record_review(
+        root, evidence, current.run.id, str(verify_action.task_id), baseline_commit, "security"
+    )
     current = engine.submit_approval(
         current.run.id, gate=Gate.G3, approved=True, reviewer="owner", reason="G3 verified"
     )
@@ -426,7 +502,10 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     assert Path(candidate.artifact_root).name == "candidate"
     assert any(name.endswith(".whl") for name in candidate.artifacts)
     assert any(name.endswith(".tar.gz") for name in candidate.artifacts)
-    assert any(name.endswith("plugin-0.2.0.zip") for name in candidate.artifacts)
+    assert any(
+        name.endswith(f"ai-engineering-os-plugin-{RUNTIME_VERSIONS.plugin}.zip")
+        for name in candidate.artifacts
+    )
     candidate_manifest = json.loads(
         (release_worktree / candidate.manifest_path).read_text(encoding="utf-8")
     )
@@ -434,13 +513,21 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
     assert candidate_manifest["candidate_commit"] is None
     assert isinstance(candidate_manifest["source_date_epoch"], int)
     assert candidate_manifest["verification_cache_manifest_hash"] is None
-    assert candidate_manifest["source_plugin_manifest_version"].startswith("0.2.0+")
-    assert candidate_manifest["packaged_plugin_version"] == "0.2.0"
+    assert candidate_manifest["source_plugin_manifest_version"].startswith(
+        f"{RUNTIME_VERSIONS.plugin}+"
+    )
+    assert candidate_manifest["packaged_plugin_version"] == RUNTIME_VERSIONS.plugin
     assert len(candidate_manifest["packaged_plugin_manifest_hash"]) == 64
     sbom = json.loads((root / candidate.sbom_path).read_text(encoding="utf-8"))
     assert str(sbom["serialNumber"]).startswith("urn:uuid:")
     (release_worktree / "docs" / "CHANGELOG.md").write_text(
         _doc("Changelog", ("0.2.0", "Governance")), encoding="utf-8"
+    )
+    (release_worktree / "reports" / "environment-manifest.json").write_text(
+        '{"environment_mode":"oci-first","compose":"compose.yaml"}\n', encoding="utf-8"
+    )
+    (release_worktree / "reports" / "data-recovery.json").write_text(
+        '{"backup":"verified","restore":"tested"}\n', encoding="utf-8"
     )
     release_commit = _git_commit(release_worktree, "feat: assemble governed release")
     release_checks = (
@@ -466,6 +553,8 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
             candidate.sbom_path: "sbom",
             candidate.checksums_path: "checksums",
             "docs/CHANGELOG.md": "changelog",
+            "reports/environment-manifest.json": "environment-manifest",
+            "reports/data-recovery.json": "data-recovery",
         },
         checks=release_checks,
     )
@@ -522,6 +611,25 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         memory_commit,
         "release",
     )
+    environment_operations = HostOperationStore(engine.store.database)
+    pending_environment = environment_operations.ensure_pending(
+        project_id=current.run.project_id,
+        kind=HostOperationKind.ENVIRONMENT_VERIFY,
+        idempotency_key="e2e-environment-reconciliation",
+        request={"environment_mode": "oci-first", "compose": "compose.yaml"},
+        run_id=current.run.id,
+    )
+    running_environment = environment_operations.acquire(
+        pending_environment.operation_id,
+        expected_version=pending_environment.state_version,
+        lease_owner="e2e-executor",
+    )
+    environment_operations.mark_succeeded(
+        running_environment.operation_id,
+        expected_version=running_environment.state_version,
+        lease_owner="e2e-executor",
+        result={"reconciled": True, "backend": "podman", "compose": "compose.yaml"},
+    )
     merge_commit = "e" * 40
     authorized = engine.submit_approval(
         current.run.id,
@@ -533,7 +641,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
             pr_number=42,
             pr_url="https://github.com/example/ai-os/pull/42",
             merge_commit=merge_commit,
-            version="0.2.0",
+            version=RUNTIME_VERSIONS.software,
             release_authority=ReleaseAuthority(
                 authorized=True,
                 scope="tag-and-github-release",
@@ -553,7 +661,7 @@ def test_public_v11_multi_agent_workflow_reaches_g4_with_strong_evidence(
         invocation=InvocationContext.local(InvocationSource.CLI),
     )
     assert completed.run.run_status.value == "completed"
-    assert completed.run.checkpoint["release_publication"]["tag"] == "v0.2.0"
+    assert completed.run.checkpoint["release_publication"]["tag"] == RUNTIME_VERSIONS.git_tag
     with engine.store.database.read_connection() as connection:
         published = connection.execute(
             "SELECT status, final_manifest_path, final_manifest_hash, "
