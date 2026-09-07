@@ -79,8 +79,8 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
 
     migrated = mcp_server.database_migrate(
         str(root),
-        expected_schema_version="0007",
-        target_schema_version="0007",
+        expected_schema_version=RUNTIME_VERSIONS.sqlite_schema,
+        target_schema_version=RUNTIME_VERSIONS.sqlite_schema,
         idempotency_key="migrate-noop",
     )
     assert migrated["ok"] is True
@@ -89,8 +89,8 @@ def test_mcp_repository_workflow_and_validation_error_contracts(tmp_path: Path) 
     assert migration_operation["status"] == "succeeded"
     replayed_migration = mcp_server.database_migrate(
         str(root),
-        expected_schema_version="0007",
-        target_schema_version="0007",
+        expected_schema_version=RUNTIME_VERSIONS.sqlite_schema,
+        target_schema_version=RUNTIME_VERSIONS.sqlite_schema,
         idempotency_key="migrate-noop",
     )
     assert cast(dict[str, Any], _data(replayed_migration)["operation"])[
@@ -202,7 +202,7 @@ def test_mcp_memory_candidate_review_search_and_errors(tmp_path: Path) -> None:
     assert invalid_limit["error"]["code"] == "MEMORY_INVALID"
 
 
-def test_mcp_database_migrate_persists_intent_before_0006_to_0007(
+def test_mcp_database_migrate_persists_intent_before_0006_to_0008(
     tmp_path: Path,
 ) -> None:
     root, _ = _legacy_project(tmp_path / "legacy-migration", tmp_path)
@@ -210,14 +210,14 @@ def test_mcp_database_migrate_persists_intent_before_0006_to_0007(
     migrated = mcp_server.database_migrate(
         str(root),
         expected_schema_version="0006",
-        target_schema_version="0007",
-        idempotency_key="upgrade-0007",
+        target_schema_version=RUNTIME_VERSIONS.sqlite_schema,
+        idempotency_key="upgrade-0008",
     )
 
     assert migrated["ok"] is True
     data = _data(migrated)
-    assert data["applied_versions"] == ["0007"]
-    assert data["current_version"] == "0007"
+    assert data["applied_versions"] == ["0007", "0008"]
+    assert data["current_version"] == "0008"
     assert data["backup_path"] is not None
     operation = cast(dict[str, Any], data["operation"])
     assert operation["status"] == "succeeded"
@@ -225,8 +225,8 @@ def test_mcp_database_migrate_persists_intent_before_0006_to_0007(
     replayed = mcp_server.database_migrate(
         str(root),
         expected_schema_version="0006",
-        target_schema_version="0007",
-        idempotency_key="upgrade-0007",
+        target_schema_version=RUNTIME_VERSIONS.sqlite_schema,
+        idempotency_key="upgrade-0008",
     )
     assert cast(dict[str, Any], _data(replayed)["operation"])[
         "operation_id"
@@ -242,7 +242,7 @@ def test_mcp_database_migrate_reconciles_crash_after_0007_applied(
     request = {
         "schema_version": RUNTIME_VERSIONS.api,
         "expected_schema_version": "0006",
-        "target_schema_version": "0007",
+        "target_schema_version": RUNTIME_VERSIONS.sqlite_schema,
     }
     pending = store.ensure_pending(
         project_id=f"PROJECT-{root.name.upper()}",
@@ -255,18 +255,18 @@ def test_mcp_database_migrate_reconciles_crash_after_0007_applied(
         expected_version=pending.state_version,
         lease_owner="crashed-process",
     )
-    assert legacy.migrate().current_version == "0007"
+    assert legacy.migrate().current_version == RUNTIME_VERSIONS.sqlite_schema
 
     recovered = mcp_server.database_migrate(
         str(root),
         expected_schema_version="0006",
-        target_schema_version="0007",
+        target_schema_version=RUNTIME_VERSIONS.sqlite_schema,
         idempotency_key="upgrade-crashed",
     )
 
     assert recovered["ok"] is True
     data = _data(recovered)
-    assert data["applied_versions"] == ["0007"]
+    assert data["applied_versions"] == [RUNTIME_VERSIONS.sqlite_schema]
     operation = cast(dict[str, Any], data["operation"])
     assert operation["operation_id"] == running.operation_id
     assert operation["status"] == "succeeded"

@@ -26,6 +26,7 @@ from codex_ai_os.domain.operations import (
     HostOperationKind,
     HostOperationStatus,
 )
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 
 
 def _packaged_manifest() -> dict[str, object]:
@@ -168,7 +169,7 @@ def test_reproducible_git_epoch_rejects_command_output_and_ancient_dates(
 def test_plugin_source_cachebuster_is_normalized_and_archive_is_reverified(
     tmp_path: Path,
 ) -> None:
-    root, commit = _plugin_project(tmp_path, version="0.2.0+codex.fixture")
+    root, commit = _plugin_project(tmp_path, version=f"{RUNTIME_VERSIONS.plugin}+codex.fixture")
     service = ReleaseCandidateService(root)
     staging = root / ".codex-os" / "artifacts" / "staging"
     staging.mkdir(parents=True)
@@ -179,8 +180,8 @@ def test_plugin_source_cachebuster_is_normalized_and_archive_is_reverified(
         staging=staging,
     )
 
-    assert source_version == "0.2.0+codex.fixture"
-    archive = staging / "ai-engineering-os-plugin-0.2.0.zip"
+    assert source_version == f"{RUNTIME_VERSIONS.plugin}+codex.fixture"
+    archive = staging / f"ai-engineering-os-plugin-{RUNTIME_VERSIONS.plugin}.zip"
     source_archive = staging / ".plugin-source.zip"
     with zipfile.ZipFile(source_archive) as source, zipfile.ZipFile(archive, "w") as bundle:
         for info in source.infolist():
@@ -190,7 +191,7 @@ def test_plugin_source_cachebuster_is_normalized_and_archive_is_reverified(
             content = source.read(info)
             if relative == ".codex-plugin/plugin.json":
                 manifest = json.loads(content.decode("utf-8"))
-                manifest["version"] = "0.2.0"
+                manifest["version"] = RUNTIME_VERSIONS.plugin
                 content = (
                     json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
                 ).encode()
@@ -198,13 +199,13 @@ def test_plugin_source_cachebuster_is_normalized_and_archive_is_reverified(
     manifest_hash = ReleaseCandidateService._plugin_manifest_hash(archive)
     candidate_manifest = {
         "source_plugin_manifest_version": source_version,
-        "packaged_plugin_version": "0.2.0",
+        "packaged_plugin_version": RUNTIME_VERSIONS.plugin,
         "packaged_plugin_manifest_hash": manifest_hash,
     }
     evidence = validate_candidate_plugin_package(
         candidate_manifest,
         archive,
-        expected_version="0.2.0",
+        expected_version=RUNTIME_VERSIONS.plugin,
     )
     assert evidence.manifest_hash == manifest_hash
 
@@ -213,7 +214,7 @@ def test_plugin_source_cachebuster_is_normalized_and_archive_is_reverified(
         validate_candidate_plugin_package(
             candidate_manifest,
             archive,
-            expected_version="0.2.0",
+            expected_version=RUNTIME_VERSIONS.plugin,
         )
 
 
@@ -354,7 +355,7 @@ def test_plugin_package_validator_rejects_metadata_and_archive_drift(tmp_path: P
             "RELEASE_INCOMPLETE",
         ),
         (
-            _source_zip(manifest={"name": "wrong", "version": "0.2.0"}),
+            _source_zip(manifest={"name": "wrong", "version": RUNTIME_VERSIONS.plugin}),
             0,
             "RELEASE_INCOMPLETE",
         ),
@@ -362,7 +363,7 @@ def test_plugin_package_validator_rejects_metadata_and_archive_drift(tmp_path: P
             _source_zip(
                 manifest={
                     "name": "ai-engineering-os",
-                    "version": "0.2.0",
+                    "version": RUNTIME_VERSIONS.plugin,
                     "skills": 42,
                     "mcpServers": "./.mcp.json",
                 }
@@ -374,7 +375,7 @@ def test_plugin_package_validator_rejects_metadata_and_archive_drift(tmp_path: P
             _source_zip(
                 manifest={
                     "name": "ai-engineering-os",
-                    "version": "0.2.0",
+                    "version": RUNTIME_VERSIONS.plugin,
                     "skills": "./missing/",
                     "mcpServers": "./.mcp.json",
                 }

@@ -35,10 +35,11 @@ def test_migrations_enable_required_sqlite_guards(tmp_path: Path) -> None:
         "0005",
         "0006",
         "0007",
+        "0008",
     )
-    assert result.current_version == "0007"
+    assert result.current_version == "0008"
     assert result.backup_path is None
-    assert database.current_version() == "0007"
+    assert database.current_version() == "0008"
     database.integrity_check()
     with database.connection() as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
@@ -66,7 +67,7 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
     result = database.migrate()
 
     assert result.applied_versions == ()
-    assert result.current_version == "0007"
+    assert result.current_version == "0008"
 
 
 def test_current_version_is_read_only_for_missing_database(tmp_path: Path) -> None:

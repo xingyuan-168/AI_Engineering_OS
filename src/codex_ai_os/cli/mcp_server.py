@@ -892,7 +892,7 @@ def verification_prepare(
 def database_migrate(
     project_root: str,
     expected_schema_version: str,
-    target_schema_version: str = "0007",
+    target_schema_version: str = RUNTIME_VERSIONS.sqlite_schema,
     idempotency_key: str = "database-migrate",
 ) -> dict[str, Any]:
     """Run explicit SQLite migration and record the operation audit entry."""

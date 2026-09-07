@@ -14,6 +14,7 @@ from codex_ai_os.application.execution import ExecutionServiceError
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.operations import HostOperationStore
 
@@ -173,7 +174,7 @@ def test_cli_wrappers_cover_verification_handoff_cleanup_and_g4(
             "--merge-commit",
             "e" * 40,
             "--version",
-            "0.2.0",
+            RUNTIME_VERSIONS.software,
             "--release-authorized",
             "--release-authorized-by",
             "release-owner",
@@ -291,9 +292,9 @@ def test_cli_wrappers_cover_verification_handoff_cleanup_and_g4(
             "database",
             "migrate",
             "--expected-schema-version",
-            "0007",
+            RUNTIME_VERSIONS.sqlite_schema,
             "--target-schema-version",
-            "0007",
+            RUNTIME_VERSIONS.sqlite_schema,
             "--idempotency-key",
             "migrate-cli",
             "--project-root",

@@ -240,13 +240,19 @@ class VerificationService:
         run_id: str,
         task_id: str,
         checks: tuple[tuple[str, tuple[str, ...]], ...] = DEFAULT_CHECKS,
+        baseline_commit: str | None = None,
     ) -> VerificationResult:
         assignment = self.worktrees.get_for_task(task_id)
         if assignment is None or assignment.run_id != run_id or assignment.status != "active":
             raise ExecutionServiceError(
                 "WORKTREE_BLOCKED", "verification requires the active assigned Worktree"
             )
-        source_commit = self._git_head(assignment.path)
+        task_head = self._git_head(assignment.path)
+        source_commit = task_head
+        if baseline_commit is not None:
+            self._require_baseline_includes(assignment.path, task_head, baseline_commit)
+            self._checkout_baseline(assignment.path, baseline_commit)
+            source_commit = baseline_commit
         evidence: list[CheckEvidenceInput] = []
         blockers: list[str] = []
         wheelhouse = (
@@ -481,6 +487,47 @@ class VerificationService:
                 "GIT_METADATA_INVALID", detail or "verification Git metadata command failed"
             )
         return completed.stdout.decode("utf-8", errors="strict").strip()
+
+    @staticmethod
+    def _require_baseline_includes(
+        worktree: Path, task_head: str, baseline_commit: str
+    ) -> None:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(worktree),
+                "merge-base",
+                "--is-ancestor",
+                task_head,
+                baseline_commit,
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        if completed.returncode != 0:
+            raise ExecutionServiceError(
+                "GIT_EVIDENCE_INVALID",
+                "baseline commit must include the verified task commit",
+            )
+
+    @staticmethod
+    def _checkout_baseline(worktree: Path, baseline_commit: str) -> None:
+        completed = subprocess.run(
+            ["git", "-C", str(worktree), "checkout", "--detach", baseline_commit],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise ExecutionServiceError(
+                "GIT_EVIDENCE_INVALID",
+                detail or "baseline checkout failed for verification",
+            )
 
     @staticmethod
     def _git_head(worktree: Path) -> str:

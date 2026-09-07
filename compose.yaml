@@ -1,0 +1,20 @@
+name: ai-engineering-os
+services:
+  runtime:
+    build:
+      context: .
+      dockerfile: docker/ai-os.Dockerfile
+    command: [python, -c, "import time; time.sleep(3600)"]
+    healthcheck:
+      test: [CMD, python, -c, "import codex_ai_os"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [internal]
+networks:
+  internal:
+    internal: true

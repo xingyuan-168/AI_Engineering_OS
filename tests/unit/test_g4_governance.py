@@ -20,6 +20,7 @@ from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.workflow import WorkflowEngine
 from codex_ai_os.domain.config import GitPushPolicy, ProjectType
 from codex_ai_os.domain.governance import G4ApprovalInput, ReleaseAuthority
+from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 
 
 def test_g4_fails_closed_before_external_publication(tmp_path: Path) -> None:
@@ -437,7 +438,7 @@ def _approval() -> G4ApprovalInput:
         pr_number=42,
         pr_url="https://github.com/example/ai-os/pull/42",
         merge_commit="e" * 40,
-        version="0.2.0",
+        version=RUNTIME_VERSIONS.software,
         release_authority=ReleaseAuthority(
             authorized=True,
             scope="tag-and-github-release",

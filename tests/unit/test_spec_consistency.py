@@ -70,9 +70,12 @@ def test_agent_spec_matches_packaged_agent_profiles() -> None:
 
 
 def test_repository_documents_and_traceability_are_governed() -> None:
+    project = yaml.safe_load(
+        (ROOT / ".codex-os" / "project.yaml").read_text(encoding="utf-8")
+    )
     report = DocumentManager(ROOT).check(
         "backend",
-        expected_document_version="0.2.0",
+        expected_document_version=str(project["document_version"]),
     )
 
     assert report.ok, report

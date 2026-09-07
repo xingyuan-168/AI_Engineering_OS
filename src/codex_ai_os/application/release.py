@@ -260,7 +260,7 @@ class ReleaseCandidateService:
             wheelhouse=wheelhouse,
             source_date_epoch=source_date_epoch,
         )
-        plugin_archive = staging / f"ai-engineering-os-plugin-{self.VERSION}.zip"
+        plugin_archive = staging / f"ai-engineering-os-plugin-{RUNTIME_VERSIONS.plugin}.zip"
         try:
             plugin_evidence = validate_candidate_plugin_package(
                 {
@@ -289,7 +289,9 @@ class ReleaseCandidateService:
         if (
             not any(name.endswith(".whl") for name in built)
             or not any(name.endswith(".tar.gz") for name in built)
-            or not any(name.endswith("plugin-0.2.0.zip") for name in built)
+            or not any(
+                name.endswith(f"plugin-{RUNTIME_VERSIONS.plugin}.zip") for name in built
+            )
         ):
             raise WorkflowError(
                 "RELEASE_INCOMPLETE",

@@ -550,7 +550,11 @@ class EvidenceStore:
                 for row in checks
                 if row["status"] == "passed" and row["exit_code"] == 0
                 and (
-                    (gate is not Gate.G3 and row["check_name"] != "html-prototype-validator")
+                    # ADR-0009 §3: evidence binds the gate target commit or an
+                    # ancestor (latest attempt per name) with content re-verified
+                    # on the target commit; only prototype validation requires
+                    # exact equality with the target commit.
+                    row["check_name"] != "html-prototype-validator"
                     or str(row["source_commit"]).casefold() == source_commit.casefold()
                 )
                 and self._content_matches(
@@ -562,7 +566,9 @@ class EvidenceStore:
                 for row in reviews
                 if row["decision"] == "accepted"
                 and (
-                    (gate is not Gate.G3 and row["review_type"] != "ux-prototype")
+                    # ADR-0009 §3: ancestor binding with content re-verification;
+                    # only the UX prototype review requires exact equality.
+                    row["review_type"] != "ux-prototype"
                     or str(row["reviewed_commit"]).casefold() == source_commit.casefold()
                 )
                 and self._content_matches(
@@ -584,6 +590,29 @@ class EvidenceStore:
             record_hashes: dict[str, str] = {}
             if routing is not None:
                 record_hashes["routing-decision"] = str(routing["decision_hash"])
+            if "environment-reconciliation" in requirements.records:
+                environment_operation = connection.execute(
+                    """
+                    SELECT operation_id, kind, request_hash, result_json, state_version
+                    FROM host_operations
+                    WHERE run_id = ? AND kind LIKE 'environment\\_%' ESCAPE '\\'
+                      AND status = 'succeeded'
+                    ORDER BY updated_at DESC LIMIT 1
+                    """,
+                    (run_id,),
+                ).fetchone()
+                if environment_operation is not None:
+                    record_hashes["environment-reconciliation"] = hashlib.sha256(
+                        "\x1f".join(
+                            (
+                                str(environment_operation["operation_id"]),
+                                str(environment_operation["kind"]),
+                                str(environment_operation["request_hash"]),
+                                str(environment_operation["state_version"]),
+                                str(environment_operation["result_json"] or ""),
+                            )
+                        ).encode("utf-8")
+                    ).hexdigest()
             document_findings = self._document_findings(
                 run_id,
                 source_commit,

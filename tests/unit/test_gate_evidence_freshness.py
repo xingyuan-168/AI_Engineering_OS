@@ -46,7 +46,7 @@ def test_later_failed_check_shadows_earlier_success(
     assert red.bundle_hash != green.bundle_hash
 
 
-def test_g3_does_not_inherit_ancestor_checks_or_reviews(
+def test_g3_inherits_ancestor_evidence_with_content_reverification(
     evidence_project: tuple[WorkflowEngine, str, str],
 ) -> None:
     engine, run_id, head = evidence_project
@@ -54,8 +54,17 @@ def test_g3_does_not_inherit_ancestor_checks_or_reviews(
     _review(engine, run_id, head, "review", "accepted")
     _git(engine.config.root, "commit", "--allow-empty", "-m", "feat: change source baseline")
     new_head = _git(engine.config.root, "rev-parse", "HEAD")
+    # ADR-0009 §3: evidence bound to an ancestor commit stays valid when the
+    # report content re-verifies on the target commit.
     bundle = _bundle(engine, run_id, new_head)
-    assert {"check:ruff", "review:code"} <= set(bundle.missing)
+    assert "ruff" in bundle.check_names
+    assert "code" in bundle.review_types
+    # Content drift on the inherited report still invalidates the evidence.
+    relative, _ = _check(engine, run_id, new_head, "drift", "passed")
+    (engine.config.root / relative).write_text(
+        "changed after registration", encoding="utf-8"
+    )
+    assert "check:ruff" in _bundle(engine, run_id, new_head).missing
 
 
 @pytest.mark.parametrize("decision", ["rejected", "blocked"])

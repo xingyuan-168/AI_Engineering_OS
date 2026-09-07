@@ -1,4 +1,4 @@
-"""Single immutable runtime version matrix for the 0.2.0 release."""
+"""Single immutable runtime version matrix for the 0.2.1 release."""
 
 from __future__ import annotations
 
@@ -33,15 +33,15 @@ class RuntimeVersions:
 
 RUNTIME_VERSIONS = RuntimeVersions(
     requirement_baseline="REQ-1.6.2",
-    software="0.2.0",
-    plugin="0.2.0",
+    software="0.2.1",
+    plugin="0.2.1",
     api="1.2",
     config_schema="1.2",
     document_schema="1.2",
     profile_schema="1.2",
-    sqlite_schema="0007",
+    sqlite_schema="0008",
     execution_image=(
-        "python:3.12.14-bookworm@"
+        "docker.io/library/python:3.12.14-bookworm@"
         "sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a"
     ),
     compatible_api_versions=("1.0", "1.1", "1.2"),
