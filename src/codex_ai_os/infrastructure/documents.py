@@ -186,7 +186,7 @@ class DocumentManager:
                 relative,
                 text,
                 metadata_errors,
-                required=not relative.startswith("docs/archive/"),
+                required=True,
             )
             if metadata is not None:
                 refs = metadata.get("requirement_refs")

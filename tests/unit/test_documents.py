@@ -68,14 +68,16 @@ def test_generated_context_contains_source_hashes(tmp_path: Path) -> None:
     assert "`docs/README.md`" in context
 
 
-def test_archived_document_does_not_require_active_metadata(tmp_path: Path) -> None:
+def test_archived_documents_are_not_exempt_from_metadata(tmp_path: Path) -> None:
     manager = DocumentManager(tmp_path)
     manager.initialize_documents("ERP", "backend")
     manager.write_atomic("docs/archive/legacy.md", "# Legacy\n", overwrite=False)
 
     report = manager.check("backend")
 
-    assert not any("docs/archive/legacy.md" in item for item in report.metadata_errors)
+    # Git history is the only archive; any Markdown in the worktree, including
+    # a copy-style docs/archive tree, requires full governance metadata.
+    assert any("docs/archive/legacy.md" in item for item in report.metadata_errors)
 
 
 def test_document_check_uses_project_document_version_target(tmp_path: Path) -> None:
