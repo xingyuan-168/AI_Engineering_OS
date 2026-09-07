@@ -60,7 +60,7 @@
 
 ### 5.1 镜像
 
-0.2.0 目标镜像：
+0.2.1 目标镜像：
 
 ```text
 python:3.12.14-bookworm@sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a
@@ -98,14 +98,14 @@ ExecutionService 检查 task lease、Commit 和 clean baseline，写 execution i
 - Artifact path/hash/source Commit、Check execution/report、Review Commit/report 全部由 Runtime 反查。
 - Gate bundle 采用规范 JSON hash 并绑定 run/gate/state_version/version；任一证据变化使 bundle/approval stale。
 - 伪造字符串、宿主命令输出、skip 的真实 OCI 测试、错误 Commit 报告或缺少 execution ID 均不能通过 G3。
-- G3 检查必须在同一 integration HEAD 上运行；任何后续 merge 使 G3 失效并重新验证。
+- G3 检查与 Review 绑定 Gate 目标 Commit 或其祖先（每名最新尝试），报告内容在目标 Commit 上复验一致；`html-prototype-validator` 与 `ux-prototype` 仍要求精确相等（ADR-0009 §3）。
 - Gate reviewer 不能与产生关键证据的 Agent 相同；G4 还要求独立 release authority。
 
 ## 8. 依赖、Plugin 与 Hook
 
 - 依赖只从 `uv.lock` 安装，使用 `uv lock --check`；变更更新 License、SBOM、审计和 ADR（重大变化）。
 - `pip-audit` 报告与来源 Commit 绑定；无法查询 advisory 源时状态是 unavailable，不是假定通过。
-- Plugin validator 校验 manifest、MCP Schema、Skill frontmatter、Agent Profile 和 Hook fixture；Plugin 版本与核心 0.2.0/Plugin API 1.2 一致。
+- Plugin validator 校验 manifest、MCP Schema、Skill frontmatter、Agent Profile 和 Hook fixture；Plugin 版本与核心 0.2.1/Plugin API 1.2 一致。
 - 依赖与扫描缓存只能由经网络审批的 verification prepare 生成，分别绑定 `uv.lock` hash、Linux OCI 平台、Python 版本、执行镜像、时间和来源；正式 Gate 只离线消费逐文件 hash 校验且无 symlink/junction 的只读 wheelhouse、pip-audit snapshot 和非空 Trivy DB snapshot。
 - `.codex/` Hook 必须由人复核信任；Hook 只能调用受限入口，不携带 Secret，不把内部 Workflow 事件冒充 Host 生命周期事件。
 - Plugin `PreToolUse` Hook 是防御纵深和即时提示，不是权限、路径或命令安全边界。它拦截直接出现的 force push、Git ref 删除及 Windows/Unix 宽范围递归删除，但不承诺解释变量拼接、别名、splatting 或间接脚本；最终控制必须由 Runtime 的结构化 argv allowlist、风险分级、路径校验、审批和 OCI 隔离执行。项目 `.codex/hooks.json` 有意不复制插件规则；插件未启用或 Hook 未经信任时，Runtime 仍必须 fail closed。
@@ -135,7 +135,7 @@ Memory 默认按 `project_id` 查询；跨项目复用必须创建带来源、sc
 
 - 迁移前锁写、checkpoint WAL、SQLite backup API、生成/验证 SHA-256，并从备份运行 integrity/FK 检查。
 - 迁移文件 checksum 与 `schema_migrations` 不同立即阻塞；不得执行修改后的旧迁移。
-- 0004-0007 各自原子；未知 Memory 状态、FTS5 不可用或 FK 失败触发“临时库恢复校验 -> 原子替换”，不得在未校验备份上覆盖活动库。
+- 0004-0008 各自原子；未知 Memory 状态、FTS5 不可用或 FK 失败触发“临时库恢复校验 -> 原子替换”，不得在未校验备份上覆盖活动库。
 - 旧活动 Workflow 标记 revalidation required，旧 Gate/自由文本验证不能直接发布。
 - 备份、失败库和迁移日志属于 audit-evidence，不由任务清理删除。
 

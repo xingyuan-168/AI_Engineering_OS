@@ -5,7 +5,7 @@
 ## [Unreleased] - 2026-08-26
 
 - 0.2.1 adopts OCI-first project environments: new projects scaffold an explicit Podman/Docker contract, legacy projects require governed adoption, and G2-G4 bind Compose, image, persistence, rebuild and host-cleanliness evidence (ADR-0007).
-- Runtime and Plugin core versions advance to 0.2.1 while API/config/Profile Schema remain 1.2 and SQLite remains 0007; this repository now carries its own digest-pinned, internal-network Compose contract for self-verification.
+- Runtime and Plugin core versions advance to 0.2.1 while API/config/Profile Schema remain 1.2 and SQLite advances to 0008 (operation reliability, ADR-0008); this repository now carries its own digest-pinned, internal-network Compose contract for self-verification.
 
 ### Added
 
@@ -66,7 +66,7 @@
 - 记录 ERP 试点 PA-001～PA-010 验收结果、实现 Commit、质量门禁和 Docker 实容器环境遗留项。
 - 增加 `feature-development`、`bug-fix` 和 `release` 工作流入口，复用相同审批、Git、Worktree 与恢复门禁。
 - 增加项目隔离的 Memory 候选、来源 hash 激活、Secret 拦截、检索和来源变更失效生命周期。
-- 增加 Podman OCI 沙箱适配器和项目级基础策略选择；`doctor` 接受 Docker 或 Podman 中至少一个可用，默认仍为 Docker。
+- 增加 Podman OCI 沙箱适配器和项目级基础策略选择；`doctor` 接受 Docker 或 Podman 中至少一个可用，默认仍为 Docker。（该默认已被 ADR-0007 取代：新项目 OCI-first 默认 Podman，禁止静默回退。）
 - 补齐 V1 的产品、交互、UI、API、Agent、Execution 和变更工作流 Skills，并增加可校验的 frontend/backend/large 增量 Profiles。
 - 增加 V1 发布候选验收报告，归档构建、测试、Git 证据及 OCI、Codex Host 和 G4 阻塞项。
 - 增加显式启用的真实 Podman 集成测试，在隔离 Git Worktree 中验证锁定镜像、非 root、断网、只读根、最小权限、资源限制和执行后干净状态。

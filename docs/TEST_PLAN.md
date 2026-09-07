@@ -1,8 +1,8 @@
-# AI Engineering OS 0.2.0 测试计划
+# AI Engineering OS 0.2.1 测试计划
 
 <!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"approved","owner":"qa","requirement_refs":["REQ-1.6.2","GATE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
 
-测试以 `REQ-1.6.2`、Plugin API/配置/文档/Profile 1.2、SQLite 0007 和 [ADR-0004](ADR/ADR-0004-release-closure-transaction-boundaries.md) 为基线。任何跳过的必需真实检查都视为未通过，不以 mock 或自由文本替代。
+测试以 `REQ-1.6.2`、Plugin API/配置/文档/Profile 1.2、SQLite 0008 和 [ADR-0004](ADR/ADR-0004-release-closure-transaction-boundaries.md) 为基线。任何跳过的必需真实检查都视为未通过，不以 mock 或自由文本替代。
 
 ## 1. 测试层级
 
@@ -14,7 +14,7 @@
 
 ## 2. 迁移与数据库
 
-- fresh install `0001 -> 0007`、真实 `0006 -> 0007`、重复运行与迁移 checksum 冲突。
+- fresh install `0001 -> 0008`、真实 `0007 -> 0008`、重复运行与迁移 checksum 冲突。
 - WAL checkpoint、备份 checksum、备份可打开、失败库保留、临时库恢复校验与原子替换。
 - `integrity_check=ok`、`foreign_key_check` 空、FTS rebuild/query、索引和触发器。
 - 旧 Workflow 保留审计并进入 `MIGRATION_REVALIDATION_REQUIRED`；不得伪造新 Task Group、Review 或 Evidence。
@@ -72,7 +72,7 @@
 2. 总体分支覆盖率 `>=85%`；变更行覆盖率 `>=90%`。
 3. 真实 Podman 测试必须运行且通过，不得 skip。
 4. 使用 API 1.2 新建真实自举 Release Workflow，旧未完成 Workflow 只保留历史证据。
-5. G3 后才能以 PR 合入 `main`；只有独立 G4 授权后才能由持久化 publish operation 创建 `v0.2.0` 和 GitHub Release。
+5. G3 后才能以 PR 合入 `main`；只有独立 G4 授权后才能由持久化 publish operation 创建 `v0.2.1` 和 GitHub Release。
 6. 缺少 Podman、`gh`、网络审批、GitHub 权限或独立 G4 授权时，开发验证可以继续，但相应 Gate 必须明确保持 blocked。
 
 ### 8.1 OCI-first 环境矩阵

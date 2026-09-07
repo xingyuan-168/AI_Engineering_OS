@@ -124,6 +124,12 @@
 - FK、integrity、FTS rebuild/query、Host Operation 唯一/租约/状态、Memory version 和 Handoff trigger。
 - 配置/文档/Profile 1.0/1.1 兼容读取，输出 1.2 warning；旧自由文本证据不满足 1.2 Gate。
 
-## 7. 完成定义
+## 7. 0008 验收矩阵
+
+- fresh install `0001 -> 0008`、真实 `0007 -> 0008`、重复迁移和 checksum 冲突。
+- 0008 新增的 Host Operation 授权/执行尝试/资源归属/证据上下文字段与既有 `host_operations` 行兼容；旧行不回填、不改写。
+- 迁移失败临时库恢复校验、原子替换和活动库审计保留按通用迁移契约执行（见第 4 节）。
+
+## 8. 完成定义
 
 迁移规格只有在 Schema、约束、版本、事务、备份、恢复、校验、失败回滚和兼容限制均有测试时才算完成。

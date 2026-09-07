@@ -15,5 +15,6 @@
 - [ADR-0007：OCI-First 项目环境治理](ADR-0007-oci-first-project-environments.md)
 - [ADR-0008：治理证据、授权和环境操作可靠性](ADR-0008-governance-reliability.md)
 - [ADR-0009：0.2.1 契约对齐与证据绑定语义澄清](ADR-0009-0.2.1-contract-alignment.md)
+- [ADR-0010：版本事实源贯通、强制力分层与状态词汇澄清](ADR-0010-version-source-and-enforcement-layering.md)
 
 新增 ADR 必须使用唯一编号，记录状态、上下文、选项、决定和后果；不得覆盖既有历史。

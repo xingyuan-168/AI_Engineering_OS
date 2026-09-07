@@ -6,7 +6,7 @@
 
 | ID | 缺口/风险 | 0.2.0 交付物 | 必需自动验证 | Gate |
 | --- | --- | --- | --- | --- |
-| `VERSION-DRIFT` | Release、G4、Evidence、DocumentManager 和 Plugin 各自硬编码版本 | `RuntimeVersions` 唯一对象；API/配置/文档/Profile 1.2；SQLite 0007 | 版本矩阵单元测试、CLI/MCP/manifest/plugin 契约测试 | G2、G3、G4 |
+| `VERSION-DRIFT` | Release、G4、Evidence、DocumentManager 和 Plugin 各自硬编码版本 | `RuntimeVersions` 唯一对象；API/配置/文档/Profile 1.2；SQLite 0008 | 版本矩阵单元测试、CLI/MCP/manifest/plugin 契约测试 | G2、G3、G4 |
 | `PROJECT-ROOT` | Worktree 内调用可被绝对配置静默重定向到旧 checkout | 可移植项目根解析；受管 Worktree 明确拒绝/引导；Gate 绑定登记来源 | 绝对路径、junction/symlink、managed root 混淆测试 | G2、G3 |
 | `HOST-OP` | 审批提交后外部副作用无持久化 intent | `host_operations`、租约、尝试、请求 hash、幂等和调用审计 | 事务边界、崩溃、租约接管、重复请求、结果未知对账 | G2、G3、G4 |
 | `MERGE-RECOVERY` | 本地 merge 后 push 失败会破坏 accepted Handoff | 保存 merge Commit/push pending；accepted 保持不变 | push 失败、进程中断、ancestry/remote ref 恢复 | G3 |

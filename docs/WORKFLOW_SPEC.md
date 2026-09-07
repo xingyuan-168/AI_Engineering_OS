@@ -35,6 +35,8 @@
 | `cancelled` | 用户明确取消 |
 | `completed` | `workflow_phase=completed` 且全部证据齐全 |
 
+状态词汇对照（ADR-0010）：`workflow_phase`（业务进度）、`run_status`（上表执行生命周期）与 Host Operation 状态（`pending/running/succeeded/failed/reconcile_required`）是三个独立词汇表。`reconcile_required` 是 Host Operation 状态，不是 `run_status`；文档与代码不得混用。
+
 ## 2. 合法转换
 
 ```text

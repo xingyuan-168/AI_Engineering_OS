@@ -332,7 +332,7 @@ Runtime 从 task 找 Worktree，通过 ExecutionService 建立一个或多个锁
 
 ### 7.4 `database_migrate`
 
-输入：显式 coordinator `project_root`、`expected_schema_version`、`target_schema_version=0007`、`idempotency_key`。迁移是高风险 Host Operation：先备份与校验，失败恢复到临时数据库并通过 integrity/FK/FTS 后原子替换；`status`、`workflow_step` 和其他只读接口不得隐式调用迁移。
+输入：显式 coordinator `project_root`、`expected_schema_version`、`target_schema_version`（由 `RUNTIME_VERSIONS.sqlite_schema` 派生，当前 `0008`）、`idempotency_key`。迁移是高风险 Host Operation：先备份与校验，失败恢复到临时数据库并通过 integrity/FK/FTS 后原子替换；`status`、`workflow_step` 和其他只读接口不得隐式调用迁移。
 
 ## 8. Release 接口
 

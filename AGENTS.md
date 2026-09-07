@@ -46,7 +46,7 @@ Before completion:
 
 Never force-push or rewrite a pushed commit. Correct published history with a new commit or `git revert`. Preserve unrelated user changes and never stage them into an implementation commit.
 
-If the remote is unavailable or a push fails, keep the local commit and record the remote, error, and `push_status=pending|failed`. The task is not complete: its workflow or Host Operation must remain `blocked` or `reconcile_required`. Before retrying, verify remote refs and ancestry, then retry only the missing push; do not rewrite the commit or create an evidence-only commit.
+If the remote is unavailable or a push fails, keep the local commit and record the remote, error, and `push_status=pending|failed`. The task is not complete: its Workflow stays `blocked` and the related Host Operation stays `reconcile_required`. Before retrying, verify remote refs and ancestry, then retry only the missing push; do not rewrite the commit or create an evidence-only commit.
 
 ## Verification
 

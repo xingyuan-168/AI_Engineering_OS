@@ -240,9 +240,9 @@ INSERT/UPDATE/DELETE triggers 保持 external-content FTS 同步。只有 `activ
 ## 8. 备份、迁移与恢复
 
 1. 获取项目级迁移锁并关闭写入口。
-2. `PRAGMA wal_checkpoint(TRUNCATE)` 后使用 SQLite backup API 创建 `.codex-os/state/backups/state-<utc>-pre-0007.db`。
+2. `PRAGMA wal_checkpoint(TRUNCATE)` 后使用 SQLite backup API 创建 `.codex-os/state/backups/state-<utc>-pre-0008.db`。
 3. 生成 `.sha256`，重新打开备份并运行 `integrity_check`、`foreign_key_check`、读取 `schema_migrations`。
-4. 校验迁移文件 checksum，按 0004/0005/0006/0007 各自独立事务执行并记录。
+4. 校验迁移文件 checksum，按 0004/0005/0006/0007/0008 各自独立事务执行并记录。
 5. 执行 post-migration integrity/foreign-key/FTS rebuild test；失败时先把备份恢复到同目录临时数据库，完成 integrity/FK/FTS/关键查询校验，再原子替换活动库；保留失败库供审计。
 6. 重复运行时已记录相同 checksum 的迁移跳过；同版本不同 checksum 返回 `MIGRATION_CHECKSUM_MISMATCH`。
 

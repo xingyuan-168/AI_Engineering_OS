@@ -11,14 +11,14 @@
 
 本轮不是重写 AI Engineering OS，而是在保留现有 Workflow 状态机、Git 证据、Worktree、SQLite、Plugin 和 Docker/Podman 沙箱基础上，补齐企业级治理闭环。
 
-目标成功状态是：Codex 负责推理和工程执行；AI Engineering OS 负责强制执行仓库、流程、证据、审批、隔离、版本和发布规则，并确保关键规则不依赖提示词或人工自觉。
+目标成功状态是：Codex 负责推理和工程执行；AI Engineering OS 负责强制执行仓库、流程、证据、审批、隔离、版本和发布规则。强制力分层（ADR-0010）：关键规则由 Runtime 代码强制执行（结构化 argv、路径校验、审批、证据、乐观锁与沙箱策略）；宿主 PreToolUse Hook 是防御纵深，不是权限、路径或命令安全边界（见 `SECURITY.md` §8）。
 
 ## 2. 范围内能力
 
 ### 2.1 M0：治理与版本基线
 
 - 通过新 ADR 固定治理层边界、事实源和 `.codex-os/` 单目录决策。
-- 建立需求基线 `REQ-1.6.2` 与软件版本 `0.2.0` 的版本矩阵。
+- 建立 `REQ-1.6.2` 与 `RUNTIME_VERSIONS` 软件版本的版本矩阵（见 ADR-0010）。
 - 增加 `.codex-os/bootstrap.md`、`rules.md`、`workflow.md`、`memory.md` 治理索引。
 - 更新主文档、架构、范围、CHANGELOG 和 ADR 索引的一致性要求。
 
@@ -54,9 +54,9 @@
 
 ### 2.6 M5：迁移与完整验收
 
-- 增加 SQLite 追加迁移 `0004-0007`，包含备份、checksum、外键、幂等和恢复验证；不得改写 `0001`～`0006`。
+- 增加 SQLite 追加迁移 `0004-0008`，包含备份、checksum、外键、幂等和恢复验证；不得改写 `0001`～`0007`。
 - 对旧活动 Workflow 强制 `MIGRATION_REVALIDATION_REQUIRED`。
-- 完成配置 `1.0/1.1 -> 1.2` 兼容、SQLite `0006 -> 0007`、公共 MCP 多 Agent E2E 与真实 Podman 复验。
+- 完成配置 `1.0/1.1 -> 1.2` 兼容、SQLite `0007 -> 0008`、公共 MCP 多 Agent E2E 与真实 Podman 复验。
 - 生成 Release Manifest、SBOM、校验和、回滚、ADR、CHANGELOG 和 Memory 证据。
 
 ### 2.7 M6：0.2.0 发布收口
@@ -147,7 +147,7 @@
 
 ### 6.5 兼容与公共接口
 
-- 配置/接口 1.0 与 1.1 到 1.2、SQLite fresh install 与 0006 到 0007、失败恢复、备份 checksum、FTS 重建和重复迁移。
+- 配置/接口 1.0 与 1.1 到 1.2、SQLite fresh install 与 0007 到 0008、失败恢复、备份 checksum、FTS 重建和重复迁移。
 - 未 mock 的公共 MCP 完成至少一次多 Agent 端到端流程。
 - Plugin validator、全部新增/更新 Skills、Agent Profile、Hook fixture 与 MCP Schema。
 
@@ -159,7 +159,7 @@
 4. 每个逻辑变更使用独立 Conventional Commit 并推送到任务或里程碑分支，证据包含 Branch、Commit、remote、push、artifact hash 和验证结果。
 5. Git 工作树干净，无孤儿 Worktree、未知临时文件或未登记制品。
 6. Hook 信任经过人工复核；Release Manifest、SBOM、校验和、回滚、ADR、CHANGELOG 和 Memory 完整。
-7. G4 GitHub PR 经批准并合并后，才可创建 `v0.2.0` tag 和 GitHub Release。
+7. G4 GitHub PR 经批准并合并后，才可创建 `v0.2.1` tag 和 GitHub Release。
 
 ## 8. 约束、依赖与风险
 

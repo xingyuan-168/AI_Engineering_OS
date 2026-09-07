@@ -100,16 +100,16 @@
 - Given：Workflow 集成分支已提交 GitHub PR 到 `main`。
 - When：提交 G4 审批。
 - Then：Runtime 验证 PR、集成分支、目标分支和制品来源一致。
-- And：只有批准后才允许 annotated tag `v0.2.0` 和 GitHub Release；该操作不授权生产部署。
+- And：只有批准后才允许 annotated tag `v0.2.1` 和 GitHub Release；该操作不授权生产部署。
 
 ## US-011：安全迁移旧项目与活动 Workflow
 
-作为运行时维护者，我希望配置与 SQLite 使用兼容、追加和可恢复的迁移，以免升级 0.2.0 时沿用无效 Gate 或损坏状态。
+作为运行时维护者，我希望配置与 SQLite 使用兼容、追加和可恢复的迁移，以免升级 0.2.1 时沿用无效 Gate 或损坏状态。
 
 - 关联需求：`MIGRATION-001`、`COMPAT-001`
-- Given：项目可能使用配置 1.0/1.1、SQLite 0006 或存在活动 Workflow。
+- Given：项目可能使用配置 1.0/1.1、SQLite 0007 或存在活动 Workflow。
 - When：首次用 0.2.0 打开或推进状态。
-- Then：先备份并验证 checksum，追加应用 0007；重复执行无副作用；失败先在临时库验证恢复副本再原子替换活动库。
+- Then：先备份并验证 checksum，追加应用 0008；重复执行无副作用；失败先在临时库验证恢复副本再原子替换活动库。
 - And：旧活动 Workflow 进入 `MIGRATION_REVALIDATION_REQUIRED`，通过新证据审计后才能恢复。
 
 ## US-012：复核和检索长期 Memory

@@ -75,8 +75,8 @@ AI Engineering OS 是运行在 Codex Host 周围的工程治理与执行层。Co
 | --- | --- | --- |
 | EXEC-001 | ExecutionService 成为测试、构建、代码执行和高风险命令的正常入口 | 调用绑定 `run_id/task_id/worktree`，使用锁定镜像、非 root、默认断网、只读根、最小权限与资源限制；证据含 execution ID、command hash、退出码、脱敏日志与 dirty 检查；无可用沙箱时实现、测试、删除和发布保持阻塞 |
 | RELEASE-001 | 发布候选物写入正确的 Worktree 和制品区 | CHANGELOG、Release Manifest、回滚文档只在 Release Worktree 中提交；Wheel、压缩包、SBOM、校验和写入 `.codex-os/artifacts/<run-id>/` 且被 Git 忽略；Manifest 与 SQLite 保存 hash、来源 Commit 和生成环境 |
-| VERSION-001 | 统一版本矩阵与发布绑定 | Release Manifest 同时绑定 `REQ-1.6.2`、软件/CLI/Plugin `0.2.0`、Plugin API/配置 `1.1`、SQLite 迁移版本、构建 Commit、PR、merge Commit、tag、文档版本、配置/锁文件/制品 hash 和 Memory 记录；需求版本不再冒充软件版本 |
-| RELEASE-002 | G4 通过 GitHub PR 验证并隔离部署权限 | G4 校验 PR head 对应集成分支且目标分支包含集成提交；只有批准后才允许 annotated tag `v0.2.0` 与 GitHub Release；发布失败保持阻塞；发布授权不包含生产部署授权 |
+| VERSION-001 | 统一版本矩阵与发布绑定 | Release Manifest 同时绑定 `REQ-1.6.2`、软件/CLI/Plugin `0.2.1`、Plugin API/配置/文档/Profile `1.2`、SQLite 迁移版本、构建 Commit、PR、merge Commit、tag、文档版本、配置/锁文件/制品 hash 和 Memory 记录；需求版本不再冒充软件版本 |
+| RELEASE-002 | G4 通过 GitHub PR 验证并隔离部署权限 | G4 校验 PR head 对应集成分支且目标分支包含集成提交；只有批准后才允许 annotated tag `v0.2.1` 与 GitHub Release；发布失败保持阻塞；发布授权不包含生产部署授权 |
 
 ### 4.6 Memory、Routing 与角色
 
@@ -92,7 +92,7 @@ AI Engineering OS 是运行在 Codex Host 周围的工程治理与执行层。Co
 | ID | 要求 | 可观察验收标准 |
 | --- | --- | --- |
 | API-001 | Plugin API 1.2 暴露受管治理用例 | CLI/MCP 共用模型、服务、响应与错误码；提供 Repository、Handoff、Cleanup、Verification Prepare/Run、Host Operation、Migration、Release Candidate 和 Memory；响应含双轴状态、版本、`next_actions` 与兼容 `next_action` |
-| MIGRATION-001 | 通过追加式 `0007` 安全迁移 | 不改写 0001-0006；迁移前备份，checksum、外键、FTS、Host Operation、幂等、临时库恢复与原子替换测试通过；活动旧 Workflow 进入 `MIGRATION_REVALIDATION_REQUIRED` |
+| MIGRATION-001 | 通过追加式 `0008` 安全迁移 | 不改写 0001-0007；迁移前备份，checksum、外键、FTS、Host Operation、幂等、临时库恢复与原子替换测试通过；活动旧 Workflow 进入 `MIGRATION_REVALIDATION_REQUIRED` |
 | COMPAT-001 | 配置与旧调用保持受控兼容 | 配置/API/文档/Profile Schema 1.2 可读取/调用 1.0/1.1 并 warning；旧健康检查和自由文本验证不能满足新 Gate；未配置 GitHub 的旧项目可读但不能执行仓库写任务 |
 
 ### 4.8 OCI-first 项目环境
@@ -127,10 +127,10 @@ AI Engineering OS 是运行在 Codex Host 周围的工程治理与执行层。Co
 2. 无 Git 或不满足 GitHub/upstream/clean HEAD 条件的项目在首个写任务前被阻塞。
 3. 至少一次未 mock 的公共 MCP 多 Agent 流程通过，包含并行、Review、集成、join 与恢复证据。
 4. Ruff、Pyright、pytest、Secret、依赖审计、Plugin/Skill/Hook/MCP Schema 验证和真实 Podman 测试全部通过。
-5. SQLite fresh install/`0006 -> 0007`、配置/API 1.0/1.1 到 1.2、失败恢复与重复迁移通过。
+5. SQLite fresh install/`0007 -> 0008`、配置/API 1.0/1.1 到 1.2、失败恢复与重复迁移通过。
 6. 工作树干净，无孤儿 Worktree、未知临时文件或未登记制品。
 7. Release Manifest、SBOM、校验和、回滚、ADR、CHANGELOG、Memory 和 Git 证据完整。
-8. 只有显式 G4 批准后才创建 `v0.2.0` tag 和 GitHub Release；本需求不授权部署。
+8. 只有显式 G4 批准后才创建 `v0.2.1` tag 和 GitHub Release；本需求不授权部署。
 
 ## 8. 依赖、风险与未决事项
 

@@ -1,4 +1,4 @@
-# AI Engineering OS 0.2.0 系统架构
+# AI Engineering OS 0.2.1 系统架构
 
 <!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
 
@@ -45,7 +45,7 @@ Codex Host
   -> Adapters
        Git/GitHub/Worktree/Docker/Podman/File System
   -> Infrastructure
-       SQLite repositories + append-only events + migrations 0001-0007
+       SQLite repositories + append-only events + migrations 0001-0008
 ```
 
 Runtime 不调用模型 API。Codex Host 根据 `next_actions` 选择子 Agent；每个 action 是包含 Agent、Skill、输入、输出 Schema、允许路径、Branch 和 Worktree 的确定性任务契约。
@@ -171,7 +171,7 @@ Gate Service 从数据库读取证据，不接收调用方自报的 `passed`。b
 
 ExecutionRequest 必须绑定 `run_id/task_id/worktree_id`、命令 argv、风险、镜像 digest、超时和受管挂载。ExecutionService 验证任务租约、Worktree 归属/干净基线、命令 allowlist 与审批后，选择 Docker 或 Podman Adapter。
 
-`0.2.0` 目标镜像锁定为完整官方 Bookworm 引用：
+`0.2.1` 目标镜像锁定为完整官方 Bookworm 引用：
 
 ```text
 python:3.12.14-bookworm@
@@ -186,7 +186,7 @@ sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a
 
 G3 后创建专用 Release task/Worktree。CHANGELOG、Release Manifest 和回滚文档在该 Worktree 提交并经 Handoff Review/集成合并；Wheel、源码包、SBOM、checksums 写入 `.codex-os/artifacts/<run-id>/`。
 
-Manifest 绑定 `REQ-1.6.2`、软件/CLI/Plugin `0.2.0`、Plugin API/配置/文档/Profile `1.2`、SQLite `0007`、integration source Commit、candidate Commit、PR merge Commit、目标 tag、文档/配置/lock/制品 hash 和 Memory IDs。candidate manifest 与 final manifest 分开，后者包含发布资产和远端对账结果。
+Manifest 绑定 `REQ-1.6.2`、软件/CLI/Plugin `0.2.1`、Plugin API/配置/文档/Profile `1.2`、SQLite `0008`、integration source Commit、candidate Commit、PR merge Commit、目标 tag、文档/配置/lock/制品 hash 和 Memory IDs。candidate manifest 与 final manifest 分开，后者包含发布资产和远端对账结果。
 
 G4 顺序：持久化独立发布授权与 `release_publish` Host Operation -> 验证完整证据和已合并 GitHub PR -> 验证目标分支包含 PR merge Commit -> 创建/核对 annotated tag -> 创建或复用 draft GitHub Release -> 生成 final manifest -> 上传并逐项复核资产 -> 发布 Release -> 完成 Workflow。任一步失败保持 blocked，重复调用按请求/Manifest hash 和远端状态幂等恢复。部署不在本系统权限内。
 
@@ -209,7 +209,7 @@ Profile Router 将 `frontend-project`、`backend-project`、`large-project` 组�
 
 ## 11. 迁移与回滚
 
-启动 0.2.0 时，在任何状态写入前复制数据库到 `.codex-os/state/backups/` 并写 SHA-256；验证备份可打开、foreign_key_check 和 integrity_check 后，依次应用 0004-0007。每条迁移在单独事务中记录 checksum。恢复必须先写入临时数据库并完成 integrity、foreign-key、FTS 与关键查询校验，再原子替换活动库。
+启动 0.2.1 时，在任何状态写入前复制数据库到 `.codex-os/state/backups/` 并写 SHA-256；验证备份可打开、foreign_key_check 和 integrity_check 后，依次应用 0004-0008。每条迁移在单独事务中记录 checksum。恢复必须先写入临时数据库并完成 integrity、foreign-key、FTS 与关键查询校验，再原子替换活动库。
 
 迁移失败关闭写服务并保留原库/失败副本；恢复通过校验后的备份原子替换。活动旧 Workflow 在下一次转换进入 `MIGRATION_REVALIDATION_REQUIRED`，新 Gate bundle 审计完成后才恢复。应用降级不反向执行 destructive SQL，只恢复备份或使用前一版本只读模式。
 
@@ -238,7 +238,7 @@ Adapter 均通过 Protocol 注入，单元测试使用 deterministic fake；公�
 | `application/workflow.py` / `infrastructure/evidence.py` | Workflow 转换、Gate bundle 构建与 Commit-bound 证据校验 |
 | `application/release.py` / `application/g4.py` | Release Worktree、Manifest、Host Operation 与 G4 对账 |
 | `application/execution.py` | 受控执行主路径；保留现有 Adapter |
-| `infrastructure/migrations/0004-0007*.sql` | 追加 Schema；历史迁移不可改写 |
+| `infrastructure/migrations/0004-0008*.sql` | 追加 Schema；历史迁移不可改写 |
 | `infrastructure/workflows.py` / `coordination.py` / `worktrees.py` / `memory.py` | 原子持久化、乐观锁、租约与恢复 |
 | `application/repository.py` / `coordination.py` / `g4.py` | Git/GitHub remote、PR、merge、tag 和 Release 查询与操作 |
 | `cli/app.py` / `cli/mcp_server.py` | Plugin API 1.2 适配；共用输入模型、应用服务和响应封装 |

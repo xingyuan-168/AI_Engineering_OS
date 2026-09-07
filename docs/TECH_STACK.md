@@ -1,4 +1,4 @@
-# AI Engineering OS 0.2.0 技术栈
+# AI Engineering OS 0.2.1 技术栈
 
 <!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","EXEC-001","VERSION-001","MEMORY-001"]} -->
 
@@ -120,13 +120,13 @@ codex-os release --candidate --run-id <run-id>
 
 ## 6. 版本矩阵与依赖冻结规则
 
-| 版本维度 | 0.2.0 冻结值 | 兼容/迁移规则 |
+| 版本维度 | 0.2.1 冻结值 | 兼容/迁移规则 |
 | --- | --- | --- |
 | 需求基线 | `REQ-1.6.2` | 不与软件版本混用 |
-| 软件 / CLI / Plugin 核心 | `0.2.0` | Git tag 为 `v0.2.0`，仅 G4 后创建 |
+| 软件 / CLI / Plugin 核心 | `0.2.1` | Git tag 为 `v0.2.1`，仅 G4 后创建 |
 | Plugin API | `1.2` | 兼容 1.0/1.1 单动作入口并返回 warning；统一 `next_actions` 与写并发契约 |
 | 配置/文档/Profile Schema | `1.2` | 兼容读取 `1.0`/`1.1` 至 0.2.x 结束 |
-| SQLite Schema | `0007` | 追加迁移 `0007`，不得改写 `0001`～`0006` |
+| SQLite Schema | `0008` | 追加迁移 `0008`，不得改写 `0001`～`0007` |
 
 - Python：`>=3.12,<3.13`；当前锁定环境 3.12.13，但上游已提供 3.12.14 安全版本，实现阶段必须升级并锁定完整镜像 digest。
 - 当前历史执行镜像：`python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2`；只用于重现旧证据，不能跳过镜像扫描。目标镜像为 `python:3.12.14-bookworm@sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a`；正式证据还必须记录 registry index digest、实际平台 digest、SBOM 和离线 Trivy 报告。
