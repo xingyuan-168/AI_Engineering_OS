@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
+from codex_ai_os.domain.governance import governed_path_allowed
 from codex_ai_os.domain.workflow import ChangeKind, TaskCompletion
 
 
@@ -205,11 +206,5 @@ def _normalize_artifact_path(raw_path: str) -> PurePosixPath:
 
 
 def _path_allowed(raw_path: str, allowed_paths: tuple[str, ...]) -> bool:
-    candidate = PurePosixPath(raw_path.replace("\\", "/")).as_posix()
-    for raw_allowed in allowed_paths:
-        allowed = raw_allowed.replace("\\", "/")
-        if allowed.endswith("/") and candidate.startswith(allowed):
-            return True
-        if candidate == PurePosixPath(allowed).as_posix():
-            return True
-    return False
+    # ADR-0011: single governed-path matcher shared across the runtime.
+    return governed_path_allowed(raw_path, allowed_paths)

@@ -8,17 +8,24 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from fnmatch import fnmatchcase
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from codex_ai_os.domain.config import EnvironmentMode
 from codex_ai_os.domain.coordination import TaskBlueprint
+from codex_ai_os.domain.governance import (
+    governed_path_allowed,
+    is_unsafe_repository_path,
+)
 from codex_ai_os.domain.profiles import ProfileTaskTemplate, ProjectProfile
 from codex_ai_os.domain.workflow import Gate
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.profiles import load_project_profiles
+
+# Internal alias: lexical repository-path rules now live in the domain layer.
+_unsafe_repository_path = is_unsafe_repository_path
 
 
 class GovernancePolicyError(RuntimeError):
@@ -578,24 +585,6 @@ def _normalize_governed_path(value: str) -> str:
     return PurePosixPath(normalized).as_posix()
 
 
-def _unsafe_repository_path(value: str) -> bool:
-    """Apply Windows and POSIX lexical rules regardless of the runtime host."""
-    return (
-        not value
-        or PurePosixPath(value) == PurePosixPath(".")
-        or PurePosixPath(value).is_absolute()
-        or bool(PureWindowsPath(value).drive)
-        or PureWindowsPath(value).is_reserved()
-        or ":" in value  # Also excludes NTFS alternate data streams.
-        or "\ufffd" in value
-        or any(ord(character) < 32 for character in value)
-        or any(
-            part == ".." or (part not in {"", "."} and part.endswith((".", " ")))
-            for part in value.split("/")
-        )
-    )
-
-
 def _policy_pattern_matches(pattern: str, path: str) -> bool:
     # Windows governed files must remain protected when checked inside Linux OCI.
     pattern, path = pattern.casefold(), path.casefold()
@@ -611,6 +600,10 @@ def _policy_pattern_matches(pattern: str, path: str) -> bool:
     if pattern.startswith("**."):
         return path.endswith(pattern[2:])
     return fnmatchcase(path, pattern)
+
+
+# Public alias for the authorization kernel (ADR-0011).
+policy_pattern_matches = _policy_pattern_matches
 
 
 _PACKAGED_GATE_ROOT = Path(__file__).parents[1] / "resources" / "gates"
@@ -636,4 +629,7 @@ __all__ = [
     "GovernancePolicyError",
     "PathAccessDecision",
     "RoleBoundary",
+    "governed_path_allowed",
+    "is_unsafe_repository_path",
+    "policy_pattern_matches",
 ]

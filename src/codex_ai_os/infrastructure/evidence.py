@@ -22,6 +22,7 @@ from codex_ai_os.domain.governance import (
     ArtifactEvidenceInput,
     CheckEvidenceInput,
     ReviewEvidenceInput,
+    governed_path_allowed,
 )
 from codex_ai_os.domain.ids import new_id
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
@@ -799,12 +800,7 @@ class EvidenceStore:
                 disallowed = [
                     str(path)
                     for path in artifact_mapping
-                    if not any(
-                        str(path) == str(prefix).rstrip("/")
-                        or str(path).startswith(f"{str(prefix).rstrip('/')}/")
-                        or (str(prefix).endswith("/") and str(path).startswith(str(prefix)))
-                        for prefix in allowed_raw
-                    )
+                    if not governed_path_allowed(str(path), allowed_raw)
                     and not str(path).startswith(f".codex-os/artifacts/{run_id}/")
                 ]
                 if disallowed:

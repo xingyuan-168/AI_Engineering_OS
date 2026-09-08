@@ -23,7 +23,7 @@
    - 第一层 Runtime 强制：MCP 与 CLI 的全部写类/状态变更入口在 Service 调用前经内核裁决，DENY 即拒绝；此层为可信任边界。
    - 第二层 Hook 强制：PreToolUse Hook 升级为内核的宿主侧客户端——解析 apply_patch 的全部目标路径（新增/修改/删除/重命名/多文件）与 Shell 常见写入模式（重定向、tee、cp/mv/rm、sed -i、git checkout/restore/reset/clean、包管理安装、docker volume、release 命令）后调用 `codex-os authorize-hook` 子命令取得裁决；Runtime 不可达或超时（5 秒）时降级为现有正则黑名单并记录事件。此层为尽力强制点，宿主可禁用，不构成可信任边界。
    - 第三层事后证据：task_complete 与 Gate 证据对已提交路径、推送状态与制品 hash 的 fail-closed 校验维持不变，作为前两层失效后的最终兜底。
-4. **ASK 语义**：内核返回 ASK 时，MCP/CLI 拒绝本次操作并引导走既有 `approval` 流程；不新增审批通道。运行模式下对治理规则文件（`AGENTS.md`、`profiles/`、`gates/`、`plugins/ai-engineering-os/**`、`.codex-os/*.yaml`）的写入默认返回 ASK。
+4. **ASK 语义**：内核返回 ASK 时，MCP/CLI 拒绝本次操作并引导走既有 `approval` 流程；不新增审批通道。治理规则文件（`AGENTS.md`、`profiles/`、`gates/`、`plugins/ai-engineering-os/**`、`.codex-os/*.yaml`）在运行模式下位于 protected paths，外部来源写入直接 DENY；维护模式下这些路径移入 approval-gated 集合，外部来源返回 ASK、内部确定性用例（如项目初始化）放行。
 5. **不引入完整 Session 管理**：沿用 `InvocationContext` 并扩展 source/workflow_id/task_id 传递；Run + Task 即授权语境。
 
 ## 3. 被否决的选项

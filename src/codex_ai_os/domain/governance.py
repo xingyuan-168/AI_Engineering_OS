@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Self
 
 from pydantic import Field, model_validator
@@ -182,3 +183,44 @@ class G4ApprovalInput(StrictModel):
         if self.version != RUNTIME_VERSIONS.software:
             raise ValueError(f"G4 version must be {RUNTIME_VERSIONS.software}")
         return self
+
+
+def is_unsafe_repository_path(value: str) -> bool:
+    """Apply Windows and POSIX lexical rules regardless of the runtime host."""
+    return (
+        not value
+        or PurePosixPath(value) == PurePosixPath(".")
+        or PurePosixPath(value).is_absolute()
+        or bool(PureWindowsPath(value).drive)
+        or PureWindowsPath(value).is_reserved()
+        or ":" in value  # Also excludes NTFS alternate data streams.
+        or "\ufffd" in value
+        or any(ord(character) < 32 for character in value)
+        or any(
+            part == ".." or (part not in {"", "."} and part.endswith((".", " ")))
+            for part in value.split("/")
+        )
+    )
+
+
+def governed_path_allowed(path: str, allowed_paths: tuple[str, ...]) -> bool:
+    """Shared project-relative allowance used by Git evidence, artifact checks,
+    environment operations and the authorization kernel (ADR-0011).
+
+    A path is allowed when it equals an allowed entry or lies below it.
+    Absolute paths, ``..`` segments and drive-qualified paths are never
+    allowed.
+    """
+
+    normalized = path.replace("\\", "/")
+    posix = PurePosixPath(normalized)
+    if posix.is_absolute() or ".." in posix.parts:
+        return False
+    if is_unsafe_repository_path(normalized):
+        return False
+    candidate = posix.as_posix()
+    for raw_allowed in allowed_paths:
+        allowed = PurePosixPath(raw_allowed.replace("\\", "/")).as_posix()
+        if candidate == allowed or candidate.startswith(f"{allowed.rstrip('/')}/"):
+            return True
+    return False

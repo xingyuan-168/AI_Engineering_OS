@@ -21,6 +21,7 @@ from codex_ai_os.application.environment import (
 from codex_ai_os.application.project import environment_scaffold_files
 from codex_ai_os.domain.config import EnvironmentMode, SandboxBackend
 from codex_ai_os.domain.environment import EnvironmentContract
+from codex_ai_os.domain.governance import governed_path_allowed
 from codex_ai_os.domain.invocation import InvocationContext
 from codex_ai_os.domain.operations import HostOperation, HostOperationKind, HostOperationStatus
 from codex_ai_os.infrastructure.config import load_environment_contract, load_project_config
@@ -742,11 +743,8 @@ def _source_commit(root: Path, checkpoint: dict[str, Any], task_commit: str | No
 
 
 def _path_allowed(path: str, allowed: tuple[str, ...]) -> bool:
-    normalized = path.replace("\\", "/")
-    return any(
-        normalized == item.rstrip("/") or normalized.startswith(item.rstrip("/") + "/")
-        for item in allowed
-    )
+    # ADR-0011: single governed-path matcher shared across the runtime.
+    return governed_path_allowed(path, allowed)
 
 
 def _parse_future(value: str) -> datetime:

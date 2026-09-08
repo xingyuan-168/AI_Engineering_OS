@@ -8,7 +8,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
@@ -52,7 +52,7 @@ from codex_ai_os.domain.coordination import (
     TaskBlueprint,
     TaskGroupView,
 )
-from codex_ai_os.domain.governance import G4ApprovalInput
+from codex_ai_os.domain.governance import G4ApprovalInput, governed_path_allowed
 from codex_ai_os.domain.ids import new_id
 from codex_ai_os.domain.invocation import InvocationContext
 from codex_ai_os.domain.operations import (
@@ -2559,19 +2559,8 @@ def _input_artifacts_for(phase: WorkflowPhase) -> tuple[str, ...]:
 
 
 def _artifact_path_allowed(raw_path: str, allowed_paths: tuple[str, ...]) -> bool:
-    normalized = raw_path.replace("\\", "/")
-    path = PurePosixPath(normalized)
-    if path.is_absolute() or ".." in path.parts:
-        return False
-    candidate = path.as_posix()
-    for raw_allowed in allowed_paths:
-        allowed = raw_allowed.replace("\\", "/")
-        if allowed.endswith("/"):
-            if candidate.startswith(allowed) and candidate != allowed.rstrip("/"):
-                return True
-        elif candidate == PurePosixPath(allowed).as_posix():
-            return True
-    return False
+    # ADR-0011: single governed-path matcher shared across the runtime.
+    return governed_path_allowed(raw_path, allowed_paths)
 
 
 def _utc_now() -> str:
