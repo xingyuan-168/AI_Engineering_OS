@@ -67,5 +67,5 @@
 - 需求基线：已从 V2.0 需求文档整理。
 - 文档状态：本批次文档已补齐并通过结构审计；实施前如发生范围变化，必须按变更规则更新。
 - 技术栈状态：见 [TECH_STACK.md](TECH_STACK.md)；运行时基线见 [ADR-0001](ADR/ADR-0001-mvp-runtime-stack.md)，契约收敛见 [ADR-0002](ADR/ADR-0002-v1-runtime-contract-convergence.md)。
-- 实施状态：0.2.0 收口分支已完成本地候选验证；0.2.1 正按 [ADR-0007](ADR/ADR-0007-oci-first-project-environments.md) 增加 OCI-first 项目环境治理，正式 G3/G4 仍须独立执行和批准。
+- 实施状态：0.2.1 已完成可靠性收口；0.3.0 正按 [ADR-0011](ADR/ADR-0011-governance-authorization-kernel.md)～[ADR-0014](ADR/ADR-0014-assurance-levels.md) 执行治理收敛（统一授权内核、Artifact Catalog、Profile/Project Layout 分离、Assurance 分层），正式 G3/G4 仍须独立执行和批准。
 - 实现契约：已补齐运行时、配置、Workflow 路由、Skill、Agent 交接、Plugin、Worktree、边界、Memory、执行、可观测性、迁移、发布和试点验收文档。

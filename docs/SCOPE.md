@@ -73,6 +73,12 @@
 - 增加环境检查、准备、断网验证与 Gate 证据，不提供自动 prune 或真实 Volume 删除能力。
 - 以 [RELEASE_CLOSURE_MATRIX.md](RELEASE_CLOSURE_MATRIX.md) 作为缺陷、测试和 Gate 的关闭索引。
 
+### 2.9 0.3.0：Governance Consolidation
+
+- 以收敛为纲，不新增 Agent/Skill/Gate/Workflow：统一授权内核与三层强制模型（[ADR-0011](ADR/ADR-0011-governance-authorization-kernel.md)）、Artifact Catalog 与前端设计单一模型（[ADR-0012](ADR/ADR-0012-artifact-catalog-single-model.md)）、Profile 语义化与 Project Layout 分离（[ADR-0013](ADR/ADR-0013-profile-project-layout-separation.md)）、复用 RiskLevel 的 Assurance 分层（[ADR-0014](ADR/ADR-0014-assurance-levels.md)）。
+- 配套收敛：Git 子进程封装收敛到单一 Runner、inventory 自动生成与 README 生成块、sdist 显式白名单与发布包内容校验、Gate 检查命令表数据驱动、schema 1.0 兼容旁路封堵、Task Contract 上下文编译。
+- 提案原文与逐项核对差异记录见 `docs/proposals/`。
+
 ## 3. 明确不在本轮范围
 
 - 不替换 Codex Host，不内嵌第二个模型客户端，不实现自研通用大模型。

@@ -16,5 +16,9 @@
 - [ADR-0008：治理证据、授权和环境操作可靠性](ADR-0008-governance-reliability.md)
 - [ADR-0009：0.2.1 契约对齐与证据绑定语义澄清](ADR-0009-0.2.1-contract-alignment.md)
 - [ADR-0010：版本事实源贯通、强制力分层与状态词汇澄清](ADR-0010-version-source-and-enforcement-layering.md)
+- [ADR-0011：统一治理授权内核与三层强制模型](ADR-0011-governance-authorization-kernel.md)
+- [ADR-0012：Artifact Catalog 与前端设计单一模型](ADR-0012-artifact-catalog-single-model.md)
+- [ADR-0013：Profile 语义化与 Project Layout 分离](ADR-0013-profile-project-layout-separation.md)
+- [ADR-0014：Assurance 分层——复用 RiskLevel 的差异化保障要求](ADR-0014-assurance-levels.md)
 
 新增 ADR 必须使用唯一编号，记录状态、上下文、选项、决定和后果；不得覆盖既有历史。
