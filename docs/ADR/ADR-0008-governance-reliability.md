@@ -1,6 +1,6 @@
 # ADR-0008：治理证据、授权和环境操作可靠性
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"accepted","owner":"architect","requirement_refs":["REQ-1.6.2","GATE-001","EXEC-001","ENV-001","VERSION-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"accepted","owner":"architect","requirement_refs":["REQ-1.6.2","GATE-001","EXEC-001","ENV-001","VERSION-001"]} -->
 
 - 状态：Accepted（用户批准本轮实施方案；不替代独立 Gate/发布审批）
 - 日期：2026-09-05

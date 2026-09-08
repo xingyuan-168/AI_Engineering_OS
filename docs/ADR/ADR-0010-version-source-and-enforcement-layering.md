@@ -1,6 +1,6 @@
 # ADR-0010：版本事实源贯通、强制力分层与状态词汇澄清
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"accepted","owner":"architect","requirement_refs":["REQ-1.6.2","VERSION-001","GOV-001","DOC-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"accepted","owner":"architect","requirement_refs":["REQ-1.6.2","VERSION-001","GOV-001","DOC-001"]} -->
 
 - 状态：Accepted
 - 日期：2026-09-07

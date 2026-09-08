@@ -1,6 +1,6 @@
-# AI Engineering OS 0.2.1 技术栈
+# AI Engineering OS 0.3.0 技术栈
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","EXEC-001","VERSION-001","MEMORY-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","EXEC-001","VERSION-001","MEMORY-001"]} -->
 
 状态：G2 评审就绪；执行镜像新 digest 必须在实现前完成扫描并由 ADR 冻结。
 
@@ -120,10 +120,10 @@ codex-os release --candidate --run-id <run-id>
 
 ## 6. 版本矩阵与依赖冻结规则
 
-| 版本维度 | 0.2.1 冻结值 | 兼容/迁移规则 |
+| 版本维度 | 0.3.0 冻结值 | 兼容/迁移规则 |
 | --- | --- | --- |
 | 需求基线 | `REQ-1.6.2` | 不与软件版本混用 |
-| 软件 / CLI / Plugin 核心 | `0.2.1` | Git tag 为 `v0.2.1`，仅 G4 后创建 |
+| 软件 / CLI / Plugin 核心 | `0.3.0` | Git tag 为 `v0.3.0`，仅 G4 后创建 |
 | Plugin API | `1.2` | 兼容 1.0/1.1 单动作入口并返回 warning；统一 `next_actions` 与写并发契约 |
 | 配置/文档/Profile Schema | `1.2` | 兼容读取 `1.0`/`1.1` 至 0.2.x 结束 |
 | SQLite Schema | `0008` | 追加迁移 `0008`，不得改写 `0001`～`0007` |

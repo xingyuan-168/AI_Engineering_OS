@@ -1,6 +1,6 @@
-# AI Engineering OS 0.2.1 测试计划
+# AI Engineering OS 0.3.0 测试计划
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"approved","owner":"qa","requirement_refs":["REQ-1.6.2","GATE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"approved","owner":"qa","requirement_refs":["REQ-1.6.2","GATE-001","RELEASE-001","EXEC-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
 
 测试以 `REQ-1.6.2`、Plugin API/配置/文档/Profile 1.2、SQLite 0008 和 [ADR-0004](ADR/ADR-0004-release-closure-transaction-boundaries.md) 为基线。任何跳过的必需真实检查都视为未通过，不以 mock 或自由文本替代。
 
@@ -72,7 +72,7 @@
 2. 总体分支覆盖率 `>=85%`；变更行覆盖率 `>=90%`。
 3. 真实 Podman 测试必须运行且通过，不得 skip。
 4. 使用 API 1.2 新建真实自举 Release Workflow，旧未完成 Workflow 只保留历史证据。
-5. G3 后才能以 PR 合入 `main`；只有独立 G4 授权后才能由持久化 publish operation 创建 `v0.2.1` 和 GitHub Release。
+5. G3 后才能以 PR 合入 `main`；只有独立 G4 授权后才能由持久化 publish operation 创建 `v0.3.0` 和 GitHub Release。
 6. 缺少 Podman、`gh`、网络审批、GitHub 权限或独立 G4 授权时，开发验证可以继续，但相应 Gate 必须明确保持 blocked。
 
 ### 8.1 OCI-first 环境矩阵
@@ -130,4 +130,4 @@ Linux 下 Windows 绝对路径识别和尚未接入环境证据的旧自举 E2E�
 并分别对 legacy 与 OCI-first fixture 断言精确 G3 检查集合。
 相关 Ruff、Pyright、54 份文档和 Secret Scan 通过；这不消除其余发布/环境 E2E 阻塞。
 
-测试完成必须提供 Branch、Commit、remote/push、命令、退出码、报告路径/hash、开始/结束时间、跳过数和覆盖率。所有活跃规格的完成定义和 Requirement 必须有有效追溯记录；任何 required check 缺失、跳过、来源 Commit 不一致或证据不可复算，都不能将 0.2.1 标记为发布完成。
+测试完成必须提供 Branch、Commit、remote/push、命令、退出码、报告路径/hash、开始/结束时间、跳过数和覆盖率。所有活跃规格的完成定义和 Requirement 必须有有效追溯记录；任何 required check 缺失、跳过、来源 Commit 不一致或证据不可复算，都不能将 0.3.0 标记为发布完成。

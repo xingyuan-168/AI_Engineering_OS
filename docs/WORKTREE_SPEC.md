@@ -1,6 +1,6 @@
 # Worktree 规范
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","WORKTREE-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","WORKTREE-001"]} -->
 
 版本：V2.0-derived-worktree
 状态：可执行实现规格基线

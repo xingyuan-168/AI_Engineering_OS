@@ -1,6 +1,6 @@
 # ADR-0007：OCI-First 项目环境治理
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"accepted","owner":"architect","requirement_refs":["REQ-1.6.2","ENV-001","EXEC-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"accepted","owner":"architect","requirement_refs":["REQ-1.6.2","ENV-001","EXEC-001"]} -->
 
 - 状态：Accepted
 - 日期：2026-09-02

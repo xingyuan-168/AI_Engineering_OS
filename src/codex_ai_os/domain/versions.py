@@ -1,4 +1,4 @@
-"""Single immutable runtime version matrix for the 0.2.1 release."""
+"""Single immutable runtime version matrix for the 0.3.0 release."""
 
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ class RuntimeVersions:
 
 RUNTIME_VERSIONS = RuntimeVersions(
     requirement_baseline="REQ-1.6.2",
-    software="0.2.1",
-    plugin="0.2.1",
+    software="0.3.0",
+    plugin="0.3.0",
     api="1.2",
     config_schema="1.2",
     document_schema="1.2",

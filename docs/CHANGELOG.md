@@ -1,9 +1,10 @@
 # 变更记录
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","VERSION-001","RELEASE-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","VERSION-001","RELEASE-001"]} -->
 
 ## [Unreleased] - 2026-08-26
 
+- 0.3.0 Governance Consolidation milestone opens: Runtime/Plugin core versions advance to `0.3.0` while API/config/document/Profile Schema stay `1.2` and SQLite stays `0008` until the corresponding ADRs land; the v0.3 consolidation proposal is archived under `docs/proposals/`.
 - 0.2.1 adopts OCI-first project environments: new projects scaffold an explicit Podman/Docker contract, legacy projects require governed adoption, and G2-G4 bind Compose, image, persistence, rebuild and host-cleanliness evidence (ADR-0007).
 - Runtime and Plugin core versions advance to 0.2.1 while API/config/Profile Schema remain 1.2 and SQLite advances to 0008 (operation reliability, ADR-0008); this repository now carries its own digest-pinned, internal-network Compose contract for self-verification.
 

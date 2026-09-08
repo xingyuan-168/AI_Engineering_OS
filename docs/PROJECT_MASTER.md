@@ -1,6 +1,6 @@
 # Codex AI Engineering OS 项目总文档
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001"]} -->
 
 版本：V2.0-derived
 状态：可执行文档基线
@@ -67,7 +67,7 @@ Codex Host 负责模型、Session、Tool Runtime 和宿主交互；AI Engineerin
 
 ### 版本矩阵
 
-0.2.1 固定使用需求 `REQ-1.6.2`、软件/CLI/Plugin `0.2.1`、Plugin API/配置/文档/Profile Schema `1.2` 和 SQLite `0008`。1.0/1.1 兼容入口在 0.2.x 内保留并返回弃用 warning；最早只可在 0.3.0 经 ADR 移除。版本事实由 Runtime 唯一版本对象 `RUNTIME_VERSIONS` 提供（见 ADR-0010），本节是版本矩阵的唯一权威散文位，其余活跃文档必须与这里一致，禁止各模块散落硬编码。
+0.3.0 固定使用需求 `REQ-1.6.2`、软件/CLI/Plugin `0.3.0`、Plugin API/配置/文档/Profile Schema `1.2` 和 SQLite `0008`。1.0/1.1 兼容入口按 ADR-0009 保留并返回弃用 warning；0.3.0 期间如需移除必须经 ADR。Artifact Catalog、Project Layout 与 Profile 契约随 ADR-0012/0013 落地在 0.3.0 内独立提交提升到 `1.3`。版本事实由 Runtime 唯一版本对象 `RUNTIME_VERSIONS` 提供（见 ADR-0010），本节是版本矩阵的唯一权威散文位，其余活跃文档必须与这里一致，禁止各模块散落硬编码。
 
 ## 3. 项目事实来源
 

@@ -1,6 +1,6 @@
-# AI Engineering OS 0.2.1 系统架构
+# AI Engineering OS 0.3.0 系统架构
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
 
 本架构实现 [ADR-0003](ADR/ADR-0003-governance-runtime-boundary.md) 与 [ADR-0004](ADR/ADR-0004-release-closure-transaction-boundaries.md)。它保留现有 Python 状态机、SQLite、Git 证据、Worktree、Plugin 和 OCI 沙箱，不引入第二个模型客户端。
 
@@ -171,7 +171,7 @@ Gate Service 从数据库读取证据，不接收调用方自报的 `passed`。b
 
 ExecutionRequest 必须绑定 `run_id/task_id/worktree_id`、命令 argv、风险、镜像 digest、超时和受管挂载。ExecutionService 验证任务租约、Worktree 归属/干净基线、命令 allowlist 与审批后，选择 Docker 或 Podman Adapter。
 
-`0.2.1` 目标镜像锁定为完整官方 Bookworm 引用：
+`0.3.0` 目标镜像锁定为完整官方 Bookworm 引用：
 
 ```text
 python:3.12.14-bookworm@
@@ -186,7 +186,7 @@ sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a
 
 G3 后创建专用 Release task/Worktree。CHANGELOG、Release Manifest 和回滚文档在该 Worktree 提交并经 Handoff Review/集成合并；Wheel、源码包、SBOM、checksums 写入 `.codex-os/artifacts/<run-id>/`。
 
-Manifest 绑定 `REQ-1.6.2`、软件/CLI/Plugin `0.2.1`、Plugin API/配置/文档/Profile `1.2`、SQLite `0008`、integration source Commit、candidate Commit、PR merge Commit、目标 tag、文档/配置/lock/制品 hash 和 Memory IDs。candidate manifest 与 final manifest 分开，后者包含发布资产和远端对账结果。
+Manifest 绑定 `REQ-1.6.2`、软件/CLI/Plugin `0.3.0`、Plugin API/配置/文档/Profile `1.2`、SQLite `0008`、integration source Commit、candidate Commit、PR merge Commit、目标 tag、文档/配置/lock/制品 hash 和 Memory IDs。candidate manifest 与 final manifest 分开，后者包含发布资产和远端对账结果。
 
 G4 顺序：持久化独立发布授权与 `release_publish` Host Operation -> 验证完整证据和已合并 GitHub PR -> 验证目标分支包含 PR merge Commit -> 创建/核对 annotated tag -> 创建或复用 draft GitHub Release -> 生成 final manifest -> 上传并逐项复核资产 -> 发布 Release -> 完成 Workflow。任一步失败保持 blocked，重复调用按请求/Manifest hash 和远端状态幂等恢复。部署不在本系统权限内。
 

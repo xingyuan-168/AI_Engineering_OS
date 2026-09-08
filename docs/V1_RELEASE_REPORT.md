@@ -1,6 +1,6 @@
 # AI Engineering OS V1 发布候选验收报告
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001"]} -->
 
 日期：2026-08-21
 

@@ -1,6 +1,6 @@
 # 执行策略
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"security-reviewer","requirement_refs":["REQ-1.6.2","EXEC-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"security-reviewer","requirement_refs":["REQ-1.6.2","EXEC-001"]} -->
 
 版本：V2.0-derived-execution
 状态：可执行实现规格基线
@@ -56,7 +56,7 @@
 
 宿主控制平面只允许 `codex-os`、Codex Plugin、Git 与 OCI 引擎。项目 package manager、编译器、测试和服务必须经专用 Environment Host Operation 进入项目选定的 OCI backend。Runtime 接收结构化 argv，不接收任意 shell，也不在 Podman/Docker 之间回退。
 
-`environment_prepare` 是有期 L2 联网操作；`environment_verify` 必须断网。`compose down -v`、`volume rm` 和带 volume 的 prune 不属于 Agent 可授权命令，0.2.1 没有删除真实持久 Volume 的公共 API。
+`environment_prepare` 是有期 L2 联网操作；`environment_verify` 必须断网。`compose down -v`、`volume rm` 和带 volume 的 prune 不属于 Agent 可授权命令，运行时没有删除真实持久 Volume 的公共 API。
 
 ## 5. 资源限制
 

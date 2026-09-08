@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 用户故事
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
 
 本文使用 Given/When/Then 表达可测试行为。每个故事必须映射到 [产品需求](PRODUCT_REQUIREMENTS.md) 和 [业务规则](BUSINESS_RULES.md)。
 
@@ -100,11 +100,11 @@
 - Given：Workflow 集成分支已提交 GitHub PR 到 `main`。
 - When：提交 G4 审批。
 - Then：Runtime 验证 PR、集成分支、目标分支和制品来源一致。
-- And：只有批准后才允许 annotated tag `v0.2.1` 和 GitHub Release；该操作不授权生产部署。
+- And：只有批准后才允许 annotated tag `v0.3.0` 和 GitHub Release；该操作不授权生产部署。
 
 ## US-011：安全迁移旧项目与活动 Workflow
 
-作为运行时维护者，我希望配置与 SQLite 使用兼容、追加和可恢复的迁移，以免升级 0.2.1 时沿用无效 Gate 或损坏状态。
+作为运行时维护者，我希望配置与 SQLite 使用兼容、追加和可恢复的迁移，以免升级 0.3.0 时沿用无效 Gate 或损坏状态。
 
 - 关联需求：`MIGRATION-001`、`COMPAT-001`
 - Given：项目可能使用配置 1.0/1.1、SQLite 0007 或存在活动 Workflow。

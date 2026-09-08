@@ -1,10 +1,10 @@
-# AI Engineering OS 0.2.1 OCI-first 迭代范围
+# AI Engineering OS 0.2.1/0.3.0 迭代范围
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2","GOV-001","CFG-001","REPO-001","GATE-001","AGENT-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","DOC-001","HYGIENE-001","VERSION-001","MEMORY-001","ROUTING-001","FRONTEND-001"]} -->
 
 需求基线：`REQ-1.6.2`
 
-目标软件版本：`0.2.1`
+目标软件版本：`0.3.0`（0.2.1 OCI-first 迭代范围见 §2.8）
 目标形态：Windows 本地、面向 Codex 的可审计工程治理与执行层。
 
 ## 1. 修复目标
@@ -159,7 +159,7 @@
 4. 每个逻辑变更使用独立 Conventional Commit 并推送到任务或里程碑分支，证据包含 Branch、Commit、remote、push、artifact hash 和验证结果。
 5. Git 工作树干净，无孤儿 Worktree、未知临时文件或未登记制品。
 6. Hook 信任经过人工复核；Release Manifest、SBOM、校验和、回滚、ADR、CHANGELOG 和 Memory 完整。
-7. G4 GitHub PR 经批准并合并后，才可创建 `v0.2.1` tag 和 GitHub Release。
+7. G4 GitHub PR 经批准并合并后，才可创建 `v0.3.0` tag 和 GitHub Release。
 
 ## 8. 约束、依赖与风险
 

@@ -1,6 +1,6 @@
 # 配置规格
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","CFG-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","CFG-001"]} -->
 
 版本：V2.0-derived-config
 状态：可执行实现规格基线

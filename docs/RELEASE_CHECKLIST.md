@@ -1,12 +1,12 @@
 # 发布检查清单
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"release-manager","requirement_refs":["REQ-1.6.2","RELEASE-001"]} -->
 
 版本：V2.0-derived-release
 状态：可执行实现规格基线
 适用：Windows 本地 CLI、Codex Plugin、项目配置和沙箱运行时。
 
-当前目标为需求 `REQ-1.6.2`、发行版 `0.2.1`、Plugin API/配置/文档/Profile `1.2`、SQLite `0008`。历史候选基线 commit 仅作参考；本清单和 [发布收口矩阵](RELEASE_CLOSURE_MATRIX.md) 中的未勾选项不得因实现完成而自动视为通过。
+当前目标为需求 `REQ-1.6.2`、发行版 `0.3.0`、Plugin API/配置/文档/Profile `1.2`、SQLite `0008`。历史候选基线 commit 仅作参考；本清单和 [发布收口矩阵](RELEASE_CLOSURE_MATRIX.md) 中的未勾选项不得因实现完成而自动视为通过。
 
 ## 1. 版本与依赖
 
@@ -16,7 +16,7 @@
 - [ ] SBOM、依赖 hash 和构建环境信息已生成。
 - [ ] 重大技术变化有 ADR，用户可见变化已写入 CHANGELOG。
 - [ ] `RuntimeVersions` 输出与 pyproject、Plugin manifest、MCP、配置、文档、Profile、数据库及 manifests 完全一致。
-- [ ] Plugin 源 manifest 的基础版本等于 `0.2.1`；候选 ZIP 内 manifest 为精确 `0.2.1`，且 `source_plugin_manifest_version`、`packaged_plugin_version`、`packaged_plugin_manifest_hash` 已由 G4 重算核对。
+- [ ] Plugin 源 manifest 的基础版本等于 `0.3.0`；候选 ZIP 内 manifest 为精确 `0.3.0`，且 `source_plugin_manifest_version`、`packaged_plugin_version`、`packaged_plugin_manifest_hash` 已由 G4 重算核对。
 
 ## 2. Windows 安装与升级
 
@@ -70,4 +70,4 @@
 
 ## 7. 通过标准
 
-任一必选项未完成，发布状态为 `blocked`。只有所有必选项完成、证据可从绑定 Commit/审计区复算、回滚已验证、PR 已合并并获得独立 G4 人工批准，持久化 publish operation 才能创建/对账 `v0.2.1` 和 GitHub Release。本实施请求本身不等同于 G4 发布授权。
+任一必选项未完成，发布状态为 `blocked`。只有所有必选项完成、证据可从绑定 Commit/审计区复算、回滚已验证、PR 已合并并获得独立 G4 人工批准，持久化 publish operation 才能创建/对账 `v0.3.0` 和 GitHub Release。本实施请求本身不等同于 G4 发布授权。

@@ -1,6 +1,6 @@
 # AI-OS 工程治理规范改进方案
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"draft","owner":"product-manager","requirement_refs":["GOV-001","DOC-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"draft","owner":"product-manager","requirement_refs":["GOV-001","DOC-001"]} -->
 
 > 适用对象：Codex / AI Agent 工程治理系统  
 > 文档状态：提案（proposals）——经逐项源码核对后，可执行决策已转入 ADR-0011～0014；本文保留原始提案与核对差异记录  

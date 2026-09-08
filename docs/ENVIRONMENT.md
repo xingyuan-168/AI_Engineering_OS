@@ -1,6 +1,6 @@
 # OCI-First 项目环境治理
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","ENV-001","EXEC-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"architect","requirement_refs":["REQ-1.6.2","ENV-001","EXEC-001"]} -->
 
 ## 1. 目标与边界
 
@@ -31,7 +31,7 @@ V1 提供 Docker 与 Podman 双适配器。`.codex-os/environment.yaml` 显式�
 
 数据库、上传、向量库与其他有状态目录必须使用 named volume、外部存储或批准的持久化挂载，并声明健康检查、备份和恢复命令。G3 在隔离 Compose project name 下验证容器重建、无 `-v` 的 down/up 恢复和 disposable volume round-trip。
 
-`compose down -v`、`volume rm` 与带 volume 的 prune 始终拒绝 Agent 调用。0.2.1 不提供删除真实持久 Volume 的公共 API。
+`compose down -v`、`volume rm` 与带 volume 的 prune 始终拒绝 Agent 调用。运行时不提供删除真实持久 Volume 的公共 API。
 
 ## 5. 两阶段验证
 

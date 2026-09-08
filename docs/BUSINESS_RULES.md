@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 业务与治理规则
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"product-manager","requirement_refs":["REQ-1.6.2"]} -->
 
 这些规则是运行时必须强制执行的产品约束。提示词、说明文字或操作者自觉不能替代程序校验和审计证据。
 
@@ -76,10 +76,10 @@
 
 - `BR-048`：CHANGELOG、Release Manifest 和回滚文档写入 Release Worktree，Review 后合入集成分支。
 - `BR-049`：Wheel、压缩包、SBOM 和校验和写入 `.codex-os/artifacts/<run-id>/` 并被 Git 忽略；SQLite 与 Manifest 保存 hash、来源 Commit 和生成环境。
-- `BR-050`：需求基线为 `REQ-1.6.2`；软件、CLI、Plugin 核心版本为 `0.2.1`；Plugin API、配置、文档与 Profile Schema 为 `1.2`；SQLite 通过 `0001-0008` 管理。
+- `BR-050`：需求基线为 `REQ-1.6.2`；软件、CLI、Plugin 核心版本为 `0.3.0`；Plugin API、配置、文档与 Profile Schema 为 `1.2`；SQLite 通过 `0001-0008` 管理。
 - `BR-051`：Release Manifest 必须绑定版本、构建 Commit、GitHub PR、merge Commit、tag、文档版本、配置 hash、依赖锁 hash、制品 hash 和 Memory 记录。
 - `BR-052`：G4 审批必须携带 PR 编号、URL、merge Commit、版本和独立发布授权；Runtime 必须验证 PR head 对应集成分支且目标分支包含集成提交。
-- `BR-053`：只有 G4 批准后才允许创建并推送 annotated tag `v0.2.1`；GitHub Release 失败时 Workflow 保持阻塞。
+- `BR-053`：只有 G4 批准后才允许创建并推送 annotated tag `v0.3.0`；GitHub Release 失败时 Workflow 保持阻塞。
 - `BR-054`：本版本不包含生产部署；发布授权不能隐含部署权限。
 
 ## 9. 迁移与兼容

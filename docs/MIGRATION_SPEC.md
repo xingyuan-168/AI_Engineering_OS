@@ -1,6 +1,6 @@
 # 数据迁移规格
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"review-ready","owner":"database-engineer","requirement_refs":["REQ-1.6.2","CFG-001","VERSION-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"database-engineer","requirement_refs":["REQ-1.6.2","CFG-001","VERSION-001"]} -->
 
 版本：V2.0-derived-migration
 状态：可执行实现规格基线
@@ -8,7 +8,7 @@
 
 ## 1. Schema 版本
 
-公共配置/文档/Profile Schema 使用 `MAJOR.MINOR`，0.2.1 目标为 `1.2`，兼容读取 1.0/1.1。SQLite 使用四位追加迁移编号，目标为 `0008`。不兼容升级禁止静默执行；每条 SQLite 迁移必须确定、可审计、校验 checksum 并写入迁移记录。
+公共配置/文档/Profile Schema 使用 `MAJOR.MINOR`，当前目标为 `1.2`，0.3.0 治理收敛期间随对应 ADR 独立提交提升到 `1.3`，兼容读取 1.0/1.1。SQLite 使用四位追加迁移编号，目标为 `0008`。不兼容升级禁止静默执行；每条 SQLite 迁移必须确定、可审计、校验 checksum 并写入迁移记录。
 
 ## 2. 表和约束
 

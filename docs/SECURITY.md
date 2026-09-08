@@ -1,6 +1,6 @@
 # AI Engineering OS 0.2.0 安全设计
 
-<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.2.1","status":"approved","owner":"security-reviewer","requirement_refs":["REQ-1.6.2","REPO-001","GATE-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","HYGIENE-001","MEMORY-001"]} -->
+<!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"approved","owner":"security-reviewer","requirement_refs":["REQ-1.6.2","REPO-001","GATE-001","HANDOFF-001","WORKTREE-001","RELEASE-001","EXEC-001","HYGIENE-001","MEMORY-001"]} -->
 
 安全目标是让不受信的仓库内容、Agent 输出、远端响应、依赖和日志无法绕过路径、执行、证据、审批与发布边界。所有高风险失败默认阻塞，不降级到宿主执行或人工口头确认。
 
@@ -60,7 +60,7 @@
 
 ### 5.1 镜像
 
-0.2.1 目标镜像：
+0.3.0 目标镜像：
 
 ```text
 python:3.12.14-bookworm@sha256:852282e520cc1754221fb2e061ab35b13b596e8112a731d60e2a8b471c973b7a
@@ -105,7 +105,7 @@ ExecutionService 检查 task lease、Commit 和 clean baseline，写 execution i
 
 - 依赖只从 `uv.lock` 安装，使用 `uv lock --check`；变更更新 License、SBOM、审计和 ADR（重大变化）。
 - `pip-audit` 报告与来源 Commit 绑定；无法查询 advisory 源时状态是 unavailable，不是假定通过。
-- Plugin validator 校验 manifest、MCP Schema、Skill frontmatter、Agent Profile 和 Hook fixture；Plugin 版本与核心 0.2.1/Plugin API 1.2 一致。
+- Plugin validator 校验 manifest、MCP Schema、Skill frontmatter、Agent Profile 和 Hook fixture；Plugin 版本与核心 0.3.0/Plugin API 1.2 一致。
 - 依赖与扫描缓存只能由经网络审批的 verification prepare 生成，分别绑定 `uv.lock` hash、Linux OCI 平台、Python 版本、执行镜像、时间和来源；正式 Gate 只离线消费逐文件 hash 校验且无 symlink/junction 的只读 wheelhouse、pip-audit snapshot 和非空 Trivy DB snapshot。
 - `.codex/` Hook 必须由人复核信任；Hook 只能调用受限入口，不携带 Secret，不把内部 Workflow 事件冒充 Host 生命周期事件。
 - Plugin `PreToolUse` Hook 是防御纵深和即时提示，不是权限、路径或命令安全边界。它拦截直接出现的 force push、Git ref 删除及 Windows/Unix 宽范围递归删除，但不承诺解释变量拼接、别名、splatting 或间接脚本；最终控制必须由 Runtime 的结构化 argv allowlist、风险分级、路径校验、审批和 OCI 隔离执行。项目 `.codex/hooks.json` 有意不复制插件规则；插件未启用或 Hook 未经信任时，Runtime 仍必须 fail closed。
