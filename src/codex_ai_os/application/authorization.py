@@ -129,6 +129,11 @@ HOST_COMMAND_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
         "Deleting a Git ref directly is forbidden.",
     ),
     (
+        re.compile(r"\bsed\b[^;\r\n|]*?(?:^|\s)-i(?:\s|$)", re.I),
+        "HOST_SED_IN_PLACE",
+        "In-place file rewriting with sed -i must run through the governed task worktree tools.",
+    ),
+    (
         re.compile(
             r"\b(?:python(?:3)?\s+-m\s+)?pip(?:3)?\s+(?:install|wheel)\b|"
             r"\b(?:npm|pnpm|yarn)\s+(?:i|install|add|build)\b|"

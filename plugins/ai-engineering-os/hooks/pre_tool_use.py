@@ -1,13 +1,31 @@
-"""Block obvious destructive host commands as a defense-in-depth guard."""
+"""Codex PreToolUse governance entry point (ADR-0011).
+
+Two-layer design:
+
+1. Local defense-in-depth regexes run first. They are a degraded copy of the
+   runtime's HOST_COMMAND_RULES and catch obviously destructive host
+   commands even when the runtime cannot be reached.
+2. Initialized AI-OS projects are adjudicated by the authorization kernel
+   through ``codex-os authorize-hook``: apply_patch target paths and shell
+   redirect targets receive the same path policy as MCP/CLI operations.
+
+The hook remains a best-effort enforcement point: a host can disable hooks,
+so the runtime entry checks and post-hoc Git evidence validation stay the
+authoritative boundaries.
+"""
 
 from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+# Degraded fallback rules; the authoritative list lives in
+# codex_ai_os.application.authorization.HOST_COMMAND_RULES.
 _FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"\bgit\s+push\b[^\r\n]*(?:--force(?:-with-lease)?|(?:^|\s)-f(?:\s|$))", re.I),
@@ -64,6 +82,10 @@ _FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
         "Deleting a Git ref directly is forbidden.",
     ),
     (
+        re.compile(r"\bsed\b[^;\r\n|]*?(?:^|\s)-i(?:\s|$)", re.I),
+        "In-place file rewriting with sed -i must run through governed worktree tools.",
+    ),
+    (
         re.compile(
             r"\b(?:python(?:3)?\s+-m\s+)?pip(?:3)?\s+(?:install|wheel)\b|"
             r"\b(?:npm|pnpm|yarn)\s+(?:i|install|add|build)\b|"
@@ -94,28 +116,31 @@ _FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 
+_GATEWAY_TOOLS = {"Bash", "apply_patch"}
+
 
 def main() -> int:
     payload = _read_payload()
-    tool_input = payload.get("tool_input")
-    command = str(tool_input.get("command", "")) if isinstance(tool_input, dict) else ""
+    tool_name = str(payload.get("tool_name", ""))
+    command = _command_of(payload)
+
     for pattern, reason in _FORBIDDEN:
         if pattern.search(command):
-            print(
-                json.dumps(
-                    {
-                        "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse",
-                            "permissionDecision": "deny",
-                            "permissionDecisionReason": reason,
-                        }
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            print(_decision_json("deny", reason))
             return 0
 
-    cwd = Path(str(payload.get("cwd", "."))).resolve()
+    if tool_name in _GATEWAY_TOOLS:
+        gateway_output = _authorize_via_runtime(payload)
+        if gateway_output:
+            # DENY or ASK: enforce the runtime decision verbatim.
+            print(gateway_output)
+            return 0
+        if gateway_output is not None:
+            # Explicit allow from the runtime: keep the advisory context below.
+            pass
+        # Runtime unreachable (None): fall through to advisory-only behaviour.
+
+    cwd = Path(str(payload.get("cwd", ".") or ".")).resolve()
     if (cwd / ".codex-os" / "project.yaml").is_file():
         print(
             json.dumps(
@@ -133,6 +158,57 @@ def main() -> int:
             )
         )
     return 0
+
+
+def _authorize_via_runtime(payload: dict[str, Any]) -> str | None:
+    """Return the runtime's JSON decision, "" for allow, None when unreachable."""
+
+    executable = shutil.which("codex-os")
+    if executable is None:
+        return None
+    try:
+        result = subprocess.run(
+            [executable, "authorize-hook"],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    output = result.stdout.strip()
+    if not output:
+        return ""
+    try:
+        decision = json.loads(output)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decision, dict):
+        return None
+    return json.dumps(decision, ensure_ascii=False)
+
+
+def _command_of(payload: dict[str, Any]) -> str:
+    tool_input = payload.get("tool_input")
+    if isinstance(tool_input, dict):
+        return str(tool_input.get("command", ""))
+    return ""
+
+
+def _decision_json(decision: str, reason: str) -> str:
+    return json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": decision,
+                "permissionDecisionReason": reason,
+            }
+        },
+        ensure_ascii=False,
+    )
 
 
 def _read_payload() -> dict[str, Any]:

@@ -15,6 +15,7 @@ from codex_ai_os.application.environment_operations import (
     EnvironmentOperationService,
 )
 from codex_ai_os.application.execution import ExecutionServiceError
+from codex_ai_os.application.hook_gateway import authorize_hook_payload
 from codex_ai_os.application.maintenance import (
     DatabaseMigrationService,
     HostOperationMaintenanceService,
@@ -506,6 +507,34 @@ def gate_validate_command(
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
         return
     _emit_gate_preflight(result, json_output=json_output)
+
+
+@app.command("authorize-hook")
+def authorize_hook_command() -> None:
+    """Adjudicate one Codex PreToolUse hook payload from stdin (ADR-0011).
+
+    Reads the hook JSON payload from stdin and prints the hook JSON decision
+    (allow is printed as an empty output so the host keeps its default flow).
+    The command exits 0 even for denials; a non-zero exit signals that the
+    runtime could not adjudicate and the hook must apply its degraded
+    fallback rules.
+    """
+
+    import sys
+
+    try:
+        payload: object = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError, ValueError):
+        raise typer.Exit(code=1) from None
+    if not isinstance(payload, dict):
+        raise typer.Exit(code=1)
+    try:
+        output = authorize_hook_payload(payload)
+    except Exception:
+        # Fail-closed signalling: the hook script applies its degraded rules.
+        raise typer.Exit(code=1) from None
+    if output:
+        typer.echo(json.dumps(output, ensure_ascii=False))
 
 
 @app.command("mcp")
