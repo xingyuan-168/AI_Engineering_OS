@@ -4,6 +4,7 @@
 
 ## [Unreleased] - 2026-08-26
 
+- 0.3.0 Authorization Consolidation lands (ADR-0011): a single governance authorization kernel now issues fail-closed ALLOW/ASK/DENY decisions over role boundaries, protected paths, maintenance-mode approval gating, task scope and host command screening; the four divergent inline path matchers (Git evidence, artifact checks, environment operations, evidence findings) converge onto one shared domain-level matcher; and the PreToolUse Hook becomes a kernel client via `codex-os authorize-hook`, parsing apply_patch targets and shell redirect destinations with the local regex list kept only as a degraded fallback.
 - 0.3.0 Governance Consolidation milestone opens: Runtime/Plugin core versions advance to `0.3.0` while API/config/document/Profile Schema stay `1.2` and SQLite stays `0008` until the corresponding ADRs land; the v0.3 consolidation proposal is archived under `docs/proposals/`.
 - 0.2.1 adopts OCI-first project environments: new projects scaffold an explicit Podman/Docker contract, legacy projects require governed adoption, and G2-G4 bind Compose, image, persistence, rebuild and host-cleanliness evidence (ADR-0007).
 - Runtime and Plugin core versions advance to 0.2.1 while API/config/Profile Schema remain 1.2 and SQLite advances to 0008 (operation reliability, ADR-0008); this repository now carries its own digest-pinned, internal-network Compose contract for self-verification.
