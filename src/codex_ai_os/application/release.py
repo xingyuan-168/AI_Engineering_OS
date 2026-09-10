@@ -6,7 +6,7 @@ import hashlib
 import io
 import json
 import sqlite3
-import subprocess
+import subprocess  # noqa: F401  # monkeypatch seam for release tests
 import tomllib
 import uuid
 import zipfile
@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from codex_ai_os.adapters.docker import MountKind, SandboxMount, SandboxRequest
+from codex_ai_os.adapters.git import GitRunner as _SharedGitRunner
 from codex_ai_os.application.execution import ExecutionService, ExecutionServiceError
 from codex_ai_os.application.plugin_packaging import (
     PluginPackageError,
@@ -507,12 +508,8 @@ class ReleaseCandidateService:
                 )
             return
         manifest_path = str(row["candidate_manifest_path"])
-        manifest = subprocess.run(
-            ["git", "-C", str(self.root), "show", f"{commit}:{manifest_path}"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            check=False,
-            timeout=15,
+        manifest = _SharedGitRunner(self.root).run_bytes(
+            "show", f"{commit}:{manifest_path}", timeout=15
         )
         if manifest.returncode != 0 or hashlib.sha256(manifest.stdout).hexdigest() != str(
             row["candidate_manifest_hash"]
@@ -586,19 +583,11 @@ class ReleaseCandidateService:
         source_commit: str,
         staging: Path,
     ) -> str:
-        completed = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(worktree),
-                "archive",
-                "--format=zip",
-                source_commit,
-                "plugins/ai-engineering-os",
-            ],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            check=False,
+        completed = _SharedGitRunner(worktree).run_bytes(
+            "archive",
+            "--format=zip",
+            source_commit,
+            "plugins/ai-engineering-os",
             timeout=30,
         )
         if completed.returncode != 0:
@@ -994,25 +983,15 @@ class ReleaseCandidateService:
 
     @staticmethod
     def _git_head(worktree: Path) -> str:
-        completed = subprocess.run(
-            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            check=False,
-            timeout=15,
-        )
+        completed = _SharedGitRunner(worktree).run_bytes("rev-parse", "HEAD", timeout=15)
         if completed.returncode != 0:
             raise WorkflowError("GIT_EVIDENCE_INVALID", "cannot resolve Release HEAD", 40)
         return completed.stdout.decode("utf-8", errors="strict").strip()
 
     @staticmethod
     def _git_epoch(worktree: Path, commit: str) -> int:
-        completed = subprocess.run(
-            ["git", "-C", str(worktree), "show", "-s", "--format=%ct", commit],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            check=False,
-            timeout=15,
+        completed = _SharedGitRunner(worktree).run_bytes(
+            "show", "-s", "--format=%ct", commit, timeout=15
         )
         if completed.returncode != 0:
             raise WorkflowError(

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from codex_ai_os.adapters.git import GitRunner as _SharedGitRunner
 from codex_ai_os.domain.config import GitPushPolicy, ProjectConfig
 from codex_ai_os.domain.governance import RepositoryCheckReport, RepositoryFinding
 from codex_ai_os.domain.ids import new_id
@@ -20,7 +21,11 @@ from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 
-GitRunner = Callable[[list[str], Path, float], subprocess.CompletedProcess[bytes]]
+# Backwards-compatible re-export: the shared Git subprocess runner now lives in
+# adapters.git (ADR-0011 convergence). Injected runners keep the legacy
+# callable contract (full command list, cwd, timeout).
+GitRunner = _SharedGitRunner
+_GitProcessRunner = Callable[[list[str], Path, float], subprocess.CompletedProcess[bytes]]
 
 _EXCLUDED_TREES = {
     ".git",
@@ -98,7 +103,7 @@ class RepositoryGovernanceService:
         self,
         project_root: Path,
         *,
-        runner: GitRunner | None = None,
+        runner: _GitProcessRunner | None = None,
         config: ProjectConfig | None = None,
     ) -> None:
         self.root = project_root.resolve()
@@ -497,14 +502,9 @@ def _stdout(process: subprocess.CompletedProcess[bytes]) -> str:
 def _run_git(
     arguments: list[str], cwd: Path, timeout: float
 ) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
-        arguments,
-        cwd=cwd,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        check=False,
-        timeout=timeout,
-    )
+    # ADR-0011: single Git subprocess wrapper; the first three entries are the
+    # ["git", "-C", <cwd>] prefix rebuilt identically by the shared runner.
+    return _SharedGitRunner(cwd).run_bytes(*arguments[3:], timeout=timeout)
 
 
 def _is_link_like(path: Path) -> bool:

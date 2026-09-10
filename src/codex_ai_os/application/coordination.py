@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from codex_ai_os.adapters.git import GitRunner as _SharedGitRunner
 from codex_ai_os.domain.config import GitPushPolicy
 from codex_ai_os.domain.coordination import HandoffReviewInput, TaskGroupView
 from codex_ai_os.domain.ids import new_id
@@ -24,7 +25,8 @@ from codex_ai_os.infrastructure.coordination import (
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.path_codec import path_from_state, state_path
 
-GitRunner = Callable[[list[str], Path, float], subprocess.CompletedProcess[bytes]]
+GitRunner = _SharedGitRunner
+_GitProcessRunner = Callable[[list[str], Path, float], subprocess.CompletedProcess[bytes]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +41,7 @@ class IntegrationResult:
 
 
 class CoordinationService:
-    def __init__(self, project_root: Path, *, runner: GitRunner | None = None) -> None:
+    def __init__(self, project_root: Path, *, runner: _GitProcessRunner | None = None) -> None:
         self.root = project_root.resolve()
         self.config = load_project_config(self.root)
         self.database = Database(self.root / ".codex-os" / "state" / "state.db")
@@ -432,14 +434,9 @@ class CoordinationService:
 
 
 def _run_git(arguments: list[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
-        arguments,
-        cwd=cwd,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        check=False,
-        timeout=timeout,
-    )
+    # ADR-0011: single Git subprocess wrapper; the first three entries are the
+    # ["git", "-C", <cwd>] prefix rebuilt identically by the shared runner.
+    return _SharedGitRunner(cwd).run_bytes(*arguments[3:], timeout=timeout)
 
 
 def _stderr(process: subprocess.CompletedProcess[bytes]) -> str:

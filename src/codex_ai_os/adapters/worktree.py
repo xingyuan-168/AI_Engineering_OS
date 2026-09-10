@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from codex_ai_os.adapters.git import GitRunner
+
 
 class GitWorktreeError(RuntimeError):
     """Raised when a worktree operation violates isolation or Git policy."""
@@ -294,13 +296,7 @@ class GitWorktreeManager:
         allowed_returncodes: tuple[int, ...] = (0,),
     ) -> subprocess.CompletedProcess[bytes]:
         try:
-            result = subprocess.run(
-                ["git", "-C", str(cwd), *arguments],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                check=False,
-                timeout=self.timeout_seconds,
-            )
+            result = GitRunner(cwd).run_bytes(*arguments, timeout=self.timeout_seconds)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise GitWorktreeError(
                 f"Git command could not run: git {' '.join(arguments)}"

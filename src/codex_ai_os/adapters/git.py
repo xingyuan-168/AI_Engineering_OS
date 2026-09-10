@@ -18,6 +18,32 @@ class GitEvidenceError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class GitRunner:
+    """Single internal Git subprocess wrapper shared across the runtime."""
+
+    root: Path
+
+    def run(self, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(self.root), *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+            encoding="utf-8",
+        )
+
+    def run_bytes(self, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            ["git", "-C", str(self.root), *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class GitEvidenceResult:
     branch: str
     commit_sha: str
@@ -52,6 +78,7 @@ class GitEvidenceService:
         self.require_push = require_push
         self.base_commit = base_commit
         self.allowed_paths = allowed_paths
+        self._runner = GitRunner(self.root)
 
     def verify(self, completion: TaskCompletion) -> GitEvidenceResult:
         if completion.change_kind is not ChangeKind.REPOSITORY:
@@ -178,13 +205,7 @@ class GitEvidenceService:
 
     def _bytes(self, *arguments: str) -> bytes:
         try:
-            result = subprocess.run(
-                ["git", "-C", str(self.root), *arguments],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                check=False,
-                timeout=self.timeout_seconds,
-            )
+            result = self._runner.run_bytes(*arguments, timeout=self.timeout_seconds)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise GitEvidenceError(f"Git command could not run: git {' '.join(arguments)}") from exc
         if result.returncode != 0:
