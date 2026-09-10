@@ -1,94 +1,48 @@
-"""Formal GitHub readiness and repository hygiene enforcement."""
+"""Formal GitHub readiness and repository hygiene (governance-core, ADR-0016).
+
+input/ is protected user material: it is never scanned and never flagged.
+output/ must stay a pure deliverable area (no caches, temp files, backups,
+or source copies). Legacy document trees such as docs/archive must not
+exist because Git history is the only archive. Copy-style version
+directories and files, tracked pollution, and unresolved conflicts come
+from the shared gate hygiene check so the repository check and the gates
+always agree.
+"""
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import re
-import sqlite3
-import subprocess
-from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from codex_ai_os.adapters.git import GitRunner as _SharedGitRunner
+from codex_ai_os.adapters.git import GitRunner
+from codex_ai_os.core.gates import GateFinding, hygiene_findings
 from codex_ai_os.domain.config import GitPushPolicy, ProjectConfig
 from codex_ai_os.domain.governance import RepositoryCheckReport, RepositoryFinding
-from codex_ai_os.domain.ids import new_id
-from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import load_project_config
-from codex_ai_os.infrastructure.database import Database
 
-# Backwards-compatible re-export: the shared Git subprocess runner now lives in
-# adapters.git (ADR-0011 convergence). Injected runners keep the legacy
-# callable contract (full command list, cwd, timeout).
-GitRunner = _SharedGitRunner
-_GitProcessRunner = Callable[[list[str], Path, float], subprocess.CompletedProcess[bytes]]
-
-_EXCLUDED_TREES = {
-    ".git",
-    ".venv",
-    ".worktrees",
-    "node_modules",
-    "site-packages",
-    "__pycache__",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".mypy_cache",
-}
-_AIOS_EXCLUDED = {"state", "logs", "cache", "tmp", "artifacts"}
-_FORBIDDEN_DIRECTORIES = {
-    "old",
-    "backup",
-    "copy",
-    "final",
-    "new",
-    "temp",
-    "tmp",
-    "debug",
-    "src_backup",
-}
-_REQUIRED_IGNORE_RULES = {
-    ".codex-os/state/",
-    ".codex-os/logs/",
-    ".codex-os/cache/",
-    ".codex-os/tmp/",
-    ".codex-os/artifacts/",
-    ".worktrees/",
-    ".venv/",
-    "__pycache__/",
-    "*.py[cod]",
-    ".pytest_cache/",
-    ".ruff_cache/",
-    ".env",
-    "node_modules/",
-    "dist/",
-    "build/",
-    "*.log",
-}
-_TRACKED_POLLUTION = re.compile(
-    r"(^|/)(?:__pycache__|\.pytest_cache|\.ruff_cache|node_modules|dist|build|"
-    r"\.codex-os/(?:state|logs|cache|tmp|artifacts))(?:/|$)|"
-    r"(?:\.py[co]|\.log|\.bak|\.env)$",
+# Legacy archive trees must not exist in the worktree; Git history is the
+# only archive. input/ is deliberately absent: it is protected user input.
+_FORBIDDEN_LEGACY_DOC_TREES = ("docs/archive",)
+_OUTPUT_IMPURE = re.compile(
+    r"(?:\.(?:tmp|temp|log|bak|pyc|pyo|orig|rej)$"
+    r"|^(?:tmp|temp|debug|scratch|oneoff|one_off)[\w.-]*$)",
     re.IGNORECASE,
 )
-_FORBIDDEN_FILE = re.compile(
-    r"^(?:final|backup)\.py$|^fix_.+_v\d+\.py$|^test_new\.py$|\.bak$",
-    re.IGNORECASE,
+_OUTPUT_FORBIDDEN_NAMES = frozenset(
+    {"backup", "copy", "old", "final", "temp", "tmp", "debug", "cache", "__pycache__"}
 )
-# Legacy document trees must not exist in the worktree; Git history is the only
-# archive (see BR-070).
-_FORBIDDEN_LEGACY_DOC_TREES = ("docs/archive", "input")
-# wheel `distribution-version-...whl` and sdist `distribution-version.tar.gz`.
-_ARTIFACT_VERSION = re.compile(
-    r"^[^-]+-([0-9]+\.[0-9]+\.[0-9]+(?:\+[0-9A-Za-z.]+)?)(?:-[^-]+)*\.(?:whl|tar\.gz)$",
-    re.IGNORECASE,
-)
-_SECRET = re.compile(
-    r"(?i)(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
-    r"(?:password|token|secret|api[_-]?key)\s*[=:]\s*[^\s$<{][^\s]*)"
+_HYGIENE_CODES = frozenset(
+    {
+        "COPY_STYLE_DIRECTORY",
+        "COPY_STYLE_FILE",
+        "TRACKED_POLLUTION",
+        "GITIGNORE_MISSING",
+        "OUTPUT_IMPURE",
+        "LEGACY_DOC_TREE",
+        "SECRET_DETECTED",
+    }
 )
 
 
@@ -103,384 +57,175 @@ class RepositoryGovernanceService:
         self,
         project_root: Path,
         *,
-        runner: _GitProcessRunner | None = None,
+        runner: GitRunner | None = None,
         config: ProjectConfig | None = None,
     ) -> None:
         self.root = project_root.resolve()
         self.config = config or load_project_config(self.root)
-        self.runner = runner or _run_git
-        self.database = Database(self.root / ".codex-os" / "state" / "state.db")
+        self.runner = runner or GitRunner(self.root)
 
-    def check(
-        self,
-        *,
-        target_branch: str | None = None,
-        run_id: str | None = None,
-        persist: bool = True,
-    ) -> RepositoryCheckReport:
-        target = target_branch or self.config.target_branch
+    def check(self) -> RepositoryCheckReport:
+        """Evaluate GitHub readiness, hygiene, and output purity."""
+
+        git = self.runner
         fixture = self.config.git_push_policy is GitPushPolicy.FIXTURE_LOCAL_ONLY
         mode = "fixture_local_only" if fixture else "formal"
-        findings: list[RepositoryFinding] = []
+        findings: list[GateFinding] = []
         head: str | None = None
-        upstream: str | None = None
-        remote_name: str | None = None
         remote_host: str | None = None
 
-        top = self._git("rev-parse", "--show-toplevel")
+        top = git.run("rev-parse", "--show-toplevel")
         if top.returncode != 0:
-            findings.append(_finding("NOT_GIT_REPOSITORY", "project is not a Git repository"))
+            findings.append(
+                GateFinding("NOT_GIT_REPOSITORY", "project is not a Git repository")
+            )
         else:
-            reported = Path(_stdout(top)).resolve()
+            reported = Path(top.stdout.strip()).resolve()
             if reported != self.root:
                 findings.append(
-                    _finding(
+                    GateFinding(
                         "GIT_ROOT_MISMATCH",
                         f"Git top-level differs from configured project root: {reported}",
                     )
                 )
-            head_result = self._git("rev-parse", "HEAD")
+            head_result = git.run("rev-parse", "HEAD")
             if head_result.returncode == 0:
-                head = _stdout(head_result)
+                head = head_result.stdout.strip()
             else:
-                findings.append(_finding("HEAD_MISSING", "repository has no committed HEAD"))
+                findings.append(GateFinding("HEAD_MISSING", "repository has no committed HEAD"))
 
-            conflicts = self._git("diff", "--name-only", "--diff-filter=U")
-            if conflicts.returncode != 0 or _stdout(conflicts):
-                findings.append(
-                    _finding("UNRESOLVED_CONFLICT", "repository contains unresolved conflicts")
-                )
-            dirty = self._git("status", "--porcelain", "--untracked-files=normal")
-            if dirty.returncode != 0 or _stdout(dirty):
-                findings.append(_finding("WORKTREE_DIRTY", "project worktree is not clean"))
-
+            findings.extend(hygiene_findings(self.root, git))
+            findings.extend(_legacy_tree_findings(self.root))
+            findings.extend(_output_purity_findings(self.root))
             if not fixture:
-                remote_name = "origin"
-                remote = self._git("remote", "get-url", remote_name)
-                if remote.returncode != 0:
-                    findings.append(
-                        _finding("GITHUB_REMOTE_REQUIRED", "origin remote is required")
-                    )
-                else:
-                    remote_url = _stdout(remote)
-                    remote_host = _github_host(remote_url)
-                    if remote_host not in self.config.github_hosts:
-                        findings.append(
-                            _finding(
-                                "GITHUB_REMOTE_REQUIRED",
-                                "remote must use an allowed GitHub HTTPS or SSH host",
-                            )
-                        )
-                    reachable = self._git("ls-remote", "--exit-code", remote_name)
-                    if reachable.returncode != 0:
-                        findings.append(
-                            _finding("REMOTE_UNREACHABLE", "GitHub remote is unreachable")
-                        )
+                findings.extend(_github_findings(git, self.config.github_hosts))
+                remote_host = _configured_remote_host(git)
 
-                upstream_result = self._git("rev-parse", "--abbrev-ref", "@{upstream}")
-                if upstream_result.returncode != 0:
-                    findings.append(_finding("UPSTREAM_MISSING", "current branch has no upstream"))
-                else:
-                    upstream = _stdout(upstream_result)
-                    if head is not None:
-                        pushed = self._git("merge-base", "--is-ancestor", head, "@{upstream}")
-                        if pushed.returncode != 0:
-                            findings.append(
-                                _finding("HEAD_NOT_PUSHED", "current HEAD is not in upstream")
-                            )
-
-                target_result = self._git(
-                    "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{target}"
-                )
-                if target_result.returncode != 0:
-                    findings.append(
-                        _finding(
-                            "TARGET_BRANCH_MISSING",
-                            f"target branch does not exist on origin: {target}",
-                        )
-                    )
-
-        findings.extend(self._hygiene_findings())
-        ordered = tuple(
-            sorted(findings, key=lambda item: (item.code, item.path or "", item.message))
-        )
-        payload = {
-            "mode": mode,
-            "root": self.root.as_posix(),
-            "target_branch": target,
-            "head_commit": head,
-            "remote_name": remote_name,
-            "remote_host": remote_host,
-            "upstream_ref": upstream,
-            "findings": [item.model_dump(mode="json") for item in ordered],
-        }
-        check_hash = hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        hygiene_codes = {
-            "FORBIDDEN_DIRECTORY",
-            "FORBIDDEN_FILE",
-            "TRACKED_POLLUTION",
-            "GITIGNORE_INCOMPLETE",
-            "PATH_ESCAPE",
-            "SECRET_DETECTED",
-        }
+        ordered = _convert(findings)
         report = RepositoryCheckReport(
             repository_ready=not any(item.blocking for item in ordered),
             mode=mode,
             root=self.root.as_posix(),
-            target_branch=target,
             head_commit=head,
-            remote_name=remote_name,
             remote_host=remote_host,
-            upstream_ref=upstream,
-            hygiene_ok=not any(item.code in hygiene_codes for item in ordered),
+            hygiene_ok=not any(item.code in _HYGIENE_CODES for item in ordered),
             findings=ordered,
-            check_hash=check_hash,
-            checked_at=_utc_now(),
         )
-        if persist:
-            self._persist(report, run_id=run_id)
         return report
 
-    def require_ready(self, *, target_branch: str | None = None) -> RepositoryCheckReport:
-        report = self.check(target_branch=target_branch)
+    def require_ready(self) -> RepositoryCheckReport:
+        report = self.check()
         if not report.repository_ready:
             first = next(item for item in report.findings if item.blocking)
             raise RepositoryGovernanceError(first.code, first.message)
         return report
 
-    def _git(self, *arguments: str) -> subprocess.CompletedProcess[bytes]:
-        try:
-            return self.runner(["git", "-C", str(self.root), *arguments], self.root, 30.0)
-        except (OSError, subprocess.SubprocessError) as exc:
-            return subprocess.CompletedProcess([], 1, b"", str(exc).encode())
 
-    def _hygiene_findings(self) -> list[RepositoryFinding]:
-        findings: list[RepositoryFinding] = []
-        findings.extend(self._stale_artifact_findings())
-        gitignore = self.root / ".gitignore"
-        if not gitignore.is_file():
-            findings.append(_finding("GITIGNORE_INCOMPLETE", ".gitignore is required"))
-        else:
-            rules = {
-                line.strip().replace("\\", "/")
-                for line in gitignore.read_text(encoding="utf-8").splitlines()
-                if line.strip() and not line.lstrip().startswith("#")
-            }
-            missing = sorted(_REQUIRED_IGNORE_RULES - rules)
-            if missing:
-                findings.append(
-                    _finding(
-                        "GITIGNORE_INCOMPLETE",
-                        f".gitignore is missing required rules: {missing}",
-                        path=".gitignore",
-                    )
-                )
-
-        tracked_result = self._git("ls-files", "-z")
-        tracked = (
-            [item for item in tracked_result.stdout.decode(errors="replace").split("\0") if item]
-            if tracked_result.returncode == 0
-            else []
+def _github_findings(git: GitRunner, github_hosts: frozenset[str]) -> list[GateFinding]:
+    findings: list[GateFinding] = []
+    remote = git.run("remote", "get-url", "origin")
+    if remote.returncode != 0:
+        findings.append(
+            GateFinding(
+                "GITHUB_REMOTE_REQUIRED",
+                "origin remote is required before formal implementation",
+            )
         )
-        for relative in tracked:
-            normalized = relative.replace("\\", "/")
-            if _TRACKED_POLLUTION.search(normalized):
-                findings.append(
-                    _finding(
-                        "TRACKED_POLLUTION",
-                        "generated, runtime, log, environment, or dependency content is tracked",
-                        path=normalized,
-                    )
-                )
-            candidate = self.root / relative
-            if candidate.is_file() and candidate.stat().st_size <= 2 * 1024 * 1024:
-                try:
-                    content = candidate.read_text(encoding="utf-8")
-                except (OSError, UnicodeError):
-                    continue
-                if _SECRET.search(content):
-                    findings.append(
-                        _finding(
-                            "SECRET_DETECTED",
-                            "tracked content matches a Secret pattern",
-                            path=normalized,
-                        )
-                    )
-
-        for current, directories, files in os.walk(self.root, topdown=True, followlinks=False):
-            current_path = Path(current)
-            relative_dir = current_path.relative_to(self.root)
-            kept: list[str] = []
-            for name in directories:
-                relative = relative_dir / name
-                folded = name.casefold()
-                if folded in _EXCLUDED_TREES or (
-                    relative.parts[:1] == (".codex-os",) and folded in _AIOS_EXCLUDED
-                ):
-                    continue
-                candidate = current_path / name
-                if _is_link_like(candidate):
-                    try:
-                        resolved = candidate.resolve(strict=True)
-                    except OSError:
-                        resolved = candidate
-                    if not resolved.is_relative_to(self.root):
-                        findings.append(
-                            _finding(
-                                "PATH_ESCAPE",
-                                "symlink or junction escapes the project root",
-                                path=relative.as_posix(),
-                            )
-                        )
-                    continue
-                if folded in _FORBIDDEN_DIRECTORIES or re.fullmatch(r"v\d+", folded):
-                    findings.append(
-                        _finding(
-                            "FORBIDDEN_DIRECTORY",
-                            "copy-style or temporary version directory is forbidden",
-                            path=relative.as_posix(),
-                        )
-                    )
-                if relative.as_posix().casefold() in _FORBIDDEN_LEGACY_DOC_TREES:
-                    findings.append(
-                        _finding(
-                            "UNDECLARED_LEGACY_DOCS",
-                            "archived or legacy document tree is forbidden in the "
-                            "worktree; Git history is the only archive",
-                            path=relative.as_posix(),
-                        )
-                    )
-                    continue
-                kept.append(name)
-            directories[:] = kept
-            for name in files:
-                if _FORBIDDEN_FILE.search(name):
-                    findings.append(
-                        _finding(
-                            "FORBIDDEN_FILE",
-                            "copy-style, temporary, or backup file is forbidden",
-                            path=(relative_dir / name).as_posix(),
-                        )
-                    )
         return findings
+    url = remote.stdout.strip()
+    host = _remote_host(url)
+    if host is None or host not in {value.casefold() for value in github_hosts}:
+        findings.append(
+            GateFinding(
+                "GITHUB_REMOTE_REQUIRED",
+                "remote must use an allowed GitHub HTTPS or SSH host: " + repr(url),
+            )
+        )
+        return findings
+    reachable = git.run("ls-remote", "origin")
+    if reachable.returncode != 0:
+        detail = (reachable.stderr or reachable.stdout).strip().splitlines()
+        findings.append(
+            GateFinding(
+                "REMOTE_UNREACHABLE",
+                "GitHub remote is unreachable: "
+                + (detail[-1] if detail else "git ls-remote exit " + str(reachable.returncode)),
+            )
+        )
+    return findings
 
-    def _stale_artifact_findings(self) -> list[RepositoryFinding]:
-        """BR-071: local build artifacts must match the current runtime version."""
-        findings: list[RepositoryFinding] = []
-        dist = self.root / "dist"
-        if not dist.is_dir():
-            return findings
-        for item in sorted(dist.iterdir()):
-            match = _ARTIFACT_VERSION.match(item.name)
-            if match is None or match.group(1).split("+", 1)[0] == RUNTIME_VERSIONS.software:
-                continue
+
+def _configured_remote_host(git: GitRunner) -> str | None:
+    remote = git.run("remote", "get-url", "origin")
+    if remote.returncode != 0:
+        return None
+    return _remote_host(remote.stdout.strip())
+
+
+def _legacy_tree_findings(root: Path) -> list[GateFinding]:
+    findings: list[GateFinding] = []
+    for tree in _FORBIDDEN_LEGACY_DOC_TREES:
+        if (root / tree).is_dir():
             findings.append(
-                _finding(
-                    "STALE_ARTIFACT",
-                    "build artifact version "
-                    f"{match.group(1)} does not match runtime version "
-                    f"{RUNTIME_VERSIONS.software}; rebuild or delete stale artifacts",
-                    path=f"dist/{item.name}",
+                GateFinding(
+                    "LEGACY_DOC_TREE",
+                    "legacy archive directory exists; Git history is the only archive",
+                    path=tree,
                 )
             )
-        return findings
+    return findings
 
-    def _persist(self, report: RepositoryCheckReport, *, run_id: str | None) -> None:
-        if not self.database.path.is_file():
-            return
-        self.database.migrate()
-        with self.database.connection() as connection:
-            project = connection.execute(
-                "SELECT id FROM projects WHERE id = ?", (self.config.project_id,)
-            ).fetchone()
-            if project is None:
-                return
-            audit_id = new_id("REPOAUDIT")
-            try:
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    """
-                    INSERT INTO repository_audits(
-                        id, project_id, run_id, mode, remote_name, remote_host,
-                        remote_url_hash, target_branch, head_commit, upstream_ref,
-                        repository_ready, hygiene_ok, check_hash, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        audit_id,
-                        self.config.project_id,
-                        run_id,
-                        report.mode,
-                        report.remote_name,
-                        report.remote_host,
-                        report.target_branch,
-                        report.head_commit,
-                        report.upstream_ref,
-                        int(report.repository_ready),
-                        int(report.hygiene_ok),
-                        report.check_hash,
-                        report.checked_at,
-                    ),
-                )
-                for finding in report.findings:
-                    connection.execute(
-                        """
-                        INSERT INTO repository_findings(
-                            id, audit_id, code, severity, path, details_json,
-                            blocking, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            new_id("REPOFINDING"),
-                            audit_id,
-                            finding.code,
-                            finding.severity,
-                            finding.path,
-                            json.dumps(
-                                {"message": finding.message},
-                                ensure_ascii=False,
-                                sort_keys=True,
-                            ),
-                            int(finding.blocking),
-                            report.checked_at,
-                        ),
+
+def _output_purity_findings(root: Path) -> list[GateFinding]:
+    output_root = root / "output"
+    if not output_root.is_dir():
+        return []
+    findings: list[GateFinding] = []
+    for current, directories, files in os.walk(output_root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        relative = current_path.relative_to(root)
+        kept: list[str] = []
+        for name in directories:
+            if name.casefold() in _OUTPUT_FORBIDDEN_NAMES:
+                findings.append(
+                    GateFinding(
+                        "OUTPUT_IMPURE",
+                        "output/ only holds final deliverables; remove caches and scratch",
+                        path=(relative / name).as_posix(),
                     )
-                connection.execute(
-                    "UPDATE projects SET repository_ready = ?, target_branch = ?, "
-                    "updated_at = ? WHERE id = ?",
-                    (
-                        int(report.repository_ready),
-                        report.target_branch,
-                        report.checked_at,
-                        self.config.project_id,
-                    ),
                 )
-                connection.commit()
-            except sqlite3.Error:
-                connection.rollback()
-                raise
+                continue
+            kept.append(name)
+        directories[:] = kept
+        for name in files:
+            if name == ".gitkeep":
+                continue
+            if _OUTPUT_IMPURE.search(name) or name.casefold() in _OUTPUT_FORBIDDEN_NAMES:
+                findings.append(
+                    GateFinding(
+                        "OUTPUT_IMPURE",
+                        "output/ only holds final deliverables; remove temp and debug files",
+                        path=(relative / name).as_posix(),
+                    )
+                )
+    return findings
 
 
-def _finding(
-    code: str,
-    message: str,
-    *,
-    path: str | None = None,
-    severity: str = "error",
-    blocking: bool = True,
-) -> RepositoryFinding:
-    return RepositoryFinding(
-        code=code,
-        severity=severity,
-        message=message,
-        path=path,
-        blocking=blocking,
+def _convert(findings: list[GateFinding]) -> tuple[RepositoryFinding, ...]:
+    ordered = sorted(findings, key=lambda item: (not item.blocking, item.code, item.path or ""))
+    return tuple(
+        RepositoryFinding(
+            code=item.code,
+            severity="error" if item.blocking else "warning",
+            message=item.message,
+            path=item.path,
+            blocking=item.blocking,
+        )
+        for item in ordered
     )
 
 
-def _github_host(remote_url: str) -> str | None:
+def _remote_host(remote_url: str) -> str | None:
     value = remote_url.strip()
     if re.fullmatch(r"git@[^:]+:[^/]+/[^/]+(?:\.git)?", value):
         return value.split("@", 1)[1].split(":", 1)[0].casefold()
@@ -489,28 +234,10 @@ def _github_host(remote_url: str) -> str | None:
         return None
     if parsed.password is not None or not parsed.hostname:
         return None
-    parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) != 2:
-        return None
     return parsed.hostname.casefold()
 
 
-def _stdout(process: subprocess.CompletedProcess[bytes]) -> str:
-    return process.stdout.decode("utf-8", errors="replace").strip()
-
-
-def _run_git(
-    arguments: list[str], cwd: Path, timeout: float
-) -> subprocess.CompletedProcess[bytes]:
-    # ADR-0011: single Git subprocess wrapper; the first three entries are the
-    # ["git", "-C", <cwd>] prefix rebuilt identically by the shared runner.
-    return _SharedGitRunner(cwd).run_bytes(*arguments[3:], timeout=timeout)
-
-
-def _is_link_like(path: Path) -> bool:
-    is_junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or bool(is_junction is not None and is_junction())
-
-
-def _utc_now() -> str:
-    return datetime.now(UTC).isoformat()
+__all__ = [
+    "RepositoryGovernanceError",
+    "RepositoryGovernanceService",
+]

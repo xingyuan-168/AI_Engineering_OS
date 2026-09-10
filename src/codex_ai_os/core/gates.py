@@ -164,7 +164,7 @@ def evaluate_code_start(
     findings: list[GateFinding] = []
 
     findings.extend(_github_findings(git, github_hosts))
-    findings.extend(_hygiene_findings(root, git))
+    findings.extend(hygiene_findings(root, git))
     findings.extend(_research_findings(root, normalized_class, research_done, research_path))
     return _decide(GateName.CODE_START, findings)
 
@@ -251,7 +251,7 @@ def evaluate_finish(
                 "memory must be written or explicitly marked as not needed",
             )
         )
-    findings.extend(_hygiene_findings(root, git))
+    findings.extend(hygiene_findings(root, git))
     findings.extend(_disposable_findings(git))
     return _decide(GateName.FINISH, findings)
 
@@ -319,7 +319,13 @@ def _github_findings(
     return findings
 
 
-def _hygiene_findings(root: Path, git: GitRunner) -> list[GateFinding]:
+def hygiene_findings(root: Path, git: GitRunner) -> list[GateFinding]:
+    """Copy-style dirt, tracked pollution, and unresolved conflicts.
+
+    Shared by the gates and the repository governance check; skips the
+    user-owned input/ tree by design.
+    """
+
     findings: list[GateFinding] = []
     findings.extend(_copy_style_findings(root))
     tracked = git.run("ls-files", "-z")
@@ -509,4 +515,5 @@ __all__ = [
     "evaluate_code_start",
     "evaluate_finish",
     "evaluate_frontend",
+    "hygiene_findings",
 ]
