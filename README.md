@@ -1,77 +1,47 @@
 # AI Engineering OS
 
-AI Engineering OS 是面向 Codex 的 Windows 本地工程工作流运行时。它把需求、研究、设计、实现、验证、发布和记忆组织为可审批、可恢复、可审计的状态机，并以 Git 提交和制品哈希作为交付证据。
+AI Engineering OS 是 Codex 的**工程治理层**：无状态三 Gate（Code Start / Frontend Approval / Finish）在任务开始、前端实现前、任务结束时回答"允许 / 不允许及为什么"。它不指导 Codex 怎么做专业工作——理解仓库、编码、调试、构建、测试、子 Agent 调度都是 Codex 的原生能力。
 
-## 当前状态
+## 能力
 
-当前候选实现已覆盖 `new-project`、`feature-development`、`bug-fix` 和 `release`：从业务目标开始，经过 G0-G4 门禁，在隔离 Worktree 与 Docker/Podman 策略沙箱中形成可审计发布候选。0.2.1 迭代目标为 OCI-first 项目环境（ADR-0007）、操作可靠性（ADR-0008）、Plugin API/配置/文档/Profile 1.2 与 SQLite 0008；版本矩阵见 `RUNTIME_VERSIONS` 与 `docs/PROJECT_MASTER.md`。
-
-当前已具备 Python 3.12 包、严格配置、SQLite 迁移、追加式事件、文档治理、双轴工作流、审批、Git/Handoff 证据、Worktree、Docker/Podman 适配、Memory 生命周期、Codex 私有插件、stdio MCP 主路径和 ERP 纵向试点。基线仍是“候选而非发布”：G3/G4、`main`、tag、GitHub Release 和 final release/memory records 尚未闭环。当前主机已安装 Podman 但 machine 停止，且未安装 `gh`；正式 OCI/GitHub Gate 会保持 blocked。
+- **GitHub 前置**：正式 src/ 实现前必须有可达的 GitHub remote；没有时允许读 input/、分析、调研、规划、写文档。
+- **仓库卫生**：复制式版本目录/文件、被跟踪的污染内容、未解决冲突精确判定并阻塞；用户自己的未提交工作永不阻塞。
+- **开源调研分层**：新项目/新模块/重大功能/新技术栈/新集成必须先记录 use / fork / extract / build 决策。
+- **前端人工确认**：新页面/新交互流/重大 UI 重构先出 docs/design/PROTOTYPE.html + UI_SPEC，用户批准后编码；文案/CSS/组件修复豁免。
+- **Worktree 隔离**：disposable worktree 登记进 SQLite 供 Hook 判定；完成后 review、merge、cleanup。
+- **轻量 Memory**：docs/memory/memory.jsonl 是唯一事实源（Git 跟踪），SQLite memory_index 可随时重建；单写者规则——子 Agent 只提交 candidate。
+- **保护用户资产**：Hook 拦截 force push、删远端 ref、主工作区递归强删；pip/npm/sed -i 等正常工程命令全面放行。
 
 ## 本地开发
 
 ```powershell
-uv sync --frozen --all-groups
-uv tool install --editable .
-uv run ruff check .
-uv run pyright
-uv run pytest --cov=codex_ai_os
+uv sync
+uv run ruff check src plugins tests
+uv run pytest
 uv run codex-os doctor --json
 ```
 
-当前命令：
+## 命令
 
 ```text
-codex-os doctor
 codex-os init <project-root> --project-id PROJECT-001 --name example
-codex-os status <project-root>
-codex-os check-docs <project-root>
-codex-os run new-project --goal "开发 ERP 采购模块" --project-root <project-root>
-codex-os step <run-id> --project-root <project-root>
-codex-os approve <run-id> --gate G0 --reason "范围已确认" --project-root <project-root>
-codex-os reject <run-id> --gate G0 --reason "范围需补充" --project-root <project-root>
-codex-os resume <run-id> --project-root <project-root>
+codex-os check <project-root>
+codex-os finish <project-root> --tests-passed --docs-synced --memory-not-needed
+codex-os memory search|record|reindex|candidates
+codex-os worktree prepare|check|finish|cleanup|list
+codex-os doctor
 codex-os mcp
 ```
 
-除作为协议进程运行的 `mcp` 外，业务命令支持 `--json`；启用后 stdout 只包含统一 JSON 响应，日志和面向用户的说明不混入 stdout。
+业务命令支持 --json（统一 ok/error envelope）。MCP 公开 7 个工具：project_init、governance_check、approval_record、context_refresh、worktree_manage、memory_search、memory_record。
 
-仓库级私有插件位于 `plugins/ai-engineering-os/`，marketplace 位于 `.agents/plugins/marketplace.json`。先以 uv 安装 `codex-os` runtime，插件的 Windows 启动器会从 `PATH` 或 uv 默认用户目录启动 stdio 服务。MCP 公开 `project_init`、Workflow 控制、审批、`task_complete`、文档检查、验证、发布候选和记忆检索工具。
-
-插件捆绑 19 个工程 Skill 和 SessionStart/PreToolUse Hooks；项目级 `.codex/agents/` 定义产品、架构、后端、数据库、QA、安全和 Reviewer profile。插件 Hook 属于非托管 Hook，安装或变更后必须通过 `/hooks` 复核并信任其当前 hash，不能把 Hook 当作唯一安全边界。
+仓库级插件位于 plugins/ai-engineering-os/（8 个治理 Skill + SessionStart/PreToolUse Hooks）。Hook 属于纵深防御，宿主可禁用；运行时入口检查才是权威边界。
 
 ## 事实源
 
-- [实施规格索引](docs/README.md)：规范读取顺序和全部领域契约。
-- [项目总文档](docs/PROJECT_MASTER.md)：目标、范围与治理总览。
-- [系统架构](docs/ARCHITECTURE.md)：组件边界和数据流。
-- [仓库指令](AGENTS.md)：Codex 实现、验证和 Git 纪律。
-- [历史执行入口](docs/archive/AI_Engineering_OS_Codex_历史执行入口.md)：仅供追溯早期建设过程，不是现行指令。
-- [组合 Profiles](profiles/)：frontend、backend 与 large 项目的增量能力和证据要求。
+- [仓库指令](AGENTS.md)：十条宪法与 Git 纪律。
+- [文档索引](docs/README.md)：全部活跃文档的地图与阅读顺序。
+- [治理规则](docs/GOVERNANCE_RULES.md)：三 Gate、路径策略、Hook 语义。
+- [架构决策](docs/ADR/)：已接受/已否决的重大决策（ADR-0016 为当前基线）。
 
-`input/` 保存原始需求，只作为参考；冲突以当前接受的 ADR 和领域规格为准。
-
-## 目标架构
-
-```text
-Codex Host / Plugin
-        |
-      MCP stdio
-        |
-Python CLI + application services
-        |
-Workflow / Approval / Documents / Git Evidence
-        |
-SQLite state + Markdown/Git facts + Docker/Podman execution
-```
-
-## Git 规则
-
-远端为 `git@github.com:xingyuan-168/AI_Engineering_OS.git`。每个完整逻辑变更独立提交，验证后立即推送当前里程碑分支；禁止 force push 和改写已发布历史。
-
-## 支持边界
-
-- Windows 本地运行，Python 3.12。
-- 沙箱后端由 `.codex-os/execution-policy.yaml` 选择；V1 支持遵循同一安全契约的 Docker 与 Podman，当前仓库选择 Podman。
-- Codex Host/MCP 是模型编排主路径；`codex exec` 仅为环境验证后的可选叶子适配器。
-- 0.2.0 不包含 Web 控制台、DeepSeek Harness、公共插件市场、远程多租户或生产部署能力。
+input/ 保存原始需求，只读参考；冲突以当前接受的 ADR 为准。
