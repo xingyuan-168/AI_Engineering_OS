@@ -1,4 +1,10 @@
-"""Typer command surface for AI Engineering OS (governance-core surface, ADR-0016)."""
+"""Typer command surface for AI Engineering OS (governance-core, ADR-0016).
+
+Seven governance commands plus the hook bridge: init, check, finish,
+memory, worktree, mcp, doctor, and authorize-hook. The CLI answers
+"allowed / not allowed and why" and manages the light runtime state; it
+never tells Codex how to do professional work.
+"""
 
 from __future__ import annotations
 
@@ -14,12 +20,19 @@ from codex_ai_os.application.hook_gateway import authorize_hook_payload
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.cli.output import emit, error_envelope, success_envelope
+from codex_ai_os.core.gates import evaluate_finish
+from codex_ai_os.core.worktree import WorktreeError, WorktreeManager, WorktreeRecord
 from codex_ai_os.domain.config import ProjectType, RiskLevel
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
 from codex_ai_os.infrastructure.documents import DocumentManager
-from codex_ai_os.infrastructure.memory import MemoryEntry, MemoryStore, MemoryStoreError
+from codex_ai_os.infrastructure.memory import (
+    MemoryEntry,
+    MemoryStore,
+    MemoryStoreError,
+)
 from codex_ai_os.infrastructure.path_codec import configure_utf8_stdio
+from codex_ai_os.templates.project_docs import INCLUDE_CHOICES
 
 app = typer.Typer(
     name="codex-os",
@@ -28,8 +41,13 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 
-memory_app = typer.Typer(help="Search governed project Memory.", no_args_is_help=True)
+memory_app = typer.Typer(
+    help="Project memory backed by docs/memory/memory.jsonl.", no_args_is_help=True
+)
 app.add_typer(memory_app, name="memory")
+
+worktree_app = typer.Typer(help="Disposable worktrees under .worktrees/.", no_args_is_help=True)
+app.add_typer(worktree_app, name="worktree")
 
 
 def _fail(code: str, message: str, exit_code: int, json_output: bool) -> None:
@@ -39,6 +57,156 @@ def _fail(code: str, message: str, exit_code: int, json_output: bool) -> None:
         human=f"{code}: {message}",
     )
     raise typer.Exit(code=exit_code)
+
+
+def _project_database(project_root: Path) -> tuple[Any, Database]:
+    config = load_project_config(project_root.resolve())
+    database = Database(config.root / ".codex-os" / "state" / "state.db")
+    database.migrate()
+    return config, database
+
+
+@app.command("init")
+def init_command(
+    project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
+    project_id: Annotated[str, typer.Option("--project-id")] = "PROJECT-LOCAL",
+    name: Annotated[str, typer.Option("--name")] = "AI Engineering Project",
+    project_type: Annotated[ProjectType, typer.Option("--project-type")] = ProjectType.GENERIC,
+    risk_level: Annotated[RiskLevel, typer.Option("--risk-level")] = RiskLevel.MEDIUM,
+    with_extra: Annotated[list[str] | None, typer.Option("--with")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
+) -> None:
+    """Create the project skeleton: config, minimal documents, runtime database."""
+
+    include = _include_keys(with_extra or [])
+    try:
+        result = ProjectInitializer().initialize(
+            project_root,
+            project_id=project_id,
+            name=name,
+            project_type=project_type,
+            risk_level=risk_level,
+            include=include,
+        )
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    data: dict[str, Any] = {
+        "project_id": result.config.project_id,
+        "root": result.config.root.as_posix(),
+        "created_paths": list(result.created_paths),
+        "database": result.database_path.as_posix(),
+        "context": result.context_path.as_posix(),
+        "documents_ok": result.document_report.ok,
+        "repository_ready": result.repository_ready,
+        "repository_blockers": list(result.repository_blockers),
+    }
+    emit(
+        success_envelope(data),
+        json_output=json_output,
+        human=f"Initialized {result.config.project_id} at {result.config.root}",
+    )
+
+
+def _include_keys(values: list[str]) -> frozenset[str]:
+    unknown = set(values) - set(INCLUDE_CHOICES)
+    if unknown:
+        raise ValueError(f"unknown --with extras: {sorted(unknown)}")
+    return frozenset(values)
+
+
+@app.command("check")
+def check_command(
+    project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Check GitHub readiness, repository hygiene, and the docs/ tree."""
+
+    try:
+        config = load_project_config(project_root.resolve())
+        repository = RepositoryGovernanceService(config.root).check()
+        documents = DocumentManager(config.root).check()
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    data = {
+        "repository": {
+            "repository_ready": repository.repository_ready,
+            "hygiene_ok": repository.hygiene_ok,
+            "remote_host": repository.remote_host,
+            "head_commit": repository.head_commit,
+            "findings": [item.model_dump(mode="json") for item in repository.findings],
+        },
+        "documents": {
+            "ok": documents.ok,
+            "checked_files": documents.checked_files,
+            "missing": list(documents.missing),
+            "broken_links": list(documents.broken_links),
+            "forbidden_directories": list(documents.forbidden_directories),
+        },
+    }
+    if repository.repository_ready and documents.ok:
+        emit(
+            success_envelope(data),
+            json_output=json_output,
+            human="Repository and document checks passed.",
+        )
+        return
+    if not repository.repository_ready and repository.findings:
+        code = repository.findings[0].code
+    else:
+        code = "DOCS_INCOMPLETE"
+    emit(
+        error_envelope(code, "Repository or document checks failed.", data),
+        json_output=json_output,
+        human="Repository or document checks failed.",
+    )
+    raise typer.Exit(code=40)
+
+
+@app.command("finish")
+def finish_command(
+    project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
+    tests_passed: Annotated[bool, typer.Option("--tests-passed")] = False,
+    docs_synced: Annotated[bool, typer.Option("--docs-synced")] = False,
+    memory_written: Annotated[bool, typer.Option("--memory-written")] = False,
+    memory_not_needed: Annotated[bool, typer.Option("--memory-not-needed")] = False,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Run the Finish gate over task facts and observable repository state."""
+
+    try:
+        decision = evaluate_finish(
+            project_root,
+            tests_passed=tests_passed,
+            docs_synced=docs_synced,
+            memory_written=memory_written,
+            memory_not_needed=memory_not_needed,
+        )
+    except (ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    data = {
+        "allowed": decision.allowed,
+        "blocked_by": list(decision.blocked_by),
+        "findings": [
+            {"code": f.code, "message": f.message, "path": f.path, "blocking": f.blocking}
+            for f in decision.findings
+        ],
+    }
+    if decision.allowed:
+        emit(success_envelope(data), json_output=json_output, human="Finish gate passed.")
+        return
+    emit(
+        error_envelope(
+            decision.blocked_by[0] if decision.blocked_by else "FINISH_BLOCKED",
+            "Finish gate blocked the task.",
+            data,
+        ),
+        json_output=json_output,
+        human="Finish gate blocked: " + ", ".join(decision.blocked_by),
+    )
+    raise typer.Exit(code=40)
 
 
 @app.command("doctor")
@@ -65,7 +233,6 @@ def doctor_command(
             human="Environment checks passed.",
         )
         return
-
     emit(
         error_envelope(
             "PATH_ENCODING_CORRUPT" if report.path_encoding_corrupt else "CONFIG_INVALID",
@@ -76,125 +243,6 @@ def doctor_command(
         human="Required environment checks failed.",
     )
     raise typer.Exit(code=2)
-
-
-@app.command("init")
-def init_command(
-    project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
-    project_id: Annotated[str, typer.Option("--project-id")] = "PROJECT-LOCAL",
-    name: Annotated[str, typer.Option("--name")] = "AI Engineering Project",
-    project_type: Annotated[ProjectType, typer.Option("--project-type")] = ProjectType.GENERIC,
-    risk_level: Annotated[RiskLevel, typer.Option("--risk-level")] = RiskLevel.MEDIUM,
-    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
-) -> None:
-    """Create a project configuration, minimal documents, and runtime database."""
-
-    try:
-        result = ProjectInitializer().initialize(
-            project_root,
-            project_id=project_id,
-            name=name,
-            project_type=project_type,
-            risk_level=risk_level,
-        )
-    except (ConfigError, MigrationError, ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
-        return
-
-    data: dict[str, Any] = {
-        "project_id": result.config.project_id,
-        "root": result.config.root.as_posix(),
-        "created_paths": list(result.created_paths),
-        "database": result.database_path.as_posix(),
-        "context": result.context_path.as_posix(),
-        "documents_ok": result.document_report.ok,
-        "repository_ready": result.repository_ready,
-        "repository_blockers": list(result.repository_blockers),
-    }
-    emit(
-        success_envelope(data),
-        json_output=json_output,
-        human=f"Initialized {result.config.project_id} at {result.config.root}",
-    )
-
-
-@app.command("repo-check")
-def repository_check_command(
-    project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
-    target_branch: Annotated[str | None, typer.Option("--target-branch")] = None,
-    json_output: Annotated[bool, typer.Option("--json")] = False,
-) -> None:
-    """Check GitHub readiness, repository hygiene, and blocking findings."""
-
-    try:
-        report = RepositoryGovernanceService(project_root).check(target_branch=target_branch)
-    except (ConfigError, MigrationError, ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
-        return
-    data = report.model_dump(mode="json")
-    if report.repository_ready:
-        emit(
-            success_envelope(data),
-            json_output=json_output,
-            human="Repository governance checks passed.",
-        )
-        return
-    emit(
-        error_envelope(
-            report.findings[0].code,
-            "Repository governance checks failed.",
-            data,
-        ),
-        json_output=json_output,
-        human="Repository governance checks failed.",
-    )
-    raise typer.Exit(code=40)
-
-
-@app.command("check-docs")
-def check_docs_command(
-    project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
-    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
-) -> None:
-    """Check required documents, headings, local links, and copy directories."""
-
-    try:
-        config = load_project_config(project_root.resolve())
-        report = DocumentManager(config.root).check(
-            config.project_type.value,
-            expected_document_version=config.document_version,
-        )
-    except (ConfigError, ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
-        return
-
-    data = {
-        "checked_files": report.checked_files,
-        "missing": list(report.missing),
-        "broken_links": list(report.broken_links),
-        "invalid_documents": list(report.invalid_documents),
-        "forbidden_directories": list(report.forbidden_directories),
-        "metadata_errors": list(report.metadata_errors),
-        "placeholder_findings": list(report.placeholder_findings),
-        "version_mismatches": list(report.version_mismatches),
-        "stale_documents": list(report.stale_documents),
-        "impact_findings": list(report.impact_findings),
-        "traceability_errors": list(report.traceability_errors),
-    }
-    if report.ok:
-        emit(
-            success_envelope(data),
-            json_output=json_output,
-            human=f"Document checks passed ({report.checked_files} files).",
-        )
-        return
-
-    emit(
-        error_envelope("DOCS_INCOMPLETE", "Document governance checks failed.", data),
-        json_output=json_output,
-        human="Document governance checks failed.",
-    )
-    raise typer.Exit(code=10)
 
 
 @app.command("authorize-hook")
@@ -223,11 +271,13 @@ def authorize_hook_command() -> None:
         typer.echo(json.dumps(output, ensure_ascii=False))
 
 
-def _memory_store(project_root: Path) -> MemoryStore:
-    config = load_project_config(project_root.resolve())
-    database = Database(config.root / ".codex-os" / "state" / "state.db")
-    database.migrate()
-    return MemoryStore(database, config.root)
+@app.command("mcp")
+def mcp_command() -> None:
+    """Run the bundled Model Context Protocol server over stdio."""
+
+    from codex_ai_os.cli.mcp_server import run_server
+
+    run_server()
 
 
 @memory_app.command("search")
@@ -242,14 +292,10 @@ def memory_search_command(
     """Search the project memory index rebuilt from docs/memory/memory.jsonl."""
 
     try:
-        store = _memory_store(project_root)
+        _, database = _project_database(project_root)
+        store = MemoryStore(database, project_root.resolve())
         types = (record_type,) if record_type else ()
-        records = store.search(
-            query,
-            record_types=types,
-            statuses=(status,),
-            limit=limit,
-        )
+        records = store.search(query, record_types=types, statuses=(status,), limit=limit)
     except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
         return
@@ -279,7 +325,8 @@ def memory_record_command(
 
     tag_tuple = tuple(tag.strip() for tag in tags.split(",") if tag.strip())
     try:
-        store = _memory_store(project_root)
+        _, database = _project_database(project_root)
+        store = MemoryStore(database, project_root.resolve())
         writer = store.record_candidate if candidate else store.record
         entry = writer(
             record_type=record_type,
@@ -309,7 +356,8 @@ def memory_reindex_command(
     """Rebuild the SQLite memory index from docs/memory/memory.jsonl."""
 
     try:
-        store = _memory_store(project_root)
+        _, database = _project_database(project_root)
+        store = MemoryStore(database, project_root.resolve())
         result = store.reindex()
     except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
@@ -320,8 +368,10 @@ def memory_reindex_command(
         "invalid_lines": list(result.invalid_lines),
     }
     ok = not result.invalid_lines
-    envelope = success_envelope(data) if ok else error_envelope(
-        "MEMORY_JSONL_INVALID", "memory.jsonl contains invalid lines", data
+    envelope = (
+        success_envelope(data)
+        if ok
+        else error_envelope("MEMORY_JSONL_INVALID", "memory.jsonl contains invalid lines", data)
     )
     emit(
         envelope,
@@ -344,7 +394,8 @@ def memory_candidates_command(
     """List subagent memory candidates awaiting the main-session merge."""
 
     try:
-        store = _memory_store(project_root)
+        _, database = _project_database(project_root)
+        store = MemoryStore(database, project_root.resolve())
         records = store.candidates()
     except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
@@ -370,13 +421,129 @@ def _memory_payload(record: MemoryEntry) -> dict[str, object]:
     }
 
 
-@app.command("mcp")
-def mcp_command() -> None:
-    """Run the bundled Model Context Protocol server over stdio."""
+@worktree_app.command("prepare")
+def worktree_prepare_command(
+    name: Annotated[str | None, typer.Argument(help="Worktree name (slug).")] = None,
+    base_ref: Annotated[str, typer.Option("--base-ref")] = "HEAD",
+    task_id: Annotated[str | None, typer.Option("--task-id")] = None,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Create a disposable worktree under .worktrees/ and register it."""
 
-    from codex_ai_os.cli.mcp_server import run_server
+    try:
+        _, database = _project_database(project_root)
+        manager = WorktreeManager(project_root.resolve(), database=database)
+        record = manager.prepare(name=name, task_id=task_id, base_ref=base_ref)
+    except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
+        _fail("WORKTREE_FAILED", str(exc), 2, json_output)
+        return
+    emit(
+        success_envelope(_worktree_payload(record)),
+        json_output=json_output,
+        human=f"Prepared {record.path} on {record.branch}.",
+    )
 
-    run_server()
+
+@worktree_app.command("check")
+def worktree_check_command(
+    name: Annotated[str, typer.Argument(help="Worktree name.")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Report registration, existence, and cleanliness of one worktree."""
+
+    try:
+        _, database = _project_database(project_root)
+        manager = WorktreeManager(project_root.resolve(), database=database)
+        record = manager.check(name=name)
+    except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
+        _fail("WORKTREE_FAILED", str(exc), 2, json_output)
+        return
+    emit(
+        success_envelope(_worktree_payload(record)),
+        json_output=json_output,
+        human=f"{record.name}: status={record.status} clean={record.clean}",
+    )
+
+
+@worktree_app.command("finish")
+def worktree_finish_command(
+    name: Annotated[str, typer.Argument(help="Worktree name.")],
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Mark a clean worktree as finished and ready for merge review."""
+
+    try:
+        _, database = _project_database(project_root)
+        manager = WorktreeManager(project_root.resolve(), database=database)
+        record = manager.finish(name=name)
+    except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
+        _fail("WORKTREE_FAILED", str(exc), 2, json_output)
+        return
+    emit(
+        success_envelope(_worktree_payload(record)),
+        json_output=json_output,
+        human=f"{record.name}: ready for merge review.",
+    )
+
+
+@worktree_app.command("cleanup")
+def worktree_cleanup_command(
+    name: Annotated[str, typer.Argument(help="Worktree name.")],
+    force: Annotated[bool, typer.Option("--force", help="Discard uncommitted changes.")] = False,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Remove a disposable worktree and its branch, then unregister it."""
+
+    try:
+        _, database = _project_database(project_root)
+        manager = WorktreeManager(project_root.resolve(), database=database)
+        record = manager.cleanup(name=name, force=force)
+    except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
+        _fail("WORKTREE_FAILED", str(exc), 2, json_output)
+        return
+    emit(
+        success_envelope(_worktree_payload(record)),
+        json_output=json_output,
+        human=f"{record.name}: removed and unregistered.",
+    )
+
+
+@worktree_app.command("list")
+def worktree_list_command(
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """List registered worktrees."""
+
+    try:
+        _, database = _project_database(project_root)
+        manager = WorktreeManager(project_root.resolve(), database=database)
+        records = manager.list()
+    except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
+        _fail("WORKTREE_FAILED", str(exc), 2, json_output)
+        return
+    data = {"results": [_worktree_payload(record) for record in records]}
+    emit(
+        success_envelope(data),
+        json_output=json_output,
+        human=f"{len(records)} worktree(s) registered.",
+    )
+
+
+def _worktree_payload(record: WorktreeRecord) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "name": record.name,
+        "path": record.path,
+        "branch": record.branch,
+        "task_id": record.task_id,
+        "status": record.status,
+        "clean": record.clean,
+    }
 
 
 def main() -> None:
