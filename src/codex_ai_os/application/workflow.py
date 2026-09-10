@@ -46,6 +46,7 @@ from codex_ai_os.application.worktree import (
     WorktreeService,
     WorktreeServiceError,
 )
+from codex_ai_os.domain.artifacts import DEFAULT_ARTIFACT_CATALOG
 from codex_ai_os.domain.config import GitPushPolicy, RiskLevel
 from codex_ai_os.domain.coordination import (
     HandoffReviewInput,
@@ -2154,11 +2155,7 @@ class WorkflowEngine:
                     agent=item.agent,
                     skill=item.skill,
                     prompt=item.prompt,
-                    input_artifacts=(
-                        "docs/ARCHITECTURE.md",
-                        "docs/API_SPEC.md",
-                        "docs/DATABASE.md",
-                    ),
+                    input_artifacts=_IMPLEMENTATION_INPUT_ARTIFACTS,
                     output_schema={
                         "type": "object",
                         "required": ["summary", "artifacts", "checks"],
@@ -2248,7 +2245,7 @@ class WorkflowEngine:
             agent=task.agent,
             skill=task.skill,
             prompt=task.prompt,
-            input_artifacts=("docs/ARCHITECTURE.md", "docs/API_SPEC.md", "docs/DATABASE.md"),
+            input_artifacts=_IMPLEMENTATION_INPUT_ARTIFACTS,
             output_schema={"type": "object", "required": ["artifacts", "checks"]},
             allowed_paths=task.allowed_paths,
             dependencies=self._task_dependencies(task.id),
@@ -2536,22 +2533,33 @@ def _commits_are_local_only(root: Path, *commits: str) -> bool:
     return True
 
 
+def _catalog_input_artifacts(*artifact_ids: str) -> tuple[str, ...]:
+    """Resolve catalog artifact ids to canonical input paths (ADR-0012)."""
+
+    paths = tuple(DEFAULT_ARTIFACT_CATALOG.path_for(artifact_id) for artifact_id in artifact_ids)
+    if any(path is None for path in paths):
+        missing = sorted(
+            artifact_id
+            for artifact_id, path in zip(artifact_ids, paths, strict=True)
+            if path is None
+        )
+        raise RuntimeError(f"artifact catalog is missing required inputs: {missing}")
+    return tuple(path for path in paths if path is not None)
+
+
+_IMPLEMENTATION_INPUT_ARTIFACTS = _catalog_input_artifacts("architecture", "api-spec", "database")
+
+
 def _input_artifacts_for(phase: WorkflowPhase) -> tuple[str, ...]:
     return {
         WorkflowPhase.INTAKE: ("business_goal",),
-        WorkflowPhase.REQUIREMENTS: ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"),
-        WorkflowPhase.RESEARCH: ("docs/PRODUCT_REQUIREMENTS.md", "docs/SCOPE.md"),
-        WorkflowPhase.DESIGN: ("docs/OPEN_SOURCE_RESEARCH.md", "docs/PRODUCT_REQUIREMENTS.md"),
-        WorkflowPhase.PROTOTYPE: (
-            "docs/PRODUCT_DESIGN.md",
-            "docs/INTERACTION_DESIGN.md",
-            "docs/UI_DESIGN.md",
+        WorkflowPhase.REQUIREMENTS: _catalog_input_artifacts("project-master", "scope"),
+        WorkflowPhase.RESEARCH: _catalog_input_artifacts("product-requirements", "scope"),
+        WorkflowPhase.DESIGN: _catalog_input_artifacts("open-source-research", "product-requirements"),
+        WorkflowPhase.PROTOTYPE: _catalog_input_artifacts(
+            "product-design", "interaction-design", "ui-design"
         ),
-        WorkflowPhase.IMPLEMENTATION: (
-            "docs/ARCHITECTURE.md",
-            "docs/API_SPEC.md",
-            "docs/DATABASE.md",
-        ),
+        WorkflowPhase.IMPLEMENTATION: _IMPLEMENTATION_INPUT_ARTIFACTS,
         WorkflowPhase.VERIFY: ("implementation_commit", "test_plan"),
         WorkflowPhase.RELEASE: ("verification_evidence",),
         WorkflowPhase.MEMORY: ("release_candidate", "workflow_events"),

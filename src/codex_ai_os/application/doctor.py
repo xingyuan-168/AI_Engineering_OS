@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from codex_ai_os.application.artifact_catalog import validate_catalog
+from codex_ai_os.application.governance_policy import GovernancePolicyError
+
 
 @dataclass(frozen=True, slots=True)
 class DoctorCheck:
@@ -74,6 +77,7 @@ class DoctorService:
                 self._podman_check(),
                 self._command_check("codex", required=False, version_args=("--version",)),
                 self._path_encoding_check(),
+                self._artifact_catalog_check(),
                 self._plugin_hooks_check(),
             )
         )
@@ -128,6 +132,25 @@ class DoctorService:
                 f"declared hook scripts missing on disk: {sorted(set(missing))}",
             )
         return DoctorCheck("plugin-hooks", False, True, f"{total} declared hook scripts present")
+
+    def _artifact_catalog_check(self) -> DoctorCheck:
+        """Report whether the Artifact Catalog and its project override compile (ADR-0012)."""
+
+        try:
+            report = validate_catalog(self.project_root)
+        except (GovernancePolicyError, ValueError, OSError) as exc:
+            findings: list[object] = [str(exc)]
+            ok = False
+        else:
+            findings = list(report["findings"])
+            ok = bool(report["ok"])
+        detail = json.dumps(
+            {"code": None if ok else "CONFIG_INVALID", "findings": findings},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return DoctorCheck("artifact_catalog", True, ok, detail)
 
     def _path_encoding_check(self) -> DoctorCheck:
         database_path = self.project_root / ".codex-os" / "state" / "state.db"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
@@ -13,6 +13,12 @@ from pathlib import Path, PurePosixPath
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from codex_ai_os.application.artifact_catalog import (
+    ArtifactCatalogError,
+    load_effective_catalog,
+    resolve_artifact_references,
+)
+from codex_ai_os.domain.artifacts import ArtifactCatalog
 from codex_ai_os.domain.config import EnvironmentMode
 from codex_ai_os.domain.coordination import TaskBlueprint
 from codex_ai_os.domain.governance import (
@@ -285,10 +291,19 @@ CORE_GATE_REQUIREMENTS: dict[Gate, EvidenceRequirements] = {}
 class GovernancePolicyCompiler:
     def __init__(self, project_root: Path) -> None:
         self.root = project_root.resolve()
+        self._catalog = self._load_catalog()
         self._profiles = self._load_profiles()
-        self._baseline_gates = self.load_gate_rules(self._baseline_gate_dir())
+        self._baseline_gates = self.load_gate_rules(
+            self._baseline_gate_dir(), catalog=self._catalog
+        )
         self._project_gates = self._load_project_gate_rules()
         self._environment_gates = self._load_environment_gate_rules()
+
+    def _load_catalog(self) -> ArtifactCatalog:
+        try:
+            return load_effective_catalog(self.root)
+        except ArtifactCatalogError as exc:
+            raise GovernancePolicyError("CONFIG_INVALID", f"invalid artifact catalog: {exc}") from exc
 
     def compile(
         self,
@@ -317,9 +332,15 @@ class GovernancePolicyCompiler:
             reviewers.extend(profile.additional_reviewers)
             for requirement in profile.gate_requirements:
                 gate = Gate(requirement.gate)
+                try:
+                    profile_artifacts = resolve_artifact_references(
+                        requirement.artifacts, self._catalog
+                    )
+                except ArtifactCatalogError as exc:
+                    raise GovernancePolicyError("CONFIG_INVALID", str(exc)) from exc
                 gates[gate] = gates[gate].add(
                     EvidenceRequirements(
-                        artifacts=frozenset(requirement.artifacts),
+                        artifacts=profile_artifacts,
                         artifact_types=frozenset(requirement.artifact_types),
                         checks=frozenset(requirement.checks),
                         reviews=frozenset(requirement.reviews),
@@ -457,7 +478,7 @@ class GovernancePolicyCompiler:
         directory = self.root / ".codex-os" / "gates"
         if not directory.exists():
             return dict(self._baseline_gates)
-        return self.load_gate_rules(directory)
+        return self.load_gate_rules(directory, catalog=self._catalog)
 
     def _load_environment_gate_rules(self) -> dict[Gate, EvidenceRequirements]:
         try:
@@ -468,19 +489,26 @@ class GovernancePolicyCompiler:
             return {}
         baseline = self._baseline_gate_dir() / "oci-first"
         project = self.root / ".codex-os" / "gates" / "oci-first"
-        baseline_rules = self.load_gate_rules(baseline, gates=(Gate.G2, Gate.G3, Gate.G4))
+        baseline_rules = self.load_gate_rules(
+            baseline, gates=(Gate.G2, Gate.G3, Gate.G4), catalog=self._catalog
+        )
         if not project.is_dir():
             raise GovernancePolicyError(
                 "CONFIG_INVALID", "OCI-first project is missing declarative environment Gate rules"
             )
-        project_rules = self.load_gate_rules(project, gates=(Gate.G2, Gate.G3, Gate.G4))
+        project_rules = self.load_gate_rules(
+            project, gates=(Gate.G2, Gate.G3, Gate.G4), catalog=self._catalog
+        )
         for gate, candidate in project_rules.items():
             _require_monotonic_gate(gate, baseline_rules[gate], candidate)
         return project_rules
 
     @staticmethod
     def load_gate_rules(
-        directory: Path, *, gates: tuple[Gate, ...] = tuple(Gate)
+        directory: Path,
+        *,
+        gates: tuple[Gate, ...] = tuple(Gate),
+        catalog: ArtifactCatalog | None = None,
     ) -> dict[Gate, EvidenceRequirements]:
         rules: dict[Gate, EvidenceRequirements] = {}
         for gate in gates:
@@ -497,7 +525,12 @@ class GovernancePolicyCompiler:
                     "CONFIG_INVALID",
                     f"Gate policy identity mismatch: {path} declares {model.gate.value}",
                 )
-            rules[gate] = model.requirements()
+            requirements = model.requirements()
+            try:
+                artifacts = resolve_artifact_references(requirements.artifacts, catalog)
+            except ArtifactCatalogError as exc:
+                raise GovernancePolicyError("CONFIG_INVALID", str(exc)) from exc
+            rules[gate] = replace(requirements, artifacts=artifacts)
         return rules
 
 

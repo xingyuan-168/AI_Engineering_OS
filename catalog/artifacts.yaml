@@ -1,0 +1,205 @@
+# Artifact Catalog — single source of truth for governed document artifacts (ADR-0012).
+# Schema 1.2. Project overrides live in .codex-os/artifact-catalog.yaml and may only
+# tighten this baseline (add artifacts or keep required; removal/relaxation is invalid).
+schema_version: '1.2'
+artifacts:
+  # G0 — intake
+  - id: project-master
+    canonical_path: docs/PROJECT_MASTER.md
+    phases: [intake]
+    gate: G0
+    producer: product-manager
+    reviewers: [project-manager]
+    required: true
+  - id: scope
+    canonical_path: docs/SCOPE.md
+    phases: [intake, requirements]
+    gate: G0
+    producer: product-manager
+    reviewers: [project-manager]
+    required: true
+
+  # G1 — requirements
+  - id: product-requirements
+    canonical_path: docs/PRODUCT_REQUIREMENTS.md
+    phases: [requirements]
+    gate: G1
+    producer: product-manager
+    reviewers: [reviewer]
+    required: true
+  - id: user-story
+    canonical_path: docs/USER_STORY.md
+    phases: [requirements]
+    gate: G1
+    producer: product-manager
+    reviewers: [reviewer]
+    required: true
+  - id: business-rules
+    canonical_path: docs/BUSINESS_RULES.md
+    phases: [requirements]
+    gate: G1
+    producer: product-manager
+    reviewers: [reviewer]
+    required: true
+
+  # G2 — research and design
+  - id: open-source-research
+    canonical_path: docs/OPEN_SOURCE_RESEARCH.md
+    phases: [research]
+    gate: G2
+    producer: architect
+    reviewers: [reviewer]
+    required: true
+  - id: tech-stack
+    canonical_path: docs/TECH_STACK.md
+    phases: [research]
+    gate: G2
+    producer: architect
+    reviewers: [reviewer]
+    required: true
+  - id: adr-index
+    canonical_path: docs/ADR/README.md
+    phases: [research, design]
+    gate: G2
+    producer: architect
+    reviewers: [reviewer]
+    required: true
+  - id: adr-decisions
+    canonical_path: docs/ADR/
+    phases: [research, design, memory]
+    gate: null
+    producer: architect
+    reviewers: []
+    required: false
+  - id: architecture
+    canonical_path: docs/ARCHITECTURE.md
+    phases: [design]
+    gate: G2
+    producer: architect
+    reviewers: [reviewer]
+    required: true
+  - id: api-spec
+    canonical_path: docs/API_SPEC.md
+    phases: [design]
+    gate: G2
+    producer: architect
+    reviewers: [reviewer]
+    required: true
+  - id: database
+    canonical_path: docs/DATABASE.md
+    phases: [design]
+    gate: G2
+    producer: architect
+    reviewers: [reviewer]
+    required: true
+  - id: migration-spec
+    canonical_path: docs/MIGRATION_SPEC.md
+    phases: [design]
+    gate: G2
+    producer: architect
+    reviewers: [reviewer]
+    required: true
+  - id: security
+    canonical_path: docs/SECURITY.md
+    phases: [design]
+    gate: G2
+    producer: architect
+    reviewers: [security-reviewer]
+    required: true
+  - id: environment-doc
+    canonical_path: docs/ENVIRONMENT.md
+    phases: [design]
+    gate: G2
+    producer: architect
+    reviewers: [reviewer]
+    required: true
+  - id: product-design
+    canonical_path: docs/PRODUCT_DESIGN.md
+    phases: [design, prototype]
+    gate: G2
+    producer: product-manager
+    reviewers: [reviewer]
+    required: true
+  - id: interaction-design
+    canonical_path: docs/INTERACTION_DESIGN.md
+    phases: [design, prototype]
+    gate: G2
+    producer: frontend-engineer
+    reviewers: [reviewer]
+    required: true
+  - id: ui-design
+    canonical_path: docs/UI_DESIGN.md
+    phases: [design, prototype]
+    gate: G2
+    producer: frontend-engineer
+    reviewers: [reviewer]
+    required: true
+  - id: risk-register
+    canonical_path: docs/RISK_REGISTER.md
+    phases: [design]
+    gate: null
+    producer: architect
+    reviewers: []
+    required: false
+  - id: agent-handoff
+    canonical_path: docs/AGENT_HANDOFF.md
+    phases: [design]
+    gate: null
+    producer: architect
+    reviewers: []
+    required: false
+
+  # G3 — verification
+  - id: test-plan
+    canonical_path: docs/TEST_PLAN.md
+    phases: [verify]
+    gate: G3
+    producer: qa
+    reviewers: [reviewer]
+    required: true
+
+  # G4 — release and memory
+  - id: changelog
+    canonical_path: docs/CHANGELOG.md
+    phases: [implementation, release, memory]
+    gate: G4
+    producer: release-manager
+    reviewers: [reviewer]
+    required: true
+  - id: release-checklist
+    canonical_path: docs/RELEASE_CHECKLIST.md
+    phases: [release]
+    gate: G4
+    producer: release-manager
+    reviewers: [reviewer]
+    required: true
+
+  # Optional UX companion artifacts (ADR-0012: supplementary to the design trio)
+  - id: ux-research
+    canonical_path: docs/design/UX_RESEARCH.md
+    phases: [design]
+    gate: null
+    producer: frontend-engineer
+    reviewers: []
+    required: false
+  - id: user-flow
+    canonical_path: docs/design/USER_FLOW.md
+    phases: [design]
+    gate: null
+    producer: frontend-engineer
+    reviewers: []
+    required: false
+  - id: wireframe
+    canonical_path: docs/design/WIREFRAME.md
+    phases: [design]
+    gate: null
+    producer: frontend-engineer
+    reviewers: []
+    required: false
+  - id: ui-spec
+    canonical_path: docs/design/UI_SPEC.md
+    phases: [design]
+    gate: null
+    producer: frontend-engineer
+    reviewers: []
+    required: false

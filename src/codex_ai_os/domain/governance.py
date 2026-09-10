@@ -207,7 +207,9 @@ def governed_path_allowed(path: str, allowed_paths: tuple[str, ...]) -> bool:
     """Shared project-relative allowance used by Git evidence, artifact checks,
     environment operations and the authorization kernel (ADR-0011).
 
-    A path is allowed when it equals an allowed entry or lies below it.
+    A path is allowed when it equals an allowed file entry or lies below an
+    allowed entry. A directory entry (trailing ``/``) only admits paths
+    strictly below it — the directory itself is not a writable artifact path.
     Absolute paths, ``..`` segments and drive-qualified paths are never
     allowed.
     """
@@ -220,7 +222,13 @@ def governed_path_allowed(path: str, allowed_paths: tuple[str, ...]) -> bool:
         return False
     candidate = posix.as_posix()
     for raw_allowed in allowed_paths:
-        allowed = PurePosixPath(raw_allowed.replace("\\", "/")).as_posix()
-        if candidate == allowed or candidate.startswith(f"{allowed.rstrip('/')}/"):
+        normalized_allowed = raw_allowed.replace("\\", "/")
+        if normalized_allowed.endswith("/"):
+            # Directory entry: only strictly-below paths are artifacts.
+            if candidate.startswith(normalized_allowed):
+                return True
+            continue
+        allowed = PurePosixPath(normalized_allowed).as_posix()
+        if candidate == allowed or candidate.startswith(f"{allowed}/"):
             return True
     return False

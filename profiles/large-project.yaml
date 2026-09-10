@@ -4,11 +4,11 @@ description: Add multi-Agent coordination, independent review, risk, and recover
 project_types: [backend, frontend, fullstack, desktop, generic]
 additional_skills: [agent-manager, execution-manager, testing, security-review, code-review]
 required_artifacts:
-  - docs/RISK_REGISTER.md
-  - docs/AGENT_HANDOFF.md
-  - docs/TEST_PLAN.md
-  - docs/SECURITY.md
-  - docs/RELEASE_CHECKLIST.md
+  - artifact:risk-register
+  - artifact:agent-handoff
+  - artifact:test-plan
+  - artifact:security
+  - artifact:release-checklist
 additional_reviewers: [security-reviewer, reviewer]
 min_agents: 3
 approval_required: true
@@ -31,7 +31,7 @@ task_templates:
 gate_requirements:
   - gate: G2
     artifacts:
-      - docs/RISK_REGISTER.md
-      - docs/AGENT_HANDOFF.md
+      - artifact:risk-register
+      - artifact:agent-handoff
   - gate: G3
     reviews: [security]

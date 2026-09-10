@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 import pytest
@@ -208,3 +209,49 @@ def test_policy_hash_binds_mode_roles_and_project_paths() -> None:
     assert tightened.path_access("project-policy/rule.yaml", mutating=True) == (
         PathAccessDecision.DENY
     )
+
+
+def test_gate_rules_resolve_artifact_references_to_canonical_paths() -> None:
+    policy = GovernancePolicyCompiler(PROJECT_ROOT).compile(("backend-project",))
+    g2 = policy.requirements_for(Gate.G2).artifacts
+
+    assert "docs/API_SPEC.md" in g2
+    assert "docs/ARCHITECTURE.md" in g2
+    assert not any(path.startswith("artifact:") for path in g2)
+    assert policy.requirements_for(Gate.G0).artifacts == frozenset(
+        {"docs/PROJECT_MASTER.md", "docs/SCOPE.md"}
+    )
+
+
+def test_profile_gate_requirements_resolve_artifact_references() -> None:
+    policy = GovernancePolicyCompiler(PROJECT_ROOT).compile(("frontend-project",))
+    g2 = policy.requirements_for(Gate.G2).artifacts
+
+    assert {"docs/PRODUCT_DESIGN.md", "docs/INTERACTION_DESIGN.md", "docs/UI_DESIGN.md"} <= g2
+    assert not any(path.startswith("artifact:") for path in g2)
+
+
+def test_unknown_artifact_reference_fails_closed(tmp_path: Path) -> None:
+    ProjectInitializer().initialize(
+        tmp_path,
+        project_id="PROJECT-BAD-ARTIFACT-REF",
+        name="Bad Artifact Ref",
+        project_type=ProjectType.BACKEND,
+    )
+    gate_dir = tmp_path / ".codex-os" / "gates"
+    gate_dir.mkdir(parents=True, exist_ok=True)
+    for gate in ("G1", "G2", "G3", "G4"):
+        shutil.copyfile(PROJECT_ROOT / "gates" / f"{gate}.yaml", gate_dir / f"{gate}.yaml")
+    (gate_dir / "G0.yaml").write_text(
+        "schema_version: '1.2'\n"
+        "gate: G0\n"
+        "documents: [artifact:does-not-exist]\n"
+        "git: {source_commit_required: true, push_required: true, "
+        "enforce_allowed_paths: true}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(GovernancePolicyError) as caught:
+        GovernancePolicyCompiler(tmp_path).compile(("backend-project",))
+
+    assert caught.value.code == "CONFIG_INVALID"
+    assert "artifact:does-not-exist" in str(caught.value)

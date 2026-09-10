@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+from codex_ai_os.domain.artifacts import DEFAULT_ARTIFACT_CATALOG
+
+
+def _catalog_path(artifact_id: str) -> str:
+    path = DEFAULT_ARTIFACT_CATALOG.path_for(artifact_id)
+    if path is None:
+        raise RuntimeError(
+            f"artifact catalog is missing a document template artifact: {artifact_id}"
+        )
+    return path
+
+
 BASE_DOCUMENTS: dict[str, str] = {
     "README.md": """# {{ project_name }}
 
@@ -136,10 +148,38 @@ BACKEND_DOCUMENTS: dict[str, str] = {
 }
 
 FRONTEND_DOCUMENTS: dict[str, str] = {
-    "docs/design/UX_RESEARCH.md": "# UX Research\n\n状态：草案\n",
-    "docs/design/USER_FLOW.md": "# User Flow\n\n状态：草案\n",
-    "docs/design/WIREFRAME.md": "# Wireframe\n\n状态：草案\n",
-    "docs/design/UI_SPEC.md": "# UI Spec\n\n状态：草案\n",
+    _catalog_path("product-design"): """# Product Design
+
+状态：草案
+
+## 设计范围
+
+待 G2 确认产品目标、用户价值与范围边界。
+
+## 信息架构
+
+待 G2 确认页面结构与导航关系。
+""",
+    _catalog_path("interaction-design"): """# Interaction Design
+
+状态：草案
+
+## 交互状态
+
+待 G2 确认加载、空态、错误与成功反馈。
+""",
+    _catalog_path("ui-design"): """# UI Design
+
+状态：草案
+
+## 视觉规范
+
+待 G2 确认布局、色彩、字体与组件规范。
+""",
+    _catalog_path("ux-research"): "# UX Research\n\n状态：草案\n",
+    _catalog_path("user-flow"): "# User Flow\n\n状态：草案\n",
+    _catalog_path("wireframe"): "# Wireframe\n\n状态：草案\n",
+    _catalog_path("ui-spec"): "# UI Spec\n\n状态：草案\n",
 }
 
 

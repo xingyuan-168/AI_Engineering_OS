@@ -8,6 +8,7 @@ from typing import Annotated, Any, cast
 
 import typer
 
+from codex_ai_os.application.artifact_catalog import validate_catalog
 from codex_ai_os.application.doctor import DoctorService
 from codex_ai_os.application.environment import EnvironmentGovernanceService
 from codex_ai_os.application.environment_operations import (
@@ -15,6 +16,7 @@ from codex_ai_os.application.environment_operations import (
     EnvironmentOperationService,
 )
 from codex_ai_os.application.execution import ExecutionServiceError
+from codex_ai_os.application.governance_policy import GovernancePolicyError
 from codex_ai_os.application.hook_gateway import authorize_hook_payload
 from codex_ai_os.application.maintenance import (
     DatabaseMigrationService,
@@ -78,6 +80,9 @@ workflow_app = typer.Typer(help="Create, begin, or cancel workflows.", no_args_i
 environment_app = typer.Typer(
     help="Audit and manage OCI-first project environments.", no_args_is_help=True
 )
+artifact_app = typer.Typer(
+    help="Validate the governed Artifact Catalog (ADR-0012).", no_args_is_help=True
+)
 app.add_typer(run_app, name="run")
 app.add_typer(handoff_app, name="handoff")
 app.add_typer(host_operation_app, name="host-operation")
@@ -91,6 +96,7 @@ app.add_typer(gate_app, name="gate")
 app.add_typer(prototype_app, name="prototype")
 app.add_typer(workflow_app, name="workflow")
 app.add_typer(environment_app, name="environment")
+app.add_typer(artifact_app, name="artifact")
 
 
 @environment_app.command("check")
@@ -414,6 +420,34 @@ def status_command(
             f"{config.project_id}: schema={version}, workflows={workflow_count}, "
             f"documents={'ok' if report.ok else 'invalid'}"
         ),
+    )
+
+
+@artifact_app.command("validate")
+def artifact_validate_command(
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
+) -> None:
+    """Validate the built-in Artifact Catalog and the project override."""
+
+    try:
+        report = validate_catalog(project_root.resolve())
+    except (GovernancePolicyError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    if report["ok"]:
+        emit(
+            success_envelope(report),
+            json_output=json_output,
+            human="Artifact catalog is valid.",
+        )
+        return
+    _fail(
+        "CONFIG_INVALID",
+        "Artifact catalog validation failed.",
+        2,
+        json_output,
+        details=report,
     )
 
 

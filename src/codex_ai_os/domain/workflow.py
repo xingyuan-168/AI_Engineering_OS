@@ -9,6 +9,7 @@ from typing import Any, Self
 
 from pydantic import Field, model_validator
 
+from codex_ai_os.domain.artifacts import artifact_paths_for_phase
 from codex_ai_os.domain.config import RiskLevel, StrictModel
 from codex_ai_os.domain.governance import ArtifactEvidenceInput, CheckEvidenceInput
 
@@ -225,7 +226,7 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         "requirement-analysis",
         "Analyze the goal and prepare preliminary scope, success criteria, "
         "and risk evidence for G0.",
-        ("docs/PROJECT_MASTER.md", "docs/SCOPE.md"),
+        (*artifact_paths_for_phase("intake"),),
         RiskLevel.MEDIUM,
     ),
     WorkflowPhase.REQUIREMENTS: PhaseDefinition(
@@ -233,19 +234,14 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         "requirement-analysis",
         "Produce detailed requirements, user stories, business rules, "
         "and acceptance criteria for G1.",
-        (
-            "docs/PRODUCT_REQUIREMENTS.md",
-            "docs/USER_STORY.md",
-            "docs/BUSINESS_RULES.md",
-            "docs/SCOPE.md",
-        ),
+        (*artifact_paths_for_phase("requirements"),),
         RiskLevel.MEDIUM,
     ),
     WorkflowPhase.RESEARCH: PhaseDefinition(
         "architect",
         "open-source-research",
         "Research official sources, versions, licenses, reuse boundaries, and risks.",
-        ("docs/OPEN_SOURCE_RESEARCH.md", "docs/TECH_STACK.md", "docs/ADR/"),
+        (*artifact_paths_for_phase("research"),),
         RiskLevel.MEDIUM,
     ),
     WorkflowPhase.DESIGN: PhaseDefinition(
@@ -254,18 +250,7 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         "Produce architecture, API, database, security, migration, and OCI "
         "environment design evidence for G2.",
         (
-            "docs/ARCHITECTURE.md",
-            "docs/API_SPEC.md",
-            "docs/DATABASE.md",
-            "docs/MIGRATION_SPEC.md",
-            "docs/SECURITY.md",
-            "docs/ENVIRONMENT.md",
-            "docs/PRODUCT_DESIGN.md",
-            "docs/INTERACTION_DESIGN.md",
-            "docs/UI_DESIGN.md",
-            "docs/RISK_REGISTER.md",
-            "docs/AGENT_HANDOFF.md",
-            "docs/ADR/",
+            *artifact_paths_for_phase("design"),
             ".codex-os/environment.yaml",
             ".dockerignore",
             "compose.yaml",
@@ -278,12 +263,7 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         "html-prototype",
         "Build an offline, self-contained HTML interaction prototype covering all "
         "required UI states, then request independent UX confirmation.",
-        (
-            "docs/PRODUCT_DESIGN.md",
-            "docs/INTERACTION_DESIGN.md",
-            "docs/UI_DESIGN.md",
-            "docs/prototypes/",
-        ),
+        (*artifact_paths_for_phase("prototype"), "docs/prototypes/"),
         RiskLevel.MEDIUM,
     ),
     WorkflowPhase.IMPLEMENTATION: PhaseDefinition(
@@ -291,12 +271,12 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         "backend-implementation",
         "Implement the approved backend slice with migrations and tests in the assigned worktree.",
         (
+            *artifact_paths_for_phase("implementation"),
             "src/",
             "tests/",
             "migrations/",
             "pyproject.toml",
             "uv.lock",
-            "docs/CHANGELOG.md",
         ),
         RiskLevel.HIGH,
     ),
@@ -304,14 +284,14 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         "qa",
         "testing",
         "Run tests, review, dependency checks, and security verification; record evidence for G3.",
-        ("tests/", "reports/", "docs/TEST_PLAN.md"),
+        (*artifact_paths_for_phase("verify"), "tests/", "reports/"),
         RiskLevel.HIGH,
     ),
     WorkflowPhase.RELEASE: PhaseDefinition(
         "release-manager",
         "release-manager",
         "Create the release candidate, changelog, SBOM, checksums, and rollback evidence.",
-        ("release/", "docs/CHANGELOG.md", "reports/"),
+        (*artifact_paths_for_phase("release"), "release/", "reports/"),
         RiskLevel.HIGH,
     ),
     WorkflowPhase.MEMORY: PhaseDefinition(
@@ -319,7 +299,7 @@ PHASE_DEFINITIONS: dict[WorkflowPhase, PhaseDefinition] = {
         "memory-manager",
         "Record decisions, failures, release evidence, source hashes, "
         "and invalidation metadata for G4.",
-        ("docs/ADR/", "docs/CHANGELOG.md", ".codex-os/memory/"),
+        (*artifact_paths_for_phase("memory"), ".codex-os/memory/"),
         RiskLevel.MEDIUM,
     ),
 }

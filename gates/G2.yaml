@@ -1,12 +1,12 @@
 schema_version: '1.2'
 gate: G2
 documents:
-  - docs/OPEN_SOURCE_RESEARCH.md
-  - docs/TECH_STACK.md
-  - docs/ARCHITECTURE.md
-  - docs/API_SPEC.md
-  - docs/DATABASE.md
-  - docs/MIGRATION_SPEC.md
-  - docs/SECURITY.md
-  - docs/ADR/README.md
+  - artifact:open-source-research
+  - artifact:tech-stack
+  - artifact:adr-index
+  - artifact:architecture
+  - artifact:api-spec
+  - artifact:database
+  - artifact:migration-spec
+  - artifact:security
 git: {source_commit_required: true, push_required: true, enforce_allowed_paths: true}
