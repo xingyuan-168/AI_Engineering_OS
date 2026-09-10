@@ -1,530 +1,500 @@
-"""Project-isolated, source-verifiable Memory lifecycle and FTS5 storage."""
+"""Lightweight project memory with two storage layers (ADR-0016).
+
+The Git-tracked JSONL file "docs/memory/memory.jsonl" is the single source
+of truth: one JSON object per line with the fields "id", "type", "title",
+"summary", "source", "source_commit", "tags", "status", and
+"superseded_by". The SQLite "memory_index" table is a locally rebuildable
+search index refreshed by "reindex()" or the "codex-os memory reindex"
+command.
+
+Single-writer rule: subagents never write the JSONL directly. They submit
+candidates ("record_candidate") into the ignored runtime state directory;
+the main session merges them into the JSONL at task finish. Secrets and
+chat-log content are rejected.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
-from codex_ai_os.domain.governance import MemoryStatus
-from codex_ai_os.domain.ids import new_id
 from codex_ai_os.infrastructure.database import Database
+
+MEMORY_JSONL = "docs/memory/memory.jsonl"
+CANDIDATE_DIRECTORY = ".codex-os/state/memory-candidates"
+
+MEMORY_TYPES: tuple[str, ...] = ("decision", "bug", "lesson", "pattern", "project-summary")
+MEMORY_STATUSES: tuple[str, ...] = ("active", "superseded", "invalid")
+
+_SECRET_PATTERN = re.compile(
+    r"(?i)(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+    r"(?:password|token|secret|api[_-]?key)\s*[=:]\s*\S+)"
+)
+_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_COMMIT_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 
 class MemoryStoreError(RuntimeError):
-    """Raised when Memory provenance, lifecycle, scope, or redaction policy fails."""
+    """Raised when a memory record violates the JSONL contract."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryRecord:
+class MemoryEntry:
+    """One memory record as stored on the JSONL line."""
+
     id: str
-    project_id: str
-    run_id: str | None
-    task_id: str | None
     record_type: str
     title: str
-    content_ref: str
-    source_refs: tuple[str, ...]
-    source_hashes: dict[str, str]
-    confidence: float
+    summary: str
+    source: str
+    source_commit: str | None
     tags: tuple[str, ...]
-    scope: str
     status: str
-    state_version: int
-    created_at: str
-    updated_at: str
-    expires_at: str | None
+    superseded_by: str | None
+    line_number: int | None
+
+    def to_json_line(self) -> str:
+        payload = {
+            "id": self.id,
+            "type": self.record_type,
+            "title": self.title,
+            "summary": self.summary,
+            "source": self.source,
+            "source_commit": self.source_commit,
+            "tags": list(self.tags),
+            "status": self.status,
+            "superseded_by": self.superseded_by,
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+@dataclass(frozen=True, slots=True)
+class ReindexResult:
+    indexed: int
+    removed: int
+    invalid_lines: tuple[str, ...]
 
 
 class MemoryStore:
-    def __init__(self, database: Database, project_root: Path, project_id: str) -> None:
+    def __init__(self, database: Database, project_root: Path) -> None:
         self.database = database
         self.root = project_root.resolve()
-        self.project_id = project_id
 
-    def create_candidate(
+    def record(
         self,
         *,
         record_type: str,
         title: str,
-        content_ref: str,
-        source_refs: tuple[str, ...],
-        confidence: float,
+        summary: str,
+        source: str,
+        source_commit: str | None = None,
         tags: tuple[str, ...] = (),
-        scope: str = "project",
-        run_id: str | None = None,
-        task_id: str | None = None,
-        expires_at: str | None = None,
-    ) -> MemoryRecord:
-        allowed_types = {"decision", "project", "bug", "experience", "release", "failure"}
-        if record_type not in allowed_types:
-            raise MemoryStoreError(f"unsupported Memory record type: {record_type}")
-        if scope != "project":
-            raise MemoryStoreError("Memory scope must be project")
-        if not 0 <= confidence <= 1:
-            raise MemoryStoreError("Memory confidence must be within 0..1")
-        normalized_title = title.strip()
-        if not normalized_title:
-            raise MemoryStoreError("Memory title is required")
-        content_path = self._safe_file(content_ref)
-        content = content_path.read_text(encoding="utf-8")
-        if _contains_secret(content) or _contains_secret(normalized_title):
-            raise MemoryStoreError("Memory content contains a suspected secret")
-        if not source_refs:
-            raise MemoryStoreError("Memory requires at least one source reference")
-        source_hashes = {source: _sha256(self._safe_file(source)) for source in source_refs}
-        now = _utc_now()
-        record = MemoryRecord(
-            id=new_id("MEMORY"),
-            project_id=self.project_id,
-            run_id=run_id,
-            task_id=task_id,
+        status: str = "active",
+        superseded_by: str | None = None,
+    ) -> MemoryEntry:
+        """Append one validated record to the JSONL source of truth.
+
+        Main-session writer only (single-writer rule, ADR-0016).
+        """
+
+        entry, line = self._build_entry(
             record_type=record_type,
-            title=normalized_title,
-            content_ref=content_ref,
-            source_refs=source_refs,
-            source_hashes=source_hashes,
-            confidence=confidence,
-            tags=tuple(dict.fromkeys(tags)),
-            scope=scope,
-            status=MemoryStatus.PENDING.value,
-            state_version=0,
-            created_at=now,
-            updated_at=now,
-            expires_at=expires_at,
+            title=title,
+            summary=summary,
+            source=source,
+            source_commit=source_commit,
+            tags=tags,
+            status=status,
+            superseded_by=superseded_by,
         )
-        with self.database.connection() as connection:
-            try:
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    """
-                    INSERT INTO memory_records(
-                        id, project_id, run_id, task_id, record_type, title, content_ref,
-                        source_refs_json, source_hashes_json, confidence, tags_json,
-                        scope, status, created_at, updated_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
-                    """,
-                    (
-                        record.id,
-                        record.project_id,
-                        record.run_id,
-                        record.task_id,
-                        record.record_type,
-                        record.title,
-                        record.content_ref,
-                        _json(record.source_refs),
-                        _json(record.source_hashes),
-                        record.confidence,
-                        _json(record.tags),
-                        record.scope,
-                        record.created_at,
-                        record.updated_at,
-                        record.expires_at,
-                    ),
+        entries, invalid = self._parse_jsonl()
+        if invalid:
+            raise MemoryStoreError(
+                "MEMORY_JSONL_INVALID",
+                "docs/memory/memory.jsonl contains invalid lines; fix them first: "
+                + "; ".join(invalid[:3]),
+            )
+        known_ids = {item.id for item in entries}
+        if entry.id in known_ids:
+            raise MemoryStoreError("MEMORY_DUPLICATE", f"memory id already exists: {entry.id}")
+        for item in entries:
+            if (
+                item.status == "active"
+                and item.record_type == entry.record_type
+                and item.title.casefold() == entry.title.casefold()
+            ):
+                raise MemoryStoreError(
+                    "MEMORY_DUPLICATE",
+                    "an active memory with the same type and title exists: " + item.title,
                 )
-                connection.execute(
-                    """
-                    INSERT INTO memory_search_documents(
-                        memory_id, project_id, title, content, tags, source_ref,
-                        status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-                    """,
-                    (
-                        record.id,
-                        record.project_id,
-                        record.title,
-                        content,
-                        " ".join(record.tags),
-                        record.content_ref,
-                        now,
-                        now,
-                    ),
-                )
-                _event(connection, record, "memory.pending", {})
-                connection.commit()
-            except sqlite3.Error:
-                connection.rollback()
-                raise
-        return record
+        path = self._jsonl_path()
+        lines = [item.to_json_line() for item in entries]
+        lines.append(line)
+        _atomic_write(path, "\n".join(lines) + "\n")
+        self.reindex()
+        return entry
 
-    def activate(self, memory_id: str, *, reviewer: str = "memory-manager") -> MemoryRecord:
-        return self.review(
-            memory_id,
-            reviewer=reviewer,
-            decision="activate",
-            reason="source, Secret, scope, and confidence checks passed",
-        )
-
-    def review(
+    def record_candidate(
         self,
-        memory_id: str,
         *,
-        reviewer: str,
-        decision: str,
-        reason: str,
-        expected_version: int | None = None,
-    ) -> MemoryRecord:
-        decisions = {"activate", "needs_review", "revoke", "expire", "delete"}
-        if decision not in decisions:
-            raise MemoryStoreError(f"unsupported Memory review decision: {decision}")
-        if not reviewer.strip() or not reason.strip():
-            raise MemoryStoreError("Memory review requires reviewer and reason")
-        record = self.get(memory_id)
-        version = record.state_version if expected_version is None else expected_version
-        if version != record.state_version:
-            raise MemoryStoreError(
-                f"STATE_VERSION_CONFLICT: expected Memory version {version}, "
-                f"found {record.state_version}"
-            )
-        if decision == "activate" and record.status == MemoryStatus.ACTIVE.value:
-            return record
-        secret_ok = False
-        scope_ok = record.scope == "project" and record.project_id == self.project_id
-        confidence_ok = record.confidence >= 0.7
-        try:
-            self._verify_sources(record)
-            content = self._safe_file(record.content_ref).read_text(encoding="utf-8")
-            secret_ok = not _contains_secret(content) and not _contains_secret(record.title)
-        except MemoryStoreError:
-            secret_ok = False
-        if decision == "activate" and not (secret_ok and scope_ok and confidence_ok):
-            raise MemoryStoreError(
-                "Memory activation requires matching sources, Secret/scope checks, "
-                "and confidence >= 0.7"
-            )
-        target = {
-            "activate": MemoryStatus.ACTIVE.value,
-            "needs_review": MemoryStatus.NEEDS_REVIEW.value,
-            "revoke": MemoryStatus.REVOKED.value,
-            "expire": MemoryStatus.EXPIRED.value,
-            "delete": MemoryStatus.DELETED.value,
-        }[decision]
-        now = _utc_now()
-        review_id = new_id("MEMORYREVIEW")
-        with self.database.connection() as connection:
+        record_type: str,
+        title: str,
+        summary: str,
+        source: str,
+        source_commit: str | None = None,
+        tags: tuple[str, ...] = (),
+        status: str = "active",
+        superseded_by: str | None = None,
+    ) -> MemoryEntry:
+        """Submit a candidate from a subagent without touching the JSONL."""
+
+        entry, _ = self._build_entry(
+            record_type=record_type,
+            title=title,
+            summary=summary,
+            source=source,
+            source_commit=source_commit,
+            tags=tags,
+            status=status,
+            superseded_by=superseded_by,
+        )
+        directory = self.root / CANDIDATE_DIRECTORY
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(_entry_payload(entry), ensure_ascii=False, indent=2)
+        _atomic_write(directory / (entry.id + ".json"), payload + "\n")
+        return entry
+
+    def candidates(self) -> tuple[MemoryEntry, ...]:
+        """List submitted candidates awaiting the main-session merge."""
+
+        directory = self.root / CANDIDATE_DIRECTORY
+        if not directory.is_dir():
+            return ()
+        found: list[MemoryEntry] = []
+        for path in sorted(directory.glob("*.json")):
             try:
-                connection.execute("BEGIN IMMEDIATE")
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                found.append(_entry_from_payload(raw, line_number=None))
+            except (OSError, UnicodeError, ValueError, MemoryStoreError):
+                continue
+        return tuple(found)
+
+    def load(self) -> tuple[tuple[MemoryEntry, ...], tuple[str, ...]]:
+        """Return (entries, invalid-line descriptions) from the JSONL."""
+
+        entries, invalid = self._parse_jsonl()
+        return tuple(entries), tuple(invalid)
+
+    def reindex(self) -> ReindexResult:
+        """Rebuild the SQLite search index from the JSONL source of truth."""
+
+        entries, invalid = self._parse_jsonl()
+        now = _utc_now()
+        with self.database.connection() as connection:
+            before = int(connection.execute("SELECT COUNT(*) FROM memory_index").fetchone()[0])
+            connection.execute("DELETE FROM memory_index")
+            for entry in entries:
                 connection.execute(
                     """
-                    INSERT INTO memory_reviews(
-                        id, memory_id, reviewer, decision, reason, source_hashes_json,
-                        secret_check_passed, scope_check_passed,
-                        confidence_check_passed, expected_version, created_at
+                    INSERT INTO memory_index(
+                        id, record_type, title, summary, source, source_commit,
+                        tags, status, superseded_by, line_number, indexed_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        review_id,
-                        memory_id,
-                        reviewer.strip(),
-                        decision,
-                        reason.strip(),
-                        _json(record.source_hashes),
-                        int(secret_ok),
-                        int(scope_ok),
-                        int(confidence_ok),
-                        version,
+                        entry.id,
+                        entry.record_type,
+                        entry.title,
+                        entry.summary,
+                        entry.source,
+                        entry.source_commit,
+                        json.dumps(list(entry.tags), ensure_ascii=False),
+                        entry.status,
+                        entry.superseded_by,
+                        entry.line_number,
                         now,
                     ),
                 )
-                changed = connection.execute(
-                    "UPDATE memory_records SET status = ?, state_version = state_version + 1, "
-                    "updated_at = ? WHERE id = ? AND project_id = ? AND state_version = ?",
-                    (target, now, memory_id, self.project_id, version),
-                ).rowcount
-                if changed != 1:
-                    raise MemoryStoreError(
-                        f"STATE_VERSION_CONFLICT: Memory {memory_id} changed during review"
-                    )
-                connection.execute(
-                    "UPDATE memory_search_documents SET status = ?, updated_at = ? "
-                    "WHERE memory_id = ? AND project_id = ?",
-                    (target, now, memory_id, self.project_id),
-                )
-                _event(
-                    connection,
-                    record,
-                    f"memory.{target}",
-                    {"review_id": review_id, "reviewer": reviewer, "reason": reason},
-                    suffix=review_id,
-                )
-                connection.commit()
-            except (sqlite3.Error, MemoryStoreError):
-                connection.rollback()
-                raise
-        return self.get(memory_id)
-
-    def supersede(
-        self,
-        old_memory_id: str,
-        new_memory_id: str,
-        *,
-        reviewer: str,
-        reason: str,
-    ) -> MemoryRecord:
-        old = self.get(old_memory_id)
-        new = self.get(new_memory_id)
-        if new.status != MemoryStatus.ACTIVE.value:
-            raise MemoryStoreError("superseding Memory must be active")
-        if old.status not in {MemoryStatus.ACTIVE.value, MemoryStatus.NEEDS_REVIEW.value}:
-            raise MemoryStoreError(f"Memory cannot be superseded from {old.status}")
-        now = _utc_now()
-        with self.database.connection() as connection:
-            try:
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    """
-                    INSERT INTO memory_links(
-                        source_memory_id, target_memory_id, relation, created_at
-                    ) VALUES (?, ?, 'supersedes', ?)
-                    """,
-                    (new_memory_id, old_memory_id, now),
-                )
-                connection.execute(
-                    "UPDATE memory_records SET status = 'superseded', "
-                    "state_version = state_version + 1, updated_at = ? "
-                    "WHERE id = ? AND project_id = ? AND state_version = ?",
-                    (now, old_memory_id, self.project_id, old.state_version),
-                )
-                connection.execute(
-                    "UPDATE memory_search_documents SET status = 'superseded', updated_at = ? "
-                    "WHERE memory_id = ? AND project_id = ?",
-                    (now, old_memory_id, self.project_id),
-                )
-                _event(
-                    connection,
-                    old,
-                    "memory.superseded",
-                    {
-                        "superseded_by": new_memory_id,
-                        "reviewer": reviewer,
-                        "reason": reason,
-                    },
-                    suffix=new_memory_id,
-                )
-                connection.commit()
-            except sqlite3.Error:
-                connection.rollback()
-                raise
-        return self.get(old_memory_id)
-
-    def invalidate_changed_sources(self) -> tuple[str, ...]:
-        invalidated: list[str] = []
-        active = self.search("", statuses=(MemoryStatus.ACTIVE.value,), limit=100)
-        for record in active:
-            try:
-                self._verify_sources(record)
-            except MemoryStoreError as exc:
-                self.review(
-                    record.id,
-                    reviewer="memory-source-monitor",
-                    decision="needs_review",
-                    reason=str(exc),
-                )
-                invalidated.append(record.id)
-        return tuple(invalidated)
+            connection.commit()
+        return ReindexResult(len(entries), max(before - len(entries), 0), tuple(invalid))
 
     def search(
         self,
-        query: str,
+        query: str = "",
         *,
         record_types: tuple[str, ...] = (),
         statuses: tuple[str, ...] = ("active",),
-        tags: tuple[str, ...] = (),
-        created_from: str | None = None,
-        created_to: str | None = None,
-        source_ref: str | None = None,
         limit: int = 20,
-    ) -> list[MemoryRecord]:
+    ) -> tuple[MemoryEntry, ...]:
+        """Search the rebuildable index (reindexes automatically when empty)."""
+
         if limit < 1 or limit > 100:
-            raise MemoryStoreError("Memory search limit must be within 1..100")
-        allowed_statuses = {status.value for status in MemoryStatus}
-        if not statuses or set(statuses) - allowed_statuses or "deleted" in statuses:
-            raise MemoryStoreError("Memory search statuses are invalid")
-        clauses = ["m.project_id = ?"]
-        parameters: list[object] = [self.project_id]
-        clauses.append(f"m.status IN ({','.join('?' for _ in statuses)})")
-        parameters.extend(statuses)
+            raise MemoryStoreError("MEMORY_LIMIT", "memory search limit must be within 1..100")
+        unknown_types = set(record_types) - set(MEMORY_TYPES)
+        if unknown_types:
+            raise MemoryStoreError(
+                "MEMORY_TYPE", "unsupported memory types: " + str(sorted(unknown_types))
+            )
+        unknown_statuses = set(statuses) - set(MEMORY_STATUSES)
+        if unknown_statuses or not statuses:
+            raise MemoryStoreError(
+                "MEMORY_STATUS", "unsupported memory statuses: " + str(sorted(unknown_statuses))
+            )
+        with self.database.connection() as connection:
+            count = int(connection.execute("SELECT COUNT(*) FROM memory_index").fetchone()[0])
+        if count == 0 and self._jsonl_path().is_file():
+            self.reindex()
+        clauses = ["status IN (" + ",".join("?" for _ in statuses) + ")"]
+        parameters: list[object] = list(statuses)
         if record_types:
-            clauses.append(f"m.record_type IN ({','.join('?' for _ in record_types)})")
+            clauses.append(
+                "record_type IN (" + ",".join("?" for _ in record_types) + ")"
+            )
             parameters.extend(record_types)
-        if created_from is not None:
-            clauses.append("m.created_at >= ?")
-            parameters.append(created_from)
-        if created_to is not None:
-            clauses.append("m.created_at <= ?")
-            parameters.append(created_to)
-        if source_ref is not None:
-            clauses.append("d.source_ref = ?")
-            parameters.append(source_ref)
-        for tag in tags:
-            clauses.append("m.tags_json LIKE ?")
-            parameters.append(f'%"{tag}"%')
-        normalized_query = query.strip()
-        if normalized_query:
-            match = _fts_query(normalized_query)
-            if not match:
-                return []
-            sql = (
-                "SELECT m.* FROM memory_fts "
-                "JOIN memory_search_documents d ON d.rowid = memory_fts.rowid "
-                "JOIN memory_records m ON m.id = d.memory_id "
-                f"WHERE memory_fts MATCH ? AND {' AND '.join(clauses)} "
-                "ORDER BY bm25(memory_fts), m.updated_at DESC, m.id DESC LIMIT ?"
+        for term in _query_terms(query):
+            clauses.append(
+                "(title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' "
+                "OR tags LIKE ? ESCAPE '\\' OR source LIKE ? ESCAPE '\\')"
             )
-            parameters = [match, *parameters, limit]
-        else:
-            sql = (
-                "SELECT m.* FROM memory_records m "
-                "JOIN memory_search_documents d ON d.memory_id = m.id "
-                f"WHERE {' AND '.join(clauses)} "
-                "ORDER BY m.updated_at DESC, m.id DESC LIMIT ?"
-            )
-            parameters.append(limit)
+            escaped = "%" + _escape_like(term) + "%"
+            parameters.extend([escaped, escaped, escaped, escaped])
+        sql = (
+            "SELECT * FROM memory_index WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY line_number LIMIT ?"
+        )
+        parameters.append(limit)
         with self.database.connection() as connection:
             rows = connection.execute(sql, tuple(parameters)).fetchall()
-        return [_from_row(row) for row in rows]
+        return tuple(_entry_from_row(row) for row in rows)
 
-    def get(self, memory_id: str) -> MemoryRecord:
-        with self.database.connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM memory_records WHERE id = ? AND project_id = ?",
-                (memory_id, self.project_id),
-            ).fetchone()
-        if row is None:
-            raise MemoryStoreError(f"Memory record not found: {memory_id}")
-        return _from_row(row)
+    def _jsonl_path(self) -> Path:
+        return self.root / MEMORY_JSONL
 
-    def _verify_sources(self, record: MemoryRecord) -> None:
-        for source, expected in record.source_hashes.items():
-            actual = _sha256(self._safe_file(source))
-            if actual != expected:
-                raise MemoryStoreError(f"Memory source hash changed: {source}")
-
-    def _safe_file(self, relative: str) -> Path:
-        path = Path(relative.replace("\\", "/"))
-        if path.is_absolute() or ".." in path.parts:
-            raise MemoryStoreError(f"Memory path is unsafe: {relative}")
-        candidate = self.root.joinpath(*path.parts)
+    def _parse_jsonl(self) -> tuple[list[MemoryEntry], list[str]]:
+        path = self._jsonl_path()
+        if not path.is_file():
+            return [], []
+        entries: list[MemoryEntry] = []
+        invalid: list[str] = []
+        seen_ids: set[str] = set()
         try:
-            resolved = candidate.resolve(strict=True)
-        except OSError as exc:
-            raise MemoryStoreError(f"Memory path is missing: {relative}") from exc
-        if (
-            not resolved.is_relative_to(self.root)
-            or _is_link_like(candidate)
-            or not candidate.is_file()
-        ):
-            raise MemoryStoreError(f"Memory path escapes project: {relative}")
-        return candidate
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            return [], [MEMORY_JSONL + ": unreadable: " + str(exc)]
+        for number, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                raw = json.loads(stripped)
+                entry = _entry_from_payload(raw, line_number=number)
+            except (ValueError, MemoryStoreError) as exc:
+                invalid.append(f"{MEMORY_JSONL}:{number}: {exc}")
+                continue
+            if entry.id in seen_ids:
+                invalid.append(f"{MEMORY_JSONL}:{number}: duplicate id {entry.id}")
+                continue
+            seen_ids.add(entry.id)
+            entries.append(entry)
+        return entries, invalid
+
+    def _build_entry(
+        self,
+        *,
+        record_type: str,
+        title: str,
+        summary: str,
+        source: str,
+        source_commit: str | None,
+        tags: tuple[str, ...],
+        status: str,
+        superseded_by: str | None,
+    ) -> tuple[MemoryEntry, str]:
+        normalized_type = record_type.strip().casefold()
+        if normalized_type not in MEMORY_TYPES:
+            raise MemoryStoreError(
+                "MEMORY_TYPE",
+                f"unsupported memory type {record_type!r}; expected one of {list(MEMORY_TYPES)}",
+            )
+        normalized_status = status.strip().casefold()
+        if normalized_status not in MEMORY_STATUSES:
+            raise MemoryStoreError(
+                "MEMORY_STATUS",
+                f"unsupported memory status {status!r}; expected one of {list(MEMORY_STATUSES)}",
+            )
+        clean_title = title.strip()
+        clean_summary = " ".join(summary.split())
+        clean_source = source.strip()
+        if not clean_title or len(clean_title) > 200:
+            raise MemoryStoreError("MEMORY_TITLE", "memory title must be 1..200 characters")
+        if not clean_summary or len(clean_summary) > 2000:
+            raise MemoryStoreError(
+                "MEMORY_SUMMARY", "memory summary must be 1..2000 characters"
+            )
+        if not clean_source or len(clean_source) > 1024:
+            raise MemoryStoreError(
+                "MEMORY_SOURCE", "memory source must be 1..1024 characters"
+            )
+        if "\n" in clean_title or "\n" in clean_source:
+            raise MemoryStoreError("MEMORY_FIELD", "memory fields must be single-line")
+        if source_commit is not None:
+            source_commit = source_commit.strip() or None
+            if source_commit is not None and _COMMIT_PATTERN.match(source_commit) is None:
+                raise MemoryStoreError(
+                    "MEMORY_COMMIT", "source_commit must be a 7..64 hex commit sha"
+                )
+        clean_tags = tuple(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
+        if len(clean_tags) > 12:
+            raise MemoryStoreError("MEMORY_TAGS", "memory accepts at most 12 tags")
+        if normalized_status == "superseded" and not (superseded_by or "").strip():
+            raise MemoryStoreError(
+                "MEMORY_SUPERSEDED", "superseded memory requires superseded_by"
+            )
+        blob = clean_title + " " + clean_summary
+        if _SECRET_PATTERN.search(blob) or _SECRET_PATTERN.search(clean_source):
+            raise MemoryStoreError(
+                "MEMORY_SECRET", "memory content contains a suspected secret"
+            )
+        identity = "|".join(
+            (normalized_type, clean_title.casefold(), clean_summary, clean_source)
+        )
+        entry_id = "MEM-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+        entry = MemoryEntry(
+            id=entry_id,
+            record_type=normalized_type,
+            title=clean_title,
+            summary=clean_summary,
+            source=clean_source,
+            source_commit=source_commit,
+            tags=clean_tags,
+            status=normalized_status,
+            superseded_by=(superseded_by or "").strip() or None,
+            line_number=None,
+        )
+        return entry, entry.to_json_line()
 
 
-def _event(
-    connection: sqlite3.Connection,
-    record: MemoryRecord,
-    event_type: str,
-    details: dict[str, str],
-    *,
-    suffix: str = "",
-) -> None:
-    connection.execute(
-        """
-        INSERT INTO events(
-            event_id, project_id, run_id, task_id, event_type,
-            idempotency_key, payload_json, approval_required, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-        """,
-        (
-            new_id("EVENT"),
-            record.project_id,
-            record.run_id,
-            record.task_id,
-            event_type,
-            f"{record.id}:{event_type}:{suffix}",
-            _json({"memory_id": record.id, "source_hashes": record.source_hashes, **details}),
-            _utc_now(),
-        ),
+def _entry_payload(entry: MemoryEntry) -> dict[str, object]:
+    return json.loads(entry.to_json_line())
+
+
+def _entry_from_payload(raw: object, *, line_number: int | None) -> MemoryEntry:
+    if not isinstance(raw, dict):
+        raise ValueError("memory line must be a JSON object")
+    record_type = str(raw.get("type", "")).strip().casefold()
+    if record_type not in MEMORY_TYPES:
+        raise ValueError("unsupported type: " + repr(record_type))
+    status = str(raw.get("status", "active")).strip().casefold()
+    if status not in MEMORY_STATUSES:
+        raise ValueError("unsupported status: " + repr(status))
+    entry_id = str(raw.get("id", "")).strip()
+    if not entry_id or _ID_PATTERN.match(entry_id) is None:
+        raise ValueError("id is required (1..64 word characters)")
+    title = str(raw.get("title", "")).strip()
+    summary = " ".join(str(raw.get("summary", "")).split())
+    source = str(raw.get("source", "")).strip()
+    if not title:
+        raise ValueError("title is required")
+    if not summary:
+        raise ValueError("summary is required")
+    if not source:
+        raise ValueError("source is required")
+    tags_raw = raw.get("tags", [])
+    if not isinstance(tags_raw, list) or not all(isinstance(tag, str) for tag in tags_raw):
+        raise ValueError("tags must be a string array")
+    superseded_by = raw.get("superseded_by")
+    if superseded_by is not None and not str(superseded_by).strip():
+        superseded_by = None
+    if status == "superseded" and not (superseded_by or "").strip():
+        raise ValueError("superseded memory requires superseded_by")
+    source_commit = raw.get("source_commit")
+    if source_commit is not None and not str(source_commit).strip():
+        source_commit = None
+    return MemoryEntry(
+        id=entry_id,
+        record_type=record_type,
+        title=title,
+        summary=summary,
+        source=source,
+        source_commit=str(source_commit) if source_commit else None,
+        tags=tuple(str(tag) for tag in tags_raw),
+        status=status,
+        superseded_by=str(superseded_by) if superseded_by else None,
+        line_number=line_number,
     )
 
 
-def _from_row(row: sqlite3.Row) -> MemoryRecord:
-    source_refs = _string_tuple(str(row["source_refs_json"]), "Memory source_refs")
-    source_hashes = _string_dict(str(row["source_hashes_json"]), "Memory source_hashes")
-    tags = _string_tuple(str(row["tags_json"]), "Memory tags")
-    return MemoryRecord(
+def _entry_from_row(row: sqlite3.Row) -> MemoryEntry:
+    tags_raw = json.loads(str(row["tags"]))
+    return MemoryEntry(
         id=str(row["id"]),
-        project_id=str(row["project_id"]),
-        run_id=str(row["run_id"]) if row["run_id"] is not None else None,
-        task_id=str(row["task_id"]) if row["task_id"] is not None else None,
         record_type=str(row["record_type"]),
         title=str(row["title"]),
-        content_ref=str(row["content_ref"]),
-        source_refs=source_refs,
-        source_hashes=source_hashes,
-        confidence=float(row["confidence"]),
-        tags=tags,
-        scope=str(row["scope"]),
+        summary=str(row["summary"]),
+        source=str(row["source"]),
+        source_commit=str(row["source_commit"]) if row["source_commit"] is not None else None,
+        tags=tuple(str(tag) for tag in tags_raw),
         status=str(row["status"]),
-        state_version=int(row["state_version"]),
-        created_at=str(row["created_at"]),
-        updated_at=str(row["updated_at"]),
-        expires_at=str(row["expires_at"]) if row["expires_at"] is not None else None,
+        superseded_by=str(row["superseded_by"]) if row["superseded_by"] is not None else None,
+        line_number=int(row["line_number"]),
     )
 
 
-def _string_tuple(raw: str, label: str) -> tuple[str, ...]:
-    value: object = json.loads(raw)
-    if not isinstance(value, list):
-        raise MemoryStoreError(f"{label} must be a JSON string array")
-    object_value = cast(list[object], value)
-    if not all(isinstance(item, str) for item in object_value):
-        raise MemoryStoreError(f"{label} must be a JSON string array")
-    return tuple(cast(list[str], object_value))
+def _query_terms(query: str) -> list[str]:
+    return [term for term in re.findall(r"[\w.-]+", query, re.UNICODE) if term][:12]
 
 
-def _string_dict(raw: str, label: str) -> dict[str, str]:
-    value: object = json.loads(raw)
-    if not isinstance(value, dict):
-        raise MemoryStoreError(f"{label} must be a JSON string object")
-    object_value = cast(dict[object, object], value)
-    if not all(
-        isinstance(key, str) and isinstance(item, str) for key, item in object_value.items()
-    ):
-        raise MemoryStoreError(f"{label} keys and values must be strings")
-    return cast(dict[str, str], object_value)
+def _escape_like(term: str) -> str:
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _contains_secret(content: str) -> bool:
-    return bool(
-        re.search(
-            r"(?i)(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
-            r"(?:password|token|secret|api[_-]?key)\s*[=:]\s*\S+)",
-            content,
-        )
-    )
-
-
-def _fts_query(value: str) -> str:
-    tokens = re.findall(r"[\w.-]+", value, re.UNICODE)
-    return " AND ".join(f'"{token}"*' for token in tokens[:20])
-
-
-def _is_link_like(path: Path) -> bool:
-    is_junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or bool(is_junction is not None and is_junction())
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def _atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            delete=False,
+            dir=path.parent,
+            prefix="." + path.name + ".",
+            suffix=".tmp",
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+__all__ = [
+    "CANDIDATE_DIRECTORY",
+    "MEMORY_JSONL",
+    "MEMORY_STATUSES",
+    "MEMORY_TYPES",
+    "MemoryEntry",
+    "MemoryStore",
+    "MemoryStoreError",
+    "ReindexResult",
+]

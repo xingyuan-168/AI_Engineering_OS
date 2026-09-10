@@ -99,25 +99,66 @@ def memory_search(
     query: str = "",
     limit: int = 20,
 ) -> dict[str, Any]:
-    """Search active project Memory records."""
+    """Search the project memory index rebuilt from docs/memory/memory.jsonl."""
 
     def operation() -> dict[str, Any]:
         config = load_project_config(Path(project_root).resolve())
         database = Database(config.root / ".codex-os" / "state" / "state.db")
         database.migrate()
-        store = MemoryStore(database, config.root, config.project_id)
+        store = MemoryStore(database, config.root)
         records = store.search(query, statuses=("active",), limit=limit)
         return _success(
             results=[
                 {
                     "id": record.id,
-                    "record_type": record.record_type,
+                    "type": record.record_type,
                     "title": record.title,
-                    "content_ref": record.content_ref,
+                    "summary": record.summary,
+                    "source": record.source,
+                    "source_commit": record.source_commit,
                     "tags": list(record.tags),
+                    "status": record.status,
                 }
                 for record in records
             ]
+        )
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def memory_record(
+    project_root: str,
+    record_type: str,
+    title: str,
+    summary: str,
+    source: str,
+    source_commit: str | None = None,
+    tags: list[str] | None = None,
+    candidate: bool = False,
+) -> dict[str, Any]:
+    """Record one memory entry; subagents must set candidate=true."""
+
+    def operation() -> dict[str, Any]:
+        config = load_project_config(Path(project_root).resolve())
+        database = Database(config.root / ".codex-os" / "state" / "state.db")
+        database.migrate()
+        store = MemoryStore(database, config.root)
+        writer = store.record_candidate if candidate else store.record
+        entry = writer(
+            record_type=record_type,
+            title=title,
+            summary=summary,
+            source=source,
+            source_commit=source_commit,
+            tags=tuple(tags or ()),
+        )
+        return _success(
+            id=entry.id,
+            type=entry.record_type,
+            title=entry.title,
+            status=entry.status,
+            candidate=candidate,
         )
 
     return _invoke(operation)

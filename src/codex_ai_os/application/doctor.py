@@ -35,10 +35,9 @@ class DoctorReport:
 
 class DoctorService:
     _PATH_COLUMNS: ClassVar[dict[str, tuple[str, ...]]] = {
-        "projects": ("root",),
-        "tasks": ("worktree",),
+        "tasks": ("title",),
         "worktrees": ("path",),
-        "memory_records": ("content_ref",),
+        "memory_index": ("title", "summary", "source"),
     }
 
     def __init__(self, project_root: Path | None = None) -> None:

@@ -18,7 +18,7 @@ from codex_ai_os.domain.config import ProjectType, RiskLevel
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
 from codex_ai_os.infrastructure.documents import DocumentManager
-from codex_ai_os.infrastructure.memory import MemoryStore, MemoryStoreError
+from codex_ai_os.infrastructure.memory import MemoryEntry, MemoryStore, MemoryStoreError
 from codex_ai_os.infrastructure.path_codec import configure_utf8_stdio
 
 app = typer.Typer(
@@ -223,41 +223,151 @@ def authorize_hook_command() -> None:
         typer.echo(json.dumps(output, ensure_ascii=False))
 
 
+def _memory_store(project_root: Path) -> MemoryStore:
+    config = load_project_config(project_root.resolve())
+    database = Database(config.root / ".codex-os" / "state" / "state.db")
+    database.migrate()
+    return MemoryStore(database, config.root)
+
+
 @memory_app.command("search")
 def memory_search_command(
     query: Annotated[str, typer.Argument(help="Search text.")] = "",
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     limit: Annotated[int, typer.Option("--limit")] = 20,
+    record_type: Annotated[str | None, typer.Option("--type")] = None,
+    status: Annotated[str, typer.Option("--status")] = "active",
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
-    """Search active project Memory records."""
+    """Search the project memory index rebuilt from docs/memory/memory.jsonl."""
 
     try:
-        config = load_project_config(project_root.resolve())
-        database = Database(config.root / ".codex-os" / "state" / "state.db")
-        database.migrate()
-        store = MemoryStore(database, config.root, config.project_id)
-        records = store.search(query, statuses=("active",), limit=limit)
+        store = _memory_store(project_root)
+        types = (record_type,) if record_type else ()
+        records = store.search(
+            query,
+            record_types=types,
+            statuses=(status,),
+            limit=limit,
+        )
     except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
         return
-    data = {
-        "results": [
-            {
-                "id": record.id,
-                "record_type": record.record_type,
-                "title": record.title,
-                "content_ref": record.content_ref,
-                "tags": list(record.tags),
-            }
-            for record in records
-        ]
-    }
+    data = {"results": [_memory_payload(record) for record in records]}
     emit(
         success_envelope(data),
         json_output=json_output,
         human=f"{len(records)} memory record(s) found.",
     )
+
+
+@memory_app.command("record")
+def memory_record_command(
+    title: Annotated[str, typer.Option("--title")],
+    summary: Annotated[str, typer.Option("--summary")],
+    source: Annotated[str, typer.Option("--source", help="Source path or URL.")],
+    record_type: Annotated[str, typer.Option("--type")] = "decision",
+    source_commit: Annotated[str | None, typer.Option("--source-commit")] = None,
+    tags: Annotated[str, typer.Option("--tags", help="Comma separated tags.")] = "",
+    status: Annotated[str, typer.Option("--status")] = "active",
+    superseded_by: Annotated[str | None, typer.Option("--superseded-by")] = None,
+    candidate: Annotated[bool, typer.Option("--candidate")] = False,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Record one memory entry (main session) or a candidate (--candidate)."""
+
+    tag_tuple = tuple(tag.strip() for tag in tags.split(",") if tag.strip())
+    try:
+        store = _memory_store(project_root)
+        writer = store.record_candidate if candidate else store.record
+        entry = writer(
+            record_type=record_type,
+            title=title,
+            summary=summary,
+            source=source,
+            source_commit=source_commit,
+            tags=tag_tuple,
+            status=status,
+            superseded_by=superseded_by,
+        )
+    except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    emit(
+        success_envelope({"entry": _memory_payload(entry), "candidate": candidate}),
+        json_output=json_output,
+        human=("Candidate stored: " if candidate else "Memory recorded: ") + entry.id,
+    )
+
+
+@memory_app.command("reindex")
+def memory_reindex_command(
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Rebuild the SQLite memory index from docs/memory/memory.jsonl."""
+
+    try:
+        store = _memory_store(project_root)
+        result = store.reindex()
+    except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    data = {
+        "indexed": result.indexed,
+        "removed": result.removed,
+        "invalid_lines": list(result.invalid_lines),
+    }
+    ok = not result.invalid_lines
+    envelope = success_envelope(data) if ok else error_envelope(
+        "MEMORY_JSONL_INVALID", "memory.jsonl contains invalid lines", data
+    )
+    emit(
+        envelope,
+        json_output=json_output,
+        human=(
+            f"Reindexed {result.indexed} memory record(s)."
+            if ok
+            else f"Reindexed with {len(result.invalid_lines)} invalid line(s)."
+        ),
+    )
+    if not ok:
+        raise typer.Exit(code=2)
+
+
+@memory_app.command("candidates")
+def memory_candidates_command(
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """List subagent memory candidates awaiting the main-session merge."""
+
+    try:
+        store = _memory_store(project_root)
+        records = store.candidates()
+    except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    data = {"results": [_memory_payload(record) for record in records]}
+    emit(
+        success_envelope(data),
+        json_output=json_output,
+        human=f"{len(records)} candidate(s) waiting.",
+    )
+
+
+def _memory_payload(record: MemoryEntry) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "type": record.record_type,
+        "title": record.title,
+        "summary": record.summary,
+        "source": record.source,
+        "source_commit": record.source_commit,
+        "tags": list(record.tags),
+        "status": record.status,
+    }
 
 
 @app.command("mcp")

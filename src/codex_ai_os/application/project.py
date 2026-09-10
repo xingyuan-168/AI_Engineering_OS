@@ -1,8 +1,7 @@
-"""Project initialization use case (governance-core surface)."""
+"""Project initialization use case (governance-core surface, ADR-0016)."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +18,6 @@ from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentCheckReport, DocumentManager
-from codex_ai_os.infrastructure.projects import ProjectStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +59,6 @@ class ProjectInitializer:
                 project_type=project_type,
                 risk_level=risk_level,
                 git_push_policy=git_push_policy,
-                document_version="0.1.0",
             )
             config_text = yaml.safe_dump(
                 _serializable_config(config),
@@ -85,12 +82,7 @@ class ProjectInitializer:
         context_path = documents.generate_context()
 
         database_path = root / ".codex-os" / "state" / "state.db"
-        database = Database(database_path)
-        database.migrate(app_version=RUNTIME_VERSIONS.software)
-        config_hash = hashlib.sha256(
-            json.dumps(_serializable_config(config), sort_keys=True).encode("utf-8")
-        ).hexdigest()
-        ProjectStore(database).register(config, config_hash)
+        Database(database_path).migrate()
 
         report = documents.check(
             config.project_type.value,
