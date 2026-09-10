@@ -1,0 +1,3 @@
+interface:
+  display_name: "Governance Entry"
+  short_description: "Apply the three governance gates"

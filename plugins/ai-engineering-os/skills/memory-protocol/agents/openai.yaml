@@ -1,0 +1,3 @@
+interface:
+  display_name: "Memory Protocol"
+  short_description: "Record durable engineering memory"

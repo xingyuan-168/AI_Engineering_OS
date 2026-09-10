@@ -1,7 +1,7 @@
 {
   "name": "ai-engineering-os",
   "version": "0.3.0+codex.20260908110000",
-  "description": "Auditable local engineering workflows, approvals, Git evidence, and release gates for Codex.",
+  "description": "Codex engineering governance layer: three stateless gates, approvals, worktree isolation, and lightweight memory.",
   "author": {
     "name": "xingyuan-168",
     "url": "https://github.com/xingyuan-168"
@@ -12,26 +12,26 @@
   "keywords": [
     "engineering",
     "governance",
-    "workflow",
-    "git",
+    "codex",
     "mcp"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "AI Engineering OS",
-    "shortDescription": "Run auditable engineering workflows in Codex.",
-    "longDescription": "Start, approve, resume, verify, and release local software projects with deterministic workflow state and Git-backed evidence.",
+    "shortDescription": "Governance layer for Codex: start/frontend/finish gates, worktrees, memory.",
+    "longDescription": "Answers whether engineering work is allowed and why at task start, frontend implementation, and finish; isolates parallel work in disposable worktrees; keeps durable project memory. Never replaces Codex's native engineering capabilities.",
     "developerName": "xingyuan-168",
     "category": "Productivity",
     "capabilities": [
-      "Workflow orchestration",
-      "Approval gates",
-      "Git evidence"
+      "Governance gates",
+      "User approvals",
+      "Worktree isolation",
+      "Project memory"
     ],
     "defaultPrompt": [
-      "Start an auditable new-project workflow.",
-      "Show the next action for my active workflow.",
-      "Check whether this project is ready to release."
+      "Run a governance start check for my task.",
+      "Set up a disposable worktree for parallel work.",
+      "Check whether this task may finish."
     ]
   },
   "mcpServers": "./.mcp.json"

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Worktree Protocol"
+  short_description: "Isolate parallel work in worktrees"

@@ -1,0 +1,3 @@
+interface:
+  display_name: "Frontend Design Review"
+  short_description: "Gate frontend implementation on approval"
