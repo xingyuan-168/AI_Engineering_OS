@@ -1,1 +1,0 @@
-"""Executable vertical pilot generators."""
