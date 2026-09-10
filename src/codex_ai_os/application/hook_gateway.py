@@ -59,7 +59,7 @@ def authorize_hook_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not (project_root / ".codex-os" / "project.yaml").is_file():
         return {}
     try:
-        policy = GovernancePolicyCompiler(project_root).compile(("backend-project",))
+        policy = GovernancePolicyCompiler(project_root).compile()
     except Exception as exc:  # pragma: no cover - defensive: never fail open
         return _deny_output(
             "POLICY_COMPILE_FAILED",

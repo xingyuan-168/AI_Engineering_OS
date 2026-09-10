@@ -1,4 +1,4 @@
-"""Environment diagnostics for the supported Windows runtime."""
+"""Windows runtime diagnostics (governance-core surface)."""
 
 from __future__ import annotations
 
@@ -26,11 +26,7 @@ class DoctorReport:
 
     @property
     def ok(self) -> bool:
-        return all(check.ok for check in self.checks if check.required) and self.sandbox_available
-
-    @property
-    def sandbox_available(self) -> bool:
-        return any(check.name in {"docker", "podman"} and check.ok for check in self.checks)
+        return all(check.ok for check in self.checks if check.required)
 
     @property
     def path_encoding_corrupt(self) -> bool:
@@ -42,21 +38,6 @@ class DoctorService:
         "projects": ("root",),
         "tasks": ("worktree",),
         "worktrees": ("path",),
-        "workflow_worktrees": ("path",),
-        "artifacts": ("path",),
-        "documents": ("path",),
-        "artifact_evidence": ("path",),
-        "check_evidence": ("report_path",),
-        "review_evidence": ("report_ref",),
-        "executions": ("stdout_ref", "stderr_ref"),
-        "release_records": (
-            "manifest_path",
-            "artifact_root",
-            "rollback_path",
-            "sbom_path",
-            "checksums_path",
-            "final_manifest_path",
-        ),
         "memory_records": ("content_ref",),
     }
 
@@ -68,11 +49,8 @@ class DoctorService:
             checks=(
                 self._python_check(),
                 self._command_check("git", required=True, version_args=("--version",)),
-                self._uv_check(),
-                self._sqlite_check(),
-                self._docker_check(),
-                self._podman_check(),
                 self._command_check("codex", required=False, version_args=("--version",)),
+                self._sqlite_check(),
                 self._path_encoding_check(),
                 self._plugin_hooks_check(),
             )
@@ -92,7 +70,7 @@ class DoctorService:
                 "plugin-hooks",
                 False,
                 True,
-                "plugin hooks manifest not found in this checkout; Codex host manages plugin registration",
+                "plugin hooks manifest not found; Codex host manages plugin registration",
             )
         try:
             declared = json.loads(manifest.read_text(encoding="utf-8"))
@@ -186,37 +164,6 @@ class DoctorService:
             required=True,
             ok=ok,
             detail=f"{version.major}.{version.minor}.{version.micro}",
-        )
-
-    def _uv_check(self) -> DoctorCheck:
-        executable = shutil.which("uv")
-        if executable is None:
-            candidate = Path.home() / ".local" / "bin" / "uv.exe"
-            executable = str(candidate) if candidate.is_file() else None
-        return self._executable_check("uv", executable, required=True, version_args=("--version",))
-
-    def _docker_check(self) -> DoctorCheck:
-        executable = shutil.which("docker")
-        if executable is None:
-            return DoctorCheck("docker", False, False, "Docker Desktop CLI not found")
-        result = _run_command((executable, "info", "--format", "{{.ServerVersion}}"), timeout=10)
-        return DoctorCheck(
-            name="docker",
-            required=False,
-            ok=result.returncode == 0,
-            detail=(result.stdout.strip() or result.stderr.strip() or "Docker daemon unavailable"),
-        )
-
-    def _podman_check(self) -> DoctorCheck:
-        executable = shutil.which("podman")
-        if executable is None:
-            return DoctorCheck("podman", False, False, "Podman CLI not found")
-        result = _run_command((executable, "info", "--format", "{{.Version.Version}}"), timeout=10)
-        return DoctorCheck(
-            name="podman",
-            required=False,
-            ok=result.returncode == 0,
-            detail=(result.stdout.strip() or result.stderr.strip() or "Podman service unavailable"),
         )
 
     @staticmethod

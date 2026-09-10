@@ -1,29 +1,24 @@
-"""Project initialization use case."""
+"""Project initialization use case (governance-core surface)."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import yaml
 
 from codex_ai_os.domain.config import (
-    EnvironmentMode,
     GitPushPolicy,
     ProjectConfig,
     ProjectType,
     RiskLevel,
-    SandboxBackend,
 )
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentCheckReport, DocumentManager
-from codex_ai_os.infrastructure.events import EventStore
 from codex_ai_os.infrastructure.projects import ProjectStore
 
 
@@ -48,8 +43,6 @@ class ProjectInitializer:
         project_type: ProjectType,
         risk_level: RiskLevel = RiskLevel.MEDIUM,
         git_push_policy: GitPushPolicy = GitPushPolicy.REMOTE_REQUIRED,
-        schema_version: Literal["1.0", "1.1", "1.2"] = "1.2",
-        oci_backend: SandboxBackend = SandboxBackend.PODMAN,
     ) -> ProjectInitResult:
         root = project_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -62,7 +55,6 @@ class ProjectInitializer:
             config = load_project_config(root)
         else:
             config = ProjectConfig(
-                schema_version=schema_version,
                 project_id=project_id,
                 name=name,
                 root=root,
@@ -70,7 +62,6 @@ class ProjectInitializer:
                 risk_level=risk_level,
                 git_push_policy=git_push_policy,
                 document_version="0.1.0",
-                environment_mode=EnvironmentMode.OCI_FIRST,
             )
             config_text = yaml.safe_dump(
                 _serializable_config(config),
@@ -80,11 +71,7 @@ class ProjectInitializer:
             if documents.write_atomic(".codex-os/project.yaml", config_text, overwrite=False):
                 created.append(".codex-os/project.yaml")
 
-        for relative, content in _runtime_entry_files(
-            oci_backend=oci_backend,
-            include_environment=config.environment_mode is EnvironmentMode.OCI_FIRST,
-            project_name=config.name,
-        ).items():
+        for relative, content in _runtime_entry_files().items():
             if documents.write_atomic(relative, content, overwrite=False):
                 created.append(relative)
 
@@ -104,12 +91,6 @@ class ProjectInitializer:
             json.dumps(_serializable_config(config), sort_keys=True).encode("utf-8")
         ).hexdigest()
         ProjectStore(database).register(config, config_hash)
-        EventStore(database).append(
-            project_id=config.project_id,
-            event_type="project.initialized",
-            payload={"created_paths": sorted(created), "config_hash": config_hash},
-            idempotency_key=f"project.initialize:{config.project_id}:{config_hash}",
-        )
 
         report = documents.check(
             config.project_type.value,
@@ -143,13 +124,8 @@ def _serializable_config(config: ProjectConfig) -> dict[str, object]:
     return {str(key): value for key, value in data.items()}
 
 
-def _runtime_entry_files(
-    *,
-    oci_backend: SandboxBackend,
-    include_environment: bool,
-    project_name: str,
-) -> dict[str, str]:
-    files = {
+def _runtime_entry_files() -> dict[str, str]:
+    return {
         ".gitignore": (
             ".codex-os/state/\n.codex-os/logs/\n.codex-os/cache/\n"
             ".codex-os/context/\n.codex-os/tmp/\n.codex-os/artifacts/\n.worktrees/\n"
@@ -165,77 +141,4 @@ def _runtime_entry_files(
             indent=2,
         )
         + "\n",
-        ".codex-os/execution-policy.yaml": (
-            f"schema_version: '{RUNTIME_VERSIONS.config_schema}'\n"
-            f"sandbox: {oci_backend.value}\n"
-            "network: disabled\n"
-            "allowed_network_hosts: []\n"
-            "allowed_mounts: [worktree, artifacts, cache]\n"
-            "allowed_commands: [git, python, pytest, ruff, pyright, pip-audit, detect-secrets]\n"
-            "approval_for: [network, migration, delete, credential, release]\n"
-            "max_duration_seconds: 1800\n"
-            "allow_host_execution: false\n"
-        ),
-    }
-    if include_environment:
-        files.update(environment_scaffold_files(project_name, oci_backend=oci_backend))
-    packaged = Path(__file__).parents[1] / "resources" / "gates"
-    repository = Path(__file__).parents[3] / "gates"
-    gate_root = packaged if packaged.is_dir() else repository
-    for gate in ("G0", "G1", "G2", "G3", "G4"):
-        files[f".codex-os/gates/{gate}.yaml"] = (gate_root / f"{gate}.yaml").read_text(
-            encoding="utf-8"
-        )
-    return files
-
-
-def environment_scaffold_files(
-    project_name: str,
-    *,
-    oci_backend: SandboxBackend = SandboxBackend.PODMAN,
-) -> dict[str, str]:
-    """Return safe, intentionally incomplete files for init and governed adoption."""
-
-    slug = re.sub(r"[^a-z0-9]+", "-", project_name.casefold()).strip("-")
-    slug = slug or "codex-project"
-    return {
-        **_environment_gate_files(),
-        ".codex-os/environment.yaml": (
-            f"schema_version: '{RUNTIME_VERSIONS.config_schema}'\n"
-            "environment_mode: oci-first\n"
-            f"oci_backend: {oci_backend.value}\n"
-            "compose_files: [compose.yaml]\n"
-            "dockerfiles: []\n"
-            "dependency_locks: []\n"
-            "services: []\n"
-            "persistent_mounts: []\n"
-            "shared_assets: []\n"
-            "host_budget:\n"
-            "  max_project_bytes: 1073741824\n"
-            "  max_git_bytes: 536870912\n"
-            "  large_file_bytes: 52428800\n"
-        ),
-        ".dockerignore": (
-            ".git\n.codex-os/state\n.codex-os/logs\n.codex-os/cache\n"
-            ".worktrees\n.venv\nnode_modules\ntarget\n.next\nbuild\ndist\n"
-            "*.log\n.env\nmodels\ndatasets\n"
-        ),
-        "compose.yaml": f"name: {slug}\nservices: {{}}\n",
-        "docker/README.md": (
-            "# OCI environment\n\n"
-            "This directory is completed during the governed G2 environment-design task.\n"
-            "Do not treat the empty Compose scaffold as runnable evidence.\n"
-        ),
-    }
-
-
-def _environment_gate_files() -> dict[str, str]:
-    packaged = Path(__file__).parents[1] / "resources" / "gates"
-    repository = Path(__file__).parents[3] / "gates"
-    gate_root = packaged if packaged.is_dir() else repository
-    return {
-        f".codex-os/gates/oci-first/{gate}.yaml": (
-            gate_root / "oci-first" / f"{gate}.yaml"
-        ).read_text(encoding="utf-8")
-        for gate in ("G2", "G3", "G4")
     }
