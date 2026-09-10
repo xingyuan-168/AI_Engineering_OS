@@ -12,9 +12,11 @@ Scope: protect user assets, not Codex's engineering execution strategy.
 3. Normal engineering commands (pip/npm/pnpm/yarn/cargo installs, builds,
    ``sed -i``, tests) are never blocked: Codex stays the executor.
 4. Initialized AI-OS projects additionally adjudicate apply_patch targets and
-   shell redirect targets through the authorization kernel via
-   ``codex-os authorize-hook`` (path policy: ``input/``/``output/`` and
-   governance files).
+   shell redirect targets through the authorization kernel via the
+   codex-os authorize-hook CLI bridge (path policy: input/ / output/ and
+   governance files); this kernel screening runs in the main worktree only.
+5. Memory single-writer rule: disposable worktrees never write the
+   docs/memory/ source of truth; subagents submit candidates instead.
 
 The hook remains best-effort: a host can disable hooks, so the runtime entry
 checks stay the authoritative boundary.
@@ -118,6 +120,7 @@ _COPY_STYLE_PATH = re.compile(
     re.I,
 )
 _INPUT_PATH = re.compile(r"(?:^|[\"'])input/", re.I)
+_MEMORY_JSONL_PATH = re.compile(r"docs/memory/", re.I)
 
 _GATEWAY_TOOLS = {"Bash", "apply_patch"}
 
@@ -148,7 +151,28 @@ def main() -> int:
                 print(_decision_json("deny", reason))
                 return 0
 
-    if tool_name in _GATEWAY_TOOLS:
+    # Memory single-writer rule (ADR-0016): subagents inside disposable
+    # worktrees never write docs/memory/; they submit candidates instead.
+    if disposable and tool_name in _GATEWAY_TOOLS:
+        memory_attempt = (
+            _memory_writer_command(command)
+            if tool_name == "Bash"
+            else _targets_memory_paths(command)
+        )
+        if memory_attempt:
+            print(
+                _decision_json(
+                    "deny",
+                    "Memory single-writer rule: a disposable worktree must not write "
+                    "docs/memory/; submit a candidate (codex-os memory record "
+                    "--candidate) and let the main session merge it at finish.",
+                )
+            )
+            return 0
+
+    if tool_name in _GATEWAY_TOOLS and not disposable:
+        # Kernel screening covers main-worktree operations only; disposable
+        # worktrees keep the context-aware allowance above (ADR-0016).
         gateway_output = _authorize_via_runtime(payload)
         if gateway_output:
             # DENY or ASK: enforce the runtime decision verbatim.
@@ -203,6 +227,29 @@ def _in_disposable_area(cwd_value: str) -> bool:
             continue
         return True
     return False
+
+
+def _targets_memory_paths(patch_text: str) -> bool:
+    """Detect apply_patch targets under the memory source of truth."""
+
+    path_pattern = re.compile(
+        r"^\*\*\*\s+(?:Add|Update|Delete|Rename) File:\s*(.+?)\s*$", re.MULTILINE
+    )
+    for match in path_pattern.finditer(patch_text):
+        normalized = match.group(1).replace("\\", "/").strip()
+        if _MEMORY_JSONL_PATH.search(normalized):
+            return True
+    return False
+
+
+def _memory_writer_command(command: str) -> bool:
+    """Detect shell-level writes into the memory source of truth."""
+
+    if re.search(r"\bcodex-os\s+memory\s+record\b", command, re.I) and not re.search(
+        r"--candidate\b", command, re.I
+    ):
+        return True
+    return bool(re.search(r">\s*[\"']?[^\r\n;|&]*docs/memory/", command, re.I))
 
 
 def _targets_protected_paths(patch_text: str) -> bool:

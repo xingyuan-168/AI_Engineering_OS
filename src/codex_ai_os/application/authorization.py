@@ -65,9 +65,12 @@ class AuthorizationOutcome:
         return self.decision is AuthorizationDecision.ALLOW
 
 
-# Host-side dangerous command rules (ADR-0011): the single authoritative
-# source for host command screening. The plugin hook mirrors this list only
-# as an explicit degraded fallback when the runtime cannot be reached.
+# Host-side dangerous command rules (ADR-0011, narrowed by ADR-0016): the
+# single authoritative source for host command screening of MAIN-worktree
+# operations. Normal engineering commands (pip/npm/yarn/poetry/cargo
+# installs, builds, sed -i) are never screened; destructive-but-local
+# operations stay listed here and the hook only consults the kernel outside
+# disposable areas, which restores the worktree allowance.
 HOST_COMMAND_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (
         re.compile(r"\bgit\s+push\b[^\r\n]*(?:--force(?:-with-lease)?|(?:^|\s)-f(?:\s|$))", re.I),
@@ -127,21 +130,6 @@ HOST_COMMAND_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
         re.compile(r"\bgit\s+update-ref\b[^\r\n]*(?:^|\s)(?:-d|--delete)(?:\s|$)", re.I),
         "HOST_GIT_UPDATE_REF_DELETE",
         "Deleting a Git ref directly is forbidden.",
-    ),
-    (
-        re.compile(r"\bsed\b[^;\r\n|]*?(?:^|\s)-i(?:\s|$)", re.I),
-        "HOST_SED_IN_PLACE",
-        "In-place file rewriting with sed -i must run through the governed task worktree tools.",
-    ),
-    (
-        re.compile(
-            r"\b(?:python(?:3)?\s+-m\s+)?pip(?:3)?\s+(?:install|wheel)\b|"
-            r"\b(?:npm|pnpm|yarn)\s+(?:i|install|add|build)\b|"
-            r"\bpoetry\s+install\b|\bcargo\s+(?:install|build)\b",
-            re.I,
-        ),
-        "HOST_PACKAGE_INSTALL_BUILD",
-        "Project dependency installation and builds must run through the governed OCI environment.",
     ),
     (
         re.compile(

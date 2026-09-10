@@ -15,9 +15,10 @@ from typing import Any
 _CONTEXT = (
     "This project uses AI Engineering OS governance. Keep Codex's native "
     "engineering workflow. Before repository-changing work: read AGENTS.md and "
-    "relevant docs; verify GitHub readiness (codex-os repo-check); complete "
+    "relevant docs; verify GitHub readiness (codex-os check); complete "
     "open-source research when required; honor frontend approval and worktree "
-    "rules. At finish: targeted tests, document impact, memory, cleanup."
+    "rules; subagents submit memory candidates, the main session writes them. "
+    "At finish: targeted tests, document impact, memory, cleanup."
 )
 
 
