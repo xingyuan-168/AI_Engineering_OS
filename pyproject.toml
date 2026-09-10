@@ -41,7 +41,40 @@ packages = ["src/codex_ai_os"]
 [tool.hatch.build.targets.wheel.force-include]
 "profiles" = "codex_ai_os/resources/profiles"
 "gates" = "codex_ai_os/resources/gates"
+"catalog" = "codex_ai_os/resources/catalog"
 "THIRD_PARTY_NOTICES.md" = "codex_ai_os/resources/THIRD_PARTY_NOTICES.md"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/codex_ai_os",
+  "profiles",
+  "gates",
+  "catalog",
+  "tests",
+  "docs",
+  "plugins",
+  "docker",
+  "compose.yaml",
+  "pyproject.toml",
+  "uv.lock",
+  "README.md",
+  "AGENTS.md",
+  "THIRD_PARTY_NOTICES.md",
+  ".python-version",
+  ".gitignore",
+  ".dockerignore",
+  ".gitattributes",
+]
+exclude = [
+  ".codex-os",
+  ".worktrees",
+  "dist",
+  ".venv",
+  ".pytest_cache",
+  ".ruff_cache",
+  "__pycache__",
+  ".coverage",
+]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
