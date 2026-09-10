@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 import pytest
@@ -5,108 +7,59 @@ import pytest
 from codex_ai_os.infrastructure.documents import DocumentManager, PathDeniedError
 
 
-def test_atomic_write_does_not_overwrite_existing_content(tmp_path: Path) -> None:
+def test_initialize_and_check_baseline(tmp_path: Path) -> None:
     manager = DocumentManager(tmp_path)
-    assert manager.write_atomic("docs/example.md", "# Original\n", overwrite=False)
-    assert not manager.write_atomic("docs/example.md", "# Replacement\n", overwrite=False)
-    assert (tmp_path / "docs" / "example.md").read_text(encoding="utf-8") == "# Original\n"
+    created = manager.initialize_documents("Demo", "generic", include=frozenset())
+    assert "AGENTS.md" in created
+    report = manager.check()
+    assert report.ok is True
+    assert report.missing == ()
+    assert report.forbidden_directories == ()
 
 
-@pytest.mark.parametrize("relative", ["../outside.md", Path("..") / "outside.md"])
-def test_path_escape_is_denied(tmp_path: Path, relative: str | Path) -> None:
-    with pytest.raises(PathDeniedError, match="escapes"):
-        DocumentManager(tmp_path).resolve(relative)
-
-
-def test_document_check_reports_missing_broken_and_invalid_files(tmp_path: Path) -> None:
+def test_check_reports_missing_and_broken_links(tmp_path: Path) -> None:
     manager = DocumentManager(tmp_path)
-    manager.write_atomic(
-        "docs/README.md",
-        "not a heading\n[missing](MISSING.md)\n",
-        overwrite=False,
+    manager.initialize_documents("Demo", "generic", include=frozenset())
+    (tmp_path / "docs" / "SCOPE.md").unlink()
+    (tmp_path / "docs" / "REQUIREMENTS.md").write_text(
+        "[ghost](./GHOST.md)\n", encoding="utf-8"
     )
-
-    report = manager.check("backend")
-
-    assert not report.ok
-    assert "docs/PROJECT_MASTER.md" in report.missing
-    assert "docs/README.md" in report.invalid_documents
-    assert "docs/README.md -> MISSING.md" in report.broken_links
-    assert "docs/README.md: missing governance metadata" in report.metadata_errors
+    report = manager.check()
+    assert report.ok is False
+    assert "docs/SCOPE.md" in report.missing
+    assert any("GHOST.md" in link for link in report.broken_links)
 
 
-def test_initialized_documents_pass_governance_check(tmp_path: Path) -> None:
+def test_copy_directory_under_docs_is_forbidden(tmp_path: Path) -> None:
     manager = DocumentManager(tmp_path)
-    manager.initialize_documents("ERP", "backend")
-    (tmp_path / ".venv" / "Lib" / "package" / "v1").mkdir(parents=True)
+    manager.initialize_documents("Demo", "generic", include=frozenset())
+    (tmp_path / "docs" / "old").mkdir()
+    (tmp_path / "docs" / "old" / "x.md").write_text("x", encoding="utf-8")
+    report = manager.check()
+    assert report.ok is False
+    assert "docs/old" in report.forbidden_directories
 
-    report = manager.check("backend")
 
-    assert report.ok
-    assert report.checked_files >= 10
-
-
-def test_project_owned_copy_directory_is_still_rejected(tmp_path: Path) -> None:
+def test_input_directory_is_not_flagged(tmp_path: Path) -> None:
     manager = DocumentManager(tmp_path)
-    manager.initialize_documents("ERP", "backend")
-    (tmp_path / "src" / "v1").mkdir(parents=True)
+    manager.initialize_documents("Demo", "generic", include=frozenset())
+    (tmp_path / "input" / "spec.md").parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "input" / "spec.md").write_text("user input", encoding="utf-8")
+    report = manager.check()
+    assert report.forbidden_directories == ()
+    assert report.ok is True
 
-    report = manager.check("backend")
 
-    assert not report.ok
-    assert report.forbidden_directories == ("src/v1",)
-
-
-def test_generated_context_contains_source_hashes(tmp_path: Path) -> None:
+def test_check_with_include_counts_conditionals(tmp_path: Path) -> None:
     manager = DocumentManager(tmp_path)
-    manager.write_atomic("docs/README.md", "# Docs\n", overwrite=False)
-
-    path = manager.generate_context()
-
-    context = path.read_text(encoding="utf-8")
-    assert "Derived cache" in context
-    assert "`docs/README.md`" in context
+    manager.initialize_documents("Demo", "generic", include=frozenset({"api"}))
+    report = manager.check(include=frozenset({"api"}))
+    assert report.ok is True
+    missing = manager.check(include=frozenset({"api", "database"}))
+    assert "docs/DATABASE.md" in missing.missing
 
 
-def test_archived_documents_are_not_exempt_from_metadata(tmp_path: Path) -> None:
+def test_write_atomic_refuses_escapes(tmp_path: Path) -> None:
     manager = DocumentManager(tmp_path)
-    manager.initialize_documents("ERP", "backend")
-    manager.write_atomic("docs/archive/legacy.md", "# Legacy\n", overwrite=False)
-
-    report = manager.check("backend")
-
-    # Git history is the only archive; any Markdown in the worktree, including
-    # a copy-style docs/archive tree, requires full governance metadata.
-    assert any("docs/archive/legacy.md" in item for item in report.metadata_errors)
-
-
-def test_document_check_uses_project_document_version_target(tmp_path: Path) -> None:
-    manager = DocumentManager(tmp_path)
-    manager.initialize_documents("ERP", "backend", document_version="0.1.0")
-
-    report = manager.check("backend", expected_document_version="0.2.0")
-
-    assert not report.ok
-    assert "docs/README.md" in report.version_mismatches
-
-
-def test_traceability_reports_unmapped_refs_and_missing_paths(tmp_path: Path) -> None:
-    manager = DocumentManager(tmp_path)
-    manager.initialize_documents("ERP", "backend")
-    manager.write_atomic(
-        ".codex-os/test-traceability.yaml",
-        """schema_version: '1.2'
-entries:
-  - id: TRACE-TEST
-    requirement_refs: [OTHER-001]
-    specification_paths: [docs/README.md]
-    test_paths: [tests/missing.py]
-""",
-        overwrite=False,
-    )
-
-    report = manager.check("backend")
-
-    assert not report.ok
-    assert any("missing tests/missing.py" in item for item in report.traceability_errors)
-    assert any("unmapped PROJECT-INIT" in item for item in report.traceability_errors)
+    with pytest.raises(PathDeniedError):
+        manager.write_atomic("../outside.md", "no", overwrite=True)

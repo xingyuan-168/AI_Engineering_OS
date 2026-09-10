@@ -62,7 +62,9 @@ def test_failure_returncode_is_not_raised(repository: Path) -> None:
     assert result.stderr.strip()
 
 
-def test_builds_git_c_root_prefixed_command(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_builds_git_c_root_prefixed_command(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     captured: list[list[str]] = []
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
