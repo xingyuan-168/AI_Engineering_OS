@@ -1,5 +1,5 @@
 schema_version: '1.2'
-document_version: 0.2.0
+document_version: 0.3.0
 project_id: PROJECT-AI-ENGINEERING-OS
 name: AI Engineering OS
 root: .
@@ -10,3 +10,4 @@ active_workflow: new-project
 approval_policy: critical-gates-human
 default_agent_profile: standard
 git_push_policy: remote_required
+environment_mode: oci-first

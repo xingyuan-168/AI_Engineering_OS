@@ -1,62 +1,39 @@
-import json
+from __future__ import annotations
+
 from pathlib import Path
 
-import yaml
+EXPECTED_SKILLS = {
+    "governance-entry",
+    "open-source-research",
+    "html-prototype",
+    "frontend-design-review",
+    "worktree-protocol",
+    "document-impact",
+    "memory-protocol",
+    "finish-checklist",
+}
 
-from codex_ai_os.domain.versions import RUNTIME_VERSIONS
-
-REPO_ROOT = Path(__file__).parents[2]
-
-
-def test_plugin_contains_complete_v1_skill_set_without_scaffold_placeholders() -> None:
-    skill_root = REPO_ROOT / "plugins" / "ai-engineering-os" / "skills"
-    expected = {
-        "agent-manager",
-        "api-design",
-        "architecture-design",
-        "backend-implementation",
-        "bug-fix-orchestrator",
-        "code-review",
-        "database-design",
-        "execution-manager",
-        "feature-development-orchestrator",
-        "frontend-implementation",
-        "html-prototype",
-        "interaction-design",
-        "memory-manager",
-        "new-project-orchestrator",
-        "open-source-research",
-        "product-design",
-        "release-manager",
-        "requirement-analysis",
-        "security-review",
-        "testing",
-        "ui-design",
-    }
-
-    discovered: set[str] = set()
-    for skill_file in sorted(skill_root.glob("*/SKILL.md")):
-        content = skill_file.read_text(encoding="utf-8")
-        _, frontmatter, _body = content.split("---", 2)
-        metadata = yaml.safe_load(frontmatter)
-        assert isinstance(metadata, dict)
-        assert metadata["name"] == skill_file.parent.name
-        assert isinstance(metadata["description"], str)
-        assert "TODO" not in content
-        assert (skill_file.parent / "agents" / "openai.yaml").is_file()
-        discovered.add(skill_file.parent.name)
-
-    assert discovered == expected
+SKILLS_ROOT = Path(__file__).resolve().parents[2] / "plugins" / "ai-engineering-os" / "skills"
 
 
-def test_plugin_manifest_version_matches_runtime_matrix() -> None:
-    manifest_path = REPO_ROOT / "plugins" / "ai-engineering-os" / ".codex-plugin" / "plugin.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+def test_skill_set_is_converged() -> None:
+    names = {path.name for path in SKILLS_ROOT.iterdir() if path.is_dir()}
+    assert names == EXPECTED_SKILLS
 
-    plugin_version, separator, build_metadata = manifest["version"].partition("+")
-    assert plugin_version == RUNTIME_VERSIONS.plugin
-    if separator:
-        assert build_metadata.startswith("codex.")
-    assert RUNTIME_VERSIONS.api == "1.2"
-    assert manifest["mcpServers"] == "./.mcp.json"
-    assert manifest["skills"] == "./skills/"
+
+def test_each_skill_has_manifest_and_agent_profile() -> None:
+    for name in sorted(EXPECTED_SKILLS):
+        skill_md = SKILLS_ROOT / name / "SKILL.md"
+        assert skill_md.is_file(), name
+        text = skill_md.read_text(encoding="utf-8")
+        assert text.startswith("---"), name
+        assert "name: " + name in text, name
+        assert "description:" in text, name
+        assert (SKILLS_ROOT / name / "agents" / "openai.yaml").is_file(), name
+
+
+def test_skill_documents_are_compact() -> None:
+    for name in sorted(EXPECTED_SKILLS):
+        skill_md = SKILLS_ROOT / name / "SKILL.md"
+        lines = skill_md.read_text(encoding="utf-8").splitlines()
+        assert len(lines) <= 60, (name, len(lines))

@@ -1,4 +1,3 @@
 interface:
-  display_name: "HTML Interaction Prototype"
-  short_description: "Build an offline UI prototype for review"
-  default_prompt: "Use $html-prototype to build the governed HTML interaction prototype for this frontend workflow."
+  display_name: "HTML Prototype"
+  short_description: "Build reviewable UI prototypes"

@@ -8,18 +8,24 @@ from typing import Any, cast
 from typer.testing import CliRunner
 
 from codex_ai_os.cli.app import app
-from codex_ai_os.infrastructure.database import Database
 
 runner = CliRunner()
 
 
 def _json_output(output: str) -> dict[str, Any]:
-    raw: object = json.loads(output)
-    return cast(dict[str, Any], raw)
+    return cast(dict[str, Any], json.loads(output))
 
 
-def test_init_status_and_check_docs_json_contract(tmp_path: Path) -> None:
-    init_result = runner.invoke(
+def _git_repo(root: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, check=True)
+
+
+def test_init_creates_project_and_reports_blockers(tmp_path: Path) -> None:
+    result = runner.invoke(
         app,
         [
             "init",
@@ -30,195 +36,121 @@ def test_init_status_and_check_docs_json_contract(tmp_path: Path) -> None:
             "CLI pilot",
             "--project-type",
             "backend",
+            "--with",
+            "frontend_design",
             "--json",
         ],
     )
-    assert init_result.exit_code == 0, init_result.output
-    init_payload = _json_output(init_result.output)
-    assert init_payload["ok"] is True
-    assert init_payload["data"]["project_id"] == "PROJECT-CLI"
-
-    status_result = runner.invoke(app, ["status", str(tmp_path), "--json"])
-    assert status_result.exit_code == 0, status_result.output
-    status_payload = _json_output(status_result.output)
-    assert status_payload["data"]["schema_version"] == "0007"
-    assert status_payload["data"]["events"] == 1
-
-    docs_result = runner.invoke(app, ["check-docs", str(tmp_path), "--json"])
-    assert docs_result.exit_code == 0, docs_result.output
-    assert _json_output(docs_result.output)["ok"] is True
+    assert result.exit_code == 0, result.output
+    payload = _json_output(result.output)
+    assert payload["ok"] is True
+    assert payload["data"]["project_id"] == "PROJECT-CLI"
+    assert payload["data"]["documents_ok"] is True
+    assert payload["data"]["repository_ready"] is False
+    assert payload["data"]["repository_blockers"] == ["NOT_GIT_REPOSITORY"]
+    assert (tmp_path / "docs" / "design" / "PROTOTYPE.html").is_file()
 
 
-def test_check_docs_uses_exit_code_10_for_missing_document(tmp_path: Path) -> None:
-    result = runner.invoke(
+def test_check_blocks_without_git(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", str(tmp_path), "--project-id", "PROJECT-CHK", "--json"])
+    result = runner.invoke(app, ["check", str(tmp_path), "--json"])
+    assert result.exit_code == 40
+    payload = _json_output(result.output)
+    assert payload["ok"] is False
+    details = payload["error"]["details"]
+    assert details["repository"]["repository_ready"] is False
+    assert details["documents"]["ok"] is True
+
+
+def test_check_passes_when_github_is_ready(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    import codex_ai_os.application.repository as repository_module
+
+    monkeypatch.setattr(repository_module, "_github_findings", lambda git, hosts: [])
+    runner.invoke(app, ["init", str(tmp_path), "--project-id", "PROJECT-OK", "--json"])
+    _git_repo(tmp_path)
+    result = runner.invoke(app, ["check", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+    payload = _json_output(result.output)
+    assert payload["data"]["repository"]["repository_ready"] is True
+    assert payload["data"]["documents"]["ok"] is True
+
+
+def test_finish_gate_blocks_then_passes(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", str(tmp_path), "--project-id", "PROJECT-FIN", "--json"])
+    _git_repo(tmp_path)
+    blocked = runner.invoke(app, ["finish", str(tmp_path), "--json"])
+    assert blocked.exit_code == 40
+    payload = _json_output(blocked.output)
+    codes = {finding["code"] for finding in payload["error"]["details"]["findings"]}
+    assert "TESTS_NOT_PASSED" in codes
+    passing = runner.invoke(
         app,
         [
-            "init",
+            "finish",
             str(tmp_path),
-            "--project-id",
-            "PROJECT-CLI",
-            "--project-type",
-            "backend",
+            "--tests-passed",
+            "--docs-synced",
+            "--memory-not-needed",
+            "--json",
         ],
     )
-    assert result.exit_code == 0
-    (tmp_path / "docs" / "API_SPEC.md").unlink()
-
-    check = runner.invoke(app, ["check-docs", str(tmp_path), "--json"])
-
-    assert check.exit_code == 10
-    payload = _json_output(check.output)
-    assert payload["error"]["code"] == "DOCS_INCOMPLETE"
-    assert "docs/API_SPEC.md" in payload["error"]["details"]["missing"]
+    assert passing.exit_code == 0, passing.output
+    assert _json_output(passing.output)["data"]["allowed"] is True
 
 
-def test_workflow_cli_returns_dual_state_and_next_action(tmp_path: Path) -> None:
-    initialized = runner.invoke(
-        app,
-        [
-            "init",
-            str(tmp_path),
-            "--project-id",
-            "PROJECT-CLI-WORKFLOW",
-            "--project-type",
-            "backend",
-        ],
+def test_worktree_lifecycle_via_cli(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", str(tmp_path), "--project-id", "PROJECT-WT", "--json"])
+    _git_repo(tmp_path)
+    prepared = runner.invoke(
+        app, ["worktree", "prepare", "demo", "--project-root", str(tmp_path), "--json"]
     )
-    assert initialized.exit_code == 0
-    _use_legacy_fixture_config(tmp_path)
-    _initialize_git_repository(tmp_path)
+    assert prepared.exit_code == 0, prepared.output
+    payload = _json_output(prepared.output)
+    assert payload["data"]["branch"] == "codex/wt-demo"
+    finished = runner.invoke(
+        app, ["worktree", "finish", "demo", "--project-root", str(tmp_path), "--json"]
+    )
+    assert finished.exit_code == 0, finished.output
+    cleaned = runner.invoke(
+        app, ["worktree", "cleanup", "demo", "--project-root", str(tmp_path), "--json"]
+    )
+    assert cleaned.exit_code == 0, cleaned.output
+    listing = runner.invoke(
+        app, ["worktree", "list", "--project-root", str(tmp_path), "--json"]
+    )
+    assert _json_output(listing.output)["data"]["results"] == []
 
-    started = runner.invoke(
+
+def test_memory_cli_round_trip(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", str(tmp_path), "--project-id", "PROJECT-MEM", "--json"])
+    recorded = runner.invoke(
         app,
         [
-            "run",
-            "new-project",
-            "--goal",
-            "Build ERP procurement API",
+            "memory",
+            "record",
+            "--title",
+            "Prefer narrow gates",
+            "--summary",
+            "Keep the governance surface small and stateless.",
+            "--source",
+            "docs/GOVERNANCE_RULES.md",
+            "--type",
+            "lesson",
             "--project-root",
             str(tmp_path),
             "--json",
         ],
     )
-    assert started.exit_code == 0, started.output
-    payload = _json_output(started.output)
-    assert payload["workflow_phase"] == "intake"
-    assert payload["run_status"] == "running"
-    assert payload["next_action"]["kind"] == "model_task"
-    assert payload["next_action"]["branch"].startswith("agent/product-manager/")
-    assert ".worktrees" in payload["next_action"]["worktree"]
-    database = Database(tmp_path / ".codex-os" / "state" / "state.db")
-    with database.read_connection() as connection:
-        before_row = connection.execute(
-            "SELECT state_version, workflow_phase, run_status FROM workflow_runs "
-            "WHERE id = ?",
-            (payload["run_id"],),
-        ).fetchone()
-        assert before_row is not None
-        before = tuple(before_row)
-        events_before = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-    backups_before = tuple((tmp_path / ".codex-os" / "state" / "backups").glob("*"))
-
-    stepped = runner.invoke(
-        app,
-        [
-            "step",
-            str(payload["run_id"]),
-            "--project-root",
-            str(tmp_path),
-            "--json",
-        ],
+    assert recorded.exit_code == 0, recorded.output
+    searched = runner.invoke(
+        app, ["memory", "search", "gates", "--project-root", str(tmp_path), "--json"]
     )
-    assert stepped.exit_code == 0
-    assert _json_output(stepped.output)["next_action"] == payload["next_action"]
-    with database.read_connection() as connection:
-        after_row = connection.execute(
-            "SELECT state_version, workflow_phase, run_status FROM workflow_runs "
-            "WHERE id = ?",
-            (payload["run_id"],),
-        ).fetchone()
-        assert after_row is not None
-        after = tuple(after_row)
-        events_after = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-    backups_after = tuple((tmp_path / ".codex-os" / "state" / "backups").glob("*"))
-    assert after == before
-    assert events_after == events_before
-    assert backups_after == backups_before
-
-
-def test_approval_cli_refuses_gate_before_evidence(tmp_path: Path) -> None:
-    runner.invoke(
-        app,
-        [
-            "init",
-            str(tmp_path),
-            "--project-id",
-            "PROJECT-CLI-WORKFLOW",
-            "--project-type",
-            "backend",
-        ],
+    assert searched.exit_code == 0, searched.output
+    results = _json_output(searched.output)["data"]["results"]
+    assert any(item["title"] == "Prefer narrow gates" for item in results)
+    reindexed = runner.invoke(
+        app, ["memory", "reindex", "--project-root", str(tmp_path), "--json"]
     )
-    _use_legacy_fixture_config(tmp_path)
-    _initialize_git_repository(tmp_path)
-    started = runner.invoke(
-        app,
-        [
-            "run",
-            "new-project",
-            "--goal",
-            "Build ERP procurement API",
-            "--project-root",
-            str(tmp_path),
-            "--json",
-        ],
-    )
-    run_id = str(_json_output(started.output)["run_id"])
-
-    approval = runner.invoke(
-        app,
-        [
-            "approve",
-            run_id,
-            "--gate",
-            "G0",
-            "--reason",
-            "too early",
-            "--project-root",
-            str(tmp_path),
-            "--json",
-        ],
-    )
-
-    assert approval.exit_code == 20
-    assert _json_output(approval.output)["error"]["code"] == "APPROVAL_REQUIRED"
-
-
-def _initialize_git_repository(root: Path) -> None:
-    _git(root, "init", "-b", "main")
-    _git(root, "config", "user.name", "Test User")
-    _git(root, "config", "user.email", "test@example.invalid")
-    _git(root, "add", ".")
-    _git(root, "commit", "-m", "test: initialize CLI project")
-
-
-def _use_legacy_fixture_config(root: Path) -> None:
-    config = root / ".codex-os" / "project.yaml"
-    config.write_text(
-        config.read_text(encoding="utf-8").replace(
-            "schema_version: '1.2'", "schema_version: '1.0'"
-        ),
-        encoding="utf-8",
-    )
-
-
-def _git(root: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(root), *arguments],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    assert result.returncode == 0, result.stderr
-    return result.stdout.strip()
+    assert reindexed.exit_code == 0, reindexed.output

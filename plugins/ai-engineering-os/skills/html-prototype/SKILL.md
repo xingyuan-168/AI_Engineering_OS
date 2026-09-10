@@ -1,14 +1,23 @@
 ---
 name: html-prototype
-description: Build a reviewable offline HTML interaction prototype for an approved frontend workflow before implementation begins. Use only inside the AI Engineering OS prototype task and its allowed paths.
+description: Produce a reviewable interactive HTML prototype at docs/design/PROTOTYPE.html plus a UI spec before any substantive frontend implementation. Use for new pages, new interaction flows, or major UI refactors in governed projects. Skip for copy changes, CSS fixes, and component bug fixes.
 ---
 
-# HTML interaction prototype
+# HTML prototype
 
-Read the approved product, interaction, and UI design documents. Work only in the Branch, Worktree, and allowed paths returned by the active `prototype` action.
+The goal is to see and confirm the interface before implementation, avoiding rework — not to produce UX documents.
 
-Create `docs/prototypes/<prototype-id>/index.html` as a self-contained offline artifact: embed CSS and JavaScript, make no network requests, and do not depend on external fonts, scripts, styles, images, or package installation. Preserve semantic HTML, labelled form controls, native keyboard interaction, visible focus, and deterministic local behavior.
+## Flow
 
-Expose demonstrable states with `data-state` values for `success`, `empty`, `loading`, `validation`, `permission`, `failure`, `retry`, `cancel`, and `resume`. Controls must let the reviewer move through the meaningful flow rather than showing static screenshots. Remove unfinished markers and placeholder copy before submission.
+Requirement → user flow (may live in REQUIREMENTS/UI_SPEC) → interactive HTML prototype → UI spec → user approval → implementation.
 
-Commit the prototype and the three approved design documents on the same task branch. Submit exact hashes through `task_complete`, then request an independent `prototype_review_submit`. Do not begin frontend implementation until the validator passes, the UX prototype review is accepted, and G2 is approved. If the prototype changes afterward, use `task amend-evidence` and obtain a new review.
+## Artifacts
+
+- `docs/design/PROTOTYPE.html` — one self-contained file, no build step, viewable directly in a browser. Cover every screen and interaction state the requirement names; keep styling minimal but realistic enough to judge layout and flow.
+- `docs/design/UI_SPEC.md` — layout, components, and state/feedback rules the prototype demonstrates.
+
+## Rules
+
+- The prototype is disposable scaffolding for review, not production code; the real implementation follows after approval.
+- Present the prototype to the user and record the explicit approval through `approval_record(gate="frontend")` before implementation starts (see frontend-design-review).
+- Exempt changes do not need a prototype; do not create ceremony for copy edits or CSS fixes.

@@ -1,21 +1,15 @@
-"""YAML loading and safety-preserving configuration merge."""
+"""YAML loading and safety-preserving configuration merge (ADR-0016 surface)."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from codex_ai_os.domain.config import (
-    DEFAULT_EXECUTION_POLICY,
-    ExecutionPolicy,
-    NetworkMode,
-    ProjectConfig,
-)
-from codex_ai_os.domain.environment import EnvironmentContract
+from codex_ai_os.domain.config import ProjectConfig
 
 
 class ConfigError(ValueError):
@@ -89,63 +83,6 @@ def load_project_config(project_root: Path) -> ProjectConfig:
         return ProjectConfig.model_validate(raw)
     except ValidationError as exc:
         raise ConfigError(f"invalid configuration {path}: {exc}") from exc
-
-
-def load_execution_policy(project_root: Path) -> ExecutionPolicy:
-    path = project_root / ".codex-os" / "execution-policy.yaml"
-    if not path.is_file():
-        return DEFAULT_EXECUTION_POLICY
-    return load_yaml_model(path, ExecutionPolicy)
-
-
-def load_environment_contract(project_root: Path) -> EnvironmentContract:
-    path = project_root.resolve() / ".codex-os" / "environment.yaml"
-    if not path.is_file():
-        raise ConfigError(f"environment contract is missing: {path}")
-    return load_yaml_model(path, EnvironmentContract)
-
-
-def merge_execution_policy(
-    base: ExecutionPolicy,
-    override: Mapping[str, Any],
-) -> ExecutionPolicy:
-    """Apply a project/workflow override without relaxing security."""
-
-    unknown = set(override) - set(ExecutionPolicy.model_fields)
-    if unknown:
-        raise ConfigError(f"unknown execution policy fields: {sorted(unknown)}")
-
-    candidate_data = base.model_dump(mode="python")
-    candidate_data.update(override)
-    try:
-        candidate = ExecutionPolicy.model_validate(candidate_data)
-    except ValidationError as exc:
-        raise ConfigError(f"invalid execution policy override: {exc}") from exc
-
-    _require_subset("allowed_mounts", candidate.allowed_mounts, base.allowed_mounts)
-    _require_subset("allowed_commands", candidate.allowed_commands, base.allowed_commands)
-    _require_subset(
-        "allowed_network_hosts", candidate.allowed_network_hosts, base.allowed_network_hosts
-    )
-
-    if not candidate.approval_for.issuperset(base.approval_for):
-        raise ConfigError("approval_for cannot remove required approvals")
-    if candidate.max_duration_seconds > base.max_duration_seconds:
-        raise ConfigError("max_duration_seconds cannot increase")
-    if base.network is NetworkMode.DISABLED and candidate.network is not NetworkMode.DISABLED:
-        raise ConfigError("network cannot be enabled by a lower-priority configuration")
-    if not base.allow_host_execution and candidate.allow_host_execution:
-        raise ConfigError("host execution cannot be enabled by a lower-priority configuration")
-    if candidate.sandbox != base.sandbox:
-        raise ConfigError("sandbox cannot be changed by a lower-priority configuration")
-
-    return candidate
-
-
-def _require_subset(name: str, candidate: frozenset[str], base: frozenset[str]) -> None:
-    added = candidate - base
-    if added:
-        raise ConfigError(f"{name} cannot add permissions: {sorted(added)}")
 
 
 def _managed_worktree_coordinator(project_root: Path) -> Path | None:

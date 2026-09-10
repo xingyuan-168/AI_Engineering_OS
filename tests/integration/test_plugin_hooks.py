@@ -1,146 +1,142 @@
 from __future__ import annotations
 
+import importlib.util
+import io
 import json
-import subprocess
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
-PLUGIN_ROOT = Path(__file__).parents[2] / "plugins" / "ai-engineering-os"
+HOOK_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "plugins"
+    / "ai-engineering-os"
+    / "hooks"
+    / "pre_tool_use.py"
+)
+
+_spec = importlib.util.spec_from_file_location("pre_tool_use", HOOK_PATH)
+assert _spec is not None and _spec.loader is not None
+hook = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(hook)
+
+REAL_IN_DISPOSABLE_AREA = hook._in_disposable_area
 
 
-def test_session_start_adds_context_only_for_initialized_projects(tmp_path: Path) -> None:
-    script = PLUGIN_ROOT / "hooks" / "session_start.py"
-    outside = _run_hook(script, {"cwd": str(tmp_path), "hook_event_name": "SessionStart"})
-    assert outside.stdout == ""
-
-    config = tmp_path / ".codex-os" / "project.yaml"
-    config.parent.mkdir(parents=True)
-    config.write_text("project_id: PROJECT-HOOK\n", encoding="utf-8")
-    inside = _run_hook(script, {"cwd": str(tmp_path), "hook_event_name": "SessionStart"})
-    output = _json_output(inside.stdout)
-    assert output["hookSpecificOutput"]["hookEventName"] == "SessionStart"
-    assert "immediate push" in output["hookSpecificOutput"]["additionalContext"]
+def _worktree_only_disposable(value: str) -> bool:
+    posix = Path(value).resolve().as_posix().casefold()
+    return "/.worktrees/" in posix or posix.endswith("/.worktrees")
 
 
-def test_pre_tool_use_denies_force_push_and_advises_normal_changes(tmp_path: Path) -> None:
-    script = PLUGIN_ROOT / "hooks" / "pre_tool_use.py"
-    denied = _run_hook(
-        script,
-        {
-            "cwd": str(tmp_path),
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": "git push --force origin main"},
-        },
-    )
-    denial = _json_output(denied.stdout)["hookSpecificOutput"]
-    assert denial["permissionDecision"] == "deny"
-    assert "Force push" in denial["permissionDecisionReason"]
-
-    config = tmp_path / ".codex-os" / "project.yaml"
-    config.parent.mkdir(parents=True)
-    config.write_text("project_id: PROJECT-HOOK\n", encoding="utf-8")
-    advised = _run_hook(
-        script,
-        {
-            "cwd": str(tmp_path),
-            "hook_event_name": "PreToolUse",
-            "tool_name": "apply_patch",
-            "tool_input": {"command": "*** Begin Patch"},
-        },
-    )
-    advice = _json_output(advised.stdout)["hookSpecificOutput"]
-    assert advice["hookEventName"] == "PreToolUse"
-    assert "allowed paths" in advice["additionalContext"]
+@pytest.fixture(autouse=True)
+def _ignore_system_temp(monkeypatch: pytest.MonkeyPatch) -> None:
+    # pytest runs under the system temp directory, which the hook itself
+    # treats as disposable. Scope the hook under test to worktrees only;
+    # the real temp/worktree detection is covered directly below.
+    monkeypatch.setattr(hook, "_in_disposable_area", _worktree_only_disposable)
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "cmd /c rmdir /s /q C:\\unsafe",
-        "cmd /c rd /q /s C:\\unsafe",
-        "cmd /c del /f /s C:\\unsafe\\*",
-        "cmd /c erase /s /f C:\\unsafe\\*",
-        "powershell -NoProfile Remove-Item C:\\unsafe -Recurse -Force",
-        "git push --delete origin obsolete",
-        "git push origin :obsolete",
-        "git branch -D obsolete",
-        "git update-ref -d refs/heads/obsolete",
+def _run_hook(tool: str, command: str, cwd: Path) -> tuple[int, str | None]:
+    payload: dict[str, Any] = {
+        "tool_name": tool,
+        "tool_input": {"command": command},
+        "cwd": str(cwd),
+    }
+    original_stdin, original_stdout = sys.stdin, sys.stdout
+    sys.stdin = io.StringIO(json.dumps(payload))
+    sys.stdout = buffer = io.StringIO()
+    try:
+        code = hook.main()
+    finally:
+        sys.stdin, sys.stdout = original_stdin, original_stdout
+    output = buffer.getvalue().strip()
+    if not output:
+        return code, None
+    decision = json.loads(output)
+    return code, decision.get("hookSpecificOutput", {}).get("permissionDecision")
+
+
+def test_in_disposable_area_semantics(tmp_path: Path) -> None:
+    assert REAL_IN_DISPOSABLE_AREA(str(tmp_path / ".worktrees" / "demo")) is True
+    # pytest tmp_path lives under the system temp directory: disposable by rule.
+    assert REAL_IN_DISPOSABLE_AREA(str(tmp_path)) is True
+    assert REAL_IN_DISPOSABLE_AREA(str(Path.home())) is False
+
+
+def test_force_push_is_denied(tmp_path: Path) -> None:
+    code, decision = _run_hook("Bash", "git push --force origin main", tmp_path)
+    assert decision == "deny"
+    assert code == 0
+
+
+def test_remote_ref_deletion_and_update_ref_denied(tmp_path: Path) -> None:
+    _, decision = _run_hook("Bash", "git push origin :refs/heads/feature", tmp_path)
+    assert decision == "deny"
+    _, decision = _run_hook("Bash", "git update-ref -d refs/heads/main", tmp_path)
+    assert decision == "deny"
+
+
+def test_destructive_git_denied_in_main_allowed_in_worktree(tmp_path: Path) -> None:
+    _, decision = _run_hook("Bash", "git reset --hard HEAD~1", tmp_path)
+    assert decision == "deny"
+    worktree = tmp_path / ".worktrees" / "demo"
+    worktree.mkdir(parents=True)
+    _, decision = _run_hook("Bash", "git reset --hard HEAD~1", worktree)
+    assert decision is None
+    _, decision = _run_hook("Bash", "git clean -fd", worktree)
+    assert decision is None
+    _, decision = _run_hook("Bash", "git branch -D demo", worktree)
+    assert decision is None
+
+
+def test_engineering_commands_are_never_blocked(tmp_path: Path) -> None:
+    for command in (
         "pip install requests",
-        "python -m pip install requests",
         "npm install",
-        "pnpm build",
         "yarn add react",
-        "poetry install",
         "cargo build",
-        "podman compose down -v",
-        "docker compose down --volumes",
-        "podman volume rm project-data",
-        "docker volume prune -f",
-        "podman system prune -a --volumes",
-    ],
-)
-def test_pre_tool_use_denies_obvious_windows_and_git_deletion_commands(
-    tmp_path: Path, command: str
-) -> None:
-    denied = _run_hook(
-        PLUGIN_ROOT / "hooks" / "pre_tool_use.py",
-        {
-            "cwd": str(tmp_path),
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": command},
-        },
+        "sed -i s/a/b/ file.txt",
+    ):
+        _, decision = _run_hook("Bash", command, tmp_path)
+        assert decision is None, command
+
+
+def test_recursive_deletion_denied_in_main(tmp_path: Path) -> None:
+    _, decision = _run_hook("Bash", "cmd /c rd /s /q C:\\unsafe", tmp_path)
+    assert decision == "deny"
+    _, decision = _run_hook(
+        "Bash", "powershell -NoProfile Remove-Item C:\\x -Recurse -Force", tmp_path
     )
-
-    denial = _json_output(denied.stdout)["hookSpecificOutput"]
-    assert denial["permissionDecision"] == "deny"
+    assert decision == "deny"
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "git status --short",
-        "git branch --show-current",
-        "powershell -NoProfile Get-ChildItem -LiteralPath .",
-        "powershell -NoProfile Remove-Item -LiteralPath temp.txt",
-        "podman compose down --remove-orphans",
-        "docker image prune",
-    ],
-)
-def test_pre_tool_use_does_not_block_read_only_or_narrow_commands(
-    tmp_path: Path, command: str
-) -> None:
-    allowed = _run_hook(
-        PLUGIN_ROOT / "hooks" / "pre_tool_use.py",
-        {
-            "cwd": str(tmp_path),
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": command},
-        },
+def test_apply_patch_into_input_is_denied(tmp_path: Path) -> None:
+    patch = "*** Add File: input/notes.txt\n+data"
+    _, decision = _run_hook("apply_patch", patch, tmp_path)
+    assert decision == "deny"
+
+
+def test_memory_single_writer_rule(tmp_path: Path) -> None:
+    worktree = tmp_path / ".worktrees" / "demo"
+    worktree.mkdir(parents=True)
+    patch = "*** Update File: docs/memory/memory.jsonl\n+memory line"
+    _, decision = _run_hook("apply_patch", patch, worktree)
+    assert decision == "deny"
+    _, decision = _run_hook("apply_patch", patch, tmp_path)
+    assert decision is None
+    _, decision = _run_hook(
+        "Bash", "codex-os memory record --title t --summary s --source docs/a.md", worktree
     )
-
-    assert allowed.stdout == ""
-
-
-def _run_hook(script: Path, payload: dict[str, Any]) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        [sys.executable, str(script)],
-        input=json.dumps(payload),
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=5,
+    assert decision == "deny"
+    _, decision = _run_hook(
+        "Bash",
+        "codex-os memory record --candidate --title t --summary s --source docs/a.md",
+        worktree,
     )
-    assert result.returncode == 0, result.stderr
-    return result
-
-
-def _json_output(output: str) -> dict[str, Any]:
-    value: object = json.loads(output)
-    assert isinstance(value, dict)
-    return cast(dict[str, Any], value)
+    assert decision is None
+    _, decision = _run_hook("Bash", "echo x > docs/memory/memory.jsonl", worktree)
+    assert decision == "deny"
+    _, decision = _run_hook("Bash", "echo x > docs/memory/memory.jsonl", tmp_path)
+    assert decision is None

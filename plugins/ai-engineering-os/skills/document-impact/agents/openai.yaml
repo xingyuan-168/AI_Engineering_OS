@@ -1,0 +1,3 @@
+interface:
+  display_name: "Document Impact"
+  short_description: "Sync only affected documents"
