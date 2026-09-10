@@ -20,5 +20,6 @@
 - [ADR-0012：Artifact Catalog 与前端设计单一模型](ADR-0012-artifact-catalog-single-model.md)
 - [ADR-0013：Profile 语义化与 Project Layout 分离](ADR-0013-profile-project-layout-separation.md)
 - [ADR-0014：Assurance 分层——复用 RiskLevel 的差异化保障要求](ADR-0014-assurance-levels.md)
+- [ADR-0015：Git Push Checkpoint 策略](ADR-0015-push-checkpoint-policy.md)
 
 新增 ADR 必须使用唯一编号，记录状态、上下文、选项、决定和后果；不得覆盖既有历史。
