@@ -14,7 +14,6 @@ from codex_ai_os.domain.config import (
     ProjectType,
     RiskLevel,
 )
-from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
 from codex_ai_os.infrastructure.documents import DocumentCheckReport, DocumentManager
@@ -41,6 +40,7 @@ class ProjectInitializer:
         project_type: ProjectType,
         risk_level: RiskLevel = RiskLevel.MEDIUM,
         git_push_policy: GitPushPolicy = GitPushPolicy.REMOTE_REQUIRED,
+        include: frozenset[str] | set[str] = frozenset(),
     ) -> ProjectInitResult:
         root = project_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -76,7 +76,7 @@ class ProjectInitializer:
             documents.initialize_documents(
                 config.name,
                 config.project_type.value,
-                document_version=config.document_version or RUNTIME_VERSIONS.software,
+                include=include,
             )
         )
         context_path = documents.generate_context()
@@ -84,10 +84,7 @@ class ProjectInitializer:
         database_path = root / ".codex-os" / "state" / "state.db"
         Database(database_path).migrate()
 
-        report = documents.check(
-            config.project_type.value,
-            expected_document_version=config.document_version,
-        )
+        report = documents.check(include=include)
         repository_ready, repository_blockers = self._repository_readiness(root, config)
         return ProjectInitResult(
             config=config,

@@ -1,56 +1,42 @@
-"""Path-safe atomic document creation and governance checks."""
+"""Path-safe atomic document creation and lightweight doc checks (ADR-0016).
+
+The document layer owns exactly three duties: create the minimal project
+document set, regenerate the derived project context, and verify that the
+docs/ tree is present, link-clean, and free of copy-style directories.
+Heavy governance metadata, traceability, and staleness machinery were
+removed with ADR-0016; affected-document syncing stays a Codex process
+discipline checked by the Finish gate.
+"""
 
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 from urllib.parse import unquote
 
-import yaml
-
-from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.templates.project_docs import documents_for
 
 LOCAL_LINK = re.compile(r"\[[^\]]+\]\((?:<([^>]+)>|([^ )]+))")
-FORBIDDEN_COPY_NAMES = {
-    "backup",
-    "copy",
-    "debug",
-    "final",
-    "new",
-    "old",
-    "src_backup",
-    "temp",
-    "tmp",
-}
-EXCLUDED_GOVERNANCE_TREES = {
-    ".codex-os",
-    ".git",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".venv",
-    ".worktrees",
-    "node_modules",
-}
-DOCUMENT_METADATA = re.compile(r"<!--\s*codex-os-document:\s*(\{.*?\})\s*-->")
-UNAPPROVED_PLACEHOLDER = re.compile(r"(?i)(?:\bTODO\b|\bTBD\b|待确认|待补充)")
-STRICT_STATUSES = {"accepted", "approved", "released"}
-DOCUMENT_STATUSES = {"draft", "review-ready", *STRICT_STATUSES}
-REQUIRED_SECTIONS: dict[str, tuple[str, ...]] = {
-    "PRODUCT_REQUIREMENTS.md": ("范围", "成功", "验收"),
-    "ARCHITECTURE.md": ("定位", "组件", "信任", "恢复"),
-    "API_SPEC.md": ("接口", "错误", "兼容"),
-    "DATABASE.md": ("迁移", "事务", "恢复"),
-    "SECURITY.md": ("信任", "威胁", "风险"),
-}
+FORBIDDEN_COPY_NAMES = frozenset(
+    {"backup", "copy", "debug", "final", "new", "old", "src_backup", "temp", "tmp"}
+)
+EXCLUDED_GOVERNANCE_TREES = frozenset(
+    {
+        ".codex",
+        ".codex-os",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        ".worktrees",
+        "node_modules",
+    }
+)
 
 
 class PathDeniedError(PermissionError):
@@ -63,14 +49,7 @@ class DocumentCheckReport:
     checked_files: int
     missing: tuple[str, ...]
     broken_links: tuple[str, ...]
-    invalid_documents: tuple[str, ...]
     forbidden_directories: tuple[str, ...]
-    metadata_errors: tuple[str, ...] = ()
-    placeholder_findings: tuple[str, ...] = ()
-    version_mismatches: tuple[str, ...] = ()
-    stale_documents: tuple[str, ...] = ()
-    impact_findings: tuple[str, ...] = ()
-    traceability_errors: tuple[str, ...] = ()
 
 
 class DocumentManager:
@@ -102,10 +81,10 @@ class DocumentManager:
                 prefix=f".{target.name}.",
                 suffix=".tmp",
             ) as handle:
+                temporary = Path(handle.name)
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
-                temporary = Path(handle.name)
             os.replace(temporary, target)
             temporary = None
         finally:
@@ -118,22 +97,20 @@ class DocumentManager:
         project_name: str,
         project_type: str,
         *,
-        document_version: str = "0.1.0",
+        include: frozenset[str] | set[str] = frozenset(),
     ) -> tuple[str, ...]:
+        """Create the baseline document set plus explicitly requested extras."""
+
         created: list[str] = []
-        for relative, template in documents_for(project_type).items():
+        for relative, template in documents_for(project_type, include=include).items():
             content = template.replace("{{ project_name }}", project_name)
-            if relative.casefold().endswith(".md") and DOCUMENT_METADATA.search(content) is None:
-                content = _add_template_metadata(
-                    content,
-                    document_version=document_version,
-                    owner="project-manager",
-                )
             if self.write_atomic(relative, content, overwrite=False):
                 created.append(relative)
         return tuple(created)
 
     def generate_context(self) -> Path:
+        """Regenerate the derived PROJECT_CONTEXT.md cache."""
+
         docs_root = self.resolve("docs")
         lines = [
             "# Generated Project Context",
@@ -157,225 +134,50 @@ class DocumentManager:
 
     def check(
         self,
-        project_type: str,
         *,
-        expected_document_version: str | None = None,
+        include: frozenset[str] | set[str] = frozenset(),
     ) -> DocumentCheckReport:
-        expected = documents_for(project_type)
-        missing = tuple(sorted(path for path in expected if not self.resolve(path).is_file()))
-        invalid: list[str] = []
-        broken: list[str] = []
-        metadata_errors: list[str] = []
-        placeholders: list[str] = []
-        version_mismatches: list[str] = []
-        stale: list[str] = []
-        impact: list[str] = []
-        traceability: list[str] = []
-        requirement_refs: set[str] = set()
-        checked = 0
+        """Verify presence, links, and copy-free hygiene of the docs/ tree."""
 
+        expected = documents_for("generic", include=include)
+        missing = tuple(
+            sorted(path for path in expected if not self.resolve(path).is_file())
+        )
+        broken: list[str] = []
+        checked = 0
         docs_root = self.resolve("docs")
         for path in sorted(docs_root.rglob("*.md")) if docs_root.is_dir() else []:
             checked += 1
-            text = path.read_text(encoding="utf-8")
-            if not text.lstrip().startswith("# "):
-                invalid.append(path.relative_to(self.project_root).as_posix())
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                broken.append(
+                    path.relative_to(self.project_root).as_posix() + " -> unreadable"
+                )
+                continue
             broken.extend(self._broken_links(path, text))
-            relative = path.relative_to(self.project_root).as_posix()
-            metadata = self._metadata(
-                relative,
-                text,
-                metadata_errors,
-                required=True,
-            )
-            if metadata is not None:
-                refs = metadata.get("requirement_refs")
-                if isinstance(refs, list):
-                    requirement_refs.update(
-                        str(item) for item in cast(list[object], refs)
-                    )
-                status = str(metadata.get("status", "")).casefold()
-                if status in STRICT_STATUSES and UNAPPROVED_PLACEHOLDER.search(text):
-                    placeholders.append(relative)
-                metadata_document_version = str(metadata.get("document_version", ""))
-                schema_version = str(metadata.get("schema_version", ""))
-                if (
-                    schema_version != RUNTIME_VERSIONS.document_schema
-                    or (
-                        expected_document_version is not None
-                        and metadata_document_version != expected_document_version
-                    )
-                ):
-                    version_mismatches.append(relative)
-                expires_at = metadata.get("expires_at")
-                if isinstance(expires_at, str) and _is_expired(expires_at):
-                    stale.append(relative)
-                if status in STRICT_STATUSES:
-                    for required in REQUIRED_SECTIONS.get(path.name, ()):
-                        if not any(
-                            required.casefold() in heading.casefold()
-                            for heading in re.findall(r"^#{2,6}\s+(.+)$", text, re.MULTILINE)
-                        ):
-                            impact.append(f"{relative}: missing section containing {required}")
+        return DocumentCheckReport(
+            ok=not (missing or broken or self._forbidden_directories()),
+            checked_files=checked,
+            missing=missing,
+            broken_links=tuple(sorted(set(broken))),
+            forbidden_directories=self._forbidden_directories(),
+        )
 
-        traceability.extend(self._traceability_errors(requirement_refs))
-
+    def _forbidden_directories(self) -> tuple[str, ...]:
+        docs_root = self.resolve("docs")
+        if not docs_root.is_dir():
+            return ()
         forbidden: list[str] = []
-        for path in self.project_root.rglob("*"):
-            if not path.is_dir() or not (
-                path.name.casefold() in FORBIDDEN_COPY_NAMES
-                or re.fullmatch(r"v\d+", path.name.casefold())
-            ):
+        for path in sorted(docs_root.rglob("*")):
+            if not path.is_dir():
                 continue
             relative = path.relative_to(self.project_root)
             if any(part.casefold() in EXCLUDED_GOVERNANCE_TREES for part in relative.parts):
                 continue
-            forbidden.append(relative.as_posix())
-        return DocumentCheckReport(
-            ok=not any(
-                (
-                    missing,
-                    broken,
-                    invalid,
-                    forbidden,
-                    metadata_errors,
-                    placeholders,
-                    version_mismatches,
-                    stale,
-                    impact,
-                    traceability,
-                )
-            ),
-            checked_files=checked,
-            missing=missing,
-            broken_links=tuple(sorted(set(broken))),
-            invalid_documents=tuple(sorted(invalid)),
-            forbidden_directories=tuple(sorted(forbidden)),
-            metadata_errors=tuple(sorted(metadata_errors)),
-            placeholder_findings=tuple(sorted(placeholders)),
-            version_mismatches=tuple(sorted(version_mismatches)),
-            stale_documents=tuple(sorted(stale)),
-            impact_findings=tuple(sorted(impact)),
-            traceability_errors=tuple(sorted(traceability)),
-        )
-
-    @staticmethod
-    def _metadata(
-        relative: str,
-        text: str,
-        errors: list[str],
-        *,
-        required: bool = True,
-    ) -> dict[str, object] | None:
-        match = DOCUMENT_METADATA.search(text)
-        if match is None:
-            if required:
-                errors.append(f"{relative}: missing governance metadata")
-            return None
-        try:
-            raw: object = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            errors.append(f"{relative}: invalid metadata JSON")
-            return None
-        if not isinstance(raw, dict):
-            errors.append(f"{relative}: metadata must be an object")
-            return None
-        object_mapping = cast(dict[object, object], raw)
-        metadata: dict[str, object] = {
-            str(key): value for key, value in object_mapping.items()
-        }
-        required_fields = {
-            "schema_version",
-            "document_version",
-            "status",
-            "owner",
-            "requirement_refs",
-        }
-        missing = sorted(required_fields - set(metadata))
-        if missing:
-            errors.append(f"{relative}: missing metadata fields {missing}")
-        schema_version = metadata.get("schema_version")
-        if schema_version not in RUNTIME_VERSIONS.compatible_document_schemas:
-            errors.append(
-                f"{relative}: unsupported schema_version {schema_version!r}; expected one of "
-                f"{list(RUNTIME_VERSIONS.compatible_document_schemas)}"
-            )
-        refs = metadata.get("requirement_refs")
-        if isinstance(refs, list):
-            ref_objects = cast(list[object], refs)
-            valid_refs = bool(ref_objects) and all(
-                isinstance(item, str) for item in ref_objects
-            )
-        else:
-            valid_refs = False
-        if not valid_refs:
-            errors.append(f"{relative}: requirement_refs must be a non-empty string array")
-        if not isinstance(metadata.get("owner"), str) or not str(metadata.get("owner")).strip():
-            errors.append(f"{relative}: owner is required")
-        status = metadata.get("status")
-        if not isinstance(status, str) or status.casefold() not in DOCUMENT_STATUSES:
-            errors.append(
-                f"{relative}: unsupported status {status!r}; expected one of "
-                f"{sorted(DOCUMENT_STATUSES)}"
-            )
-        return metadata
-
-    def _traceability_errors(self, requirement_refs: set[str]) -> tuple[str, ...]:
-        path = self.resolve(".codex-os/test-traceability.yaml")
-        if not path.is_file():
-            return ()
-        try:
-            raw: object = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, yaml.YAMLError) as exc:
-            return (f".codex-os/test-traceability.yaml: invalid YAML: {exc}",)
-        if not isinstance(raw, dict):
-            return (".codex-os/test-traceability.yaml: root must be an object",)
-        mapping = cast(dict[object, object], raw)
-        errors: list[str] = []
-        if mapping.get("schema_version") != RUNTIME_VERSIONS.config_schema:
-            errors.append(
-                ".codex-os/test-traceability.yaml: schema_version must be "
-                f"{RUNTIME_VERSIONS.config_schema}"
-            )
-        entries = mapping.get("entries")
-        if not isinstance(entries, list) or not entries:
-            errors.append(".codex-os/test-traceability.yaml: entries must be non-empty")
-            return tuple(errors)
-        covered: set[str] = set()
-        seen_ids: set[str] = set()
-        for index, value in enumerate(cast(list[object], entries)):
-            label = f".codex-os/test-traceability.yaml: entries[{index}]"
-            if not isinstance(value, dict):
-                errors.append(f"{label} must be an object")
-                continue
-            entry = cast(dict[object, object], value)
-            entry_id = entry.get("id")
-            if not isinstance(entry_id, str) or not entry_id.strip():
-                errors.append(f"{label}.id is required")
-            elif entry_id in seen_ids:
-                errors.append(f"{label}.id duplicates {entry_id}")
-            else:
-                seen_ids.add(entry_id)
-            for field in ("requirement_refs", "specification_paths", "test_paths"):
-                field_value = entry.get(field)
-                if not isinstance(field_value, list) or not field_value or not all(
-                    isinstance(item, str) and item.strip()
-                    for item in cast(list[object], field_value)
-                ):
-                    errors.append(f"{label}.{field} must be a non-empty string array")
-                    continue
-                if field == "requirement_refs":
-                    covered.update(
-                        str(item) for item in cast(list[object], field_value)
-                    )
-                    continue
-                for item in cast(list[object], field_value):
-                    relative = str(item)
-                    if not self.resolve(relative).is_file():
-                        errors.append(f"{label}.{field}: missing {relative}")
-        for missing in sorted(requirement_refs - covered):
-            errors.append(f".codex-os/test-traceability.yaml: unmapped {missing}")
-        return tuple(errors)
+            if path.name.casefold() in FORBIDDEN_COPY_NAMES:
+                forbidden.append(relative.as_posix())
+        return tuple(forbidden)
 
     def _broken_links(self, source: Path, text: str) -> list[str]:
         broken: list[str] = []
@@ -401,31 +203,9 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _add_template_metadata(content: str, *, document_version: str, owner: str) -> str:
-    first_line, separator, remainder = content.partition("\n")
-    metadata = json.dumps(
-        {
-            "schema_version": RUNTIME_VERSIONS.document_schema,
-            "document_version": document_version,
-            "status": "draft",
-            "owner": owner,
-            "requirement_refs": ["PROJECT-INIT"],
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    suffix = f"\n\n<!-- codex-os-document: {metadata} -->\n"
-    if not separator:
-        return f"{first_line}{suffix}"
-    return f"{first_line}{suffix}\n{remainder.lstrip()}"
-
-
-def _is_expired(value: str) -> bool:
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed < datetime.now(UTC)
+__all__ = [
+    "DocumentCheckReport",
+    "DocumentManager",
+    "PathDeniedError",
+    "sha256_file",
+]
