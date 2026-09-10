@@ -1,6 +1,6 @@
 {
   "name": "ai-engineering-os",
-  "version": "0.3.0+codex.20260908110000",
+  "version": "1.0.0+codex.20260910120000",
   "description": "Codex engineering governance layer: three stateless gates, approvals, worktree isolation, and lightweight memory.",
   "author": {
     "name": "xingyuan-168",

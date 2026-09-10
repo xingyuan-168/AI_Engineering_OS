@@ -1,5 +1,11 @@
 # 变更记录
 
+## [1.0.0] - 2026-09-10
+
+### governance-core 轻量化大重构（ADR-0016，breaking change）
+
+版本定稿：Dogfood 四案例全部通过（无 GitHub 阻塞/放行、正常后端流程、前端批准与豁免、子 Agent worktree 隔离与清理），89 项测试全绿，复杂度预算达标（MCP 7/8、CLI 7+1/8、Skills 8/9、活跃 docs 13/10~15、Gate 3、SQLite 5/6 表）。
+
 ## Unreleased
 
 ### governance-core 轻量化大重构（ADR-0016，breaking change）

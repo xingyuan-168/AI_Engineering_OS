@@ -8,21 +8,19 @@ from codex_ai_os.cli import app as cli_app
 
 
 def test_package_exposes_version() -> None:
-    assert __version__ == "0.3.0"
+    assert __version__ == "1.0.0"
 
 
 def test_runtime_version_matrix_is_single_release_truth() -> None:
     assert RUNTIME_VERSIONS.software == __version__
-    assert RUNTIME_VERSIONS.plugin == "0.3.0"
-    assert RUNTIME_VERSIONS.api == "1.2"
+    assert RUNTIME_VERSIONS.plugin == "1.0.0"
+    assert RUNTIME_VERSIONS.api == "2.0"
     assert RUNTIME_VERSIONS.config_schema == "1.2"
     assert RUNTIME_VERSIONS.document_schema == "1.2"
-    assert RUNTIME_VERSIONS.profile_schema == "1.2"
-    assert RUNTIME_VERSIONS.sqlite_schema == "0008"
-    assert RUNTIME_VERSIONS.requirement_baseline == "REQ-1.6.2"
-    assert RUNTIME_VERSIONS.git_tag == "v0.3.0"
-    assert RUNTIME_VERSIONS.as_dict()["software"] == "0.3.0"
-    assert "3.12.14-bookworm@sha256:" in RUNTIME_VERSIONS.execution_image
+    assert RUNTIME_VERSIONS.sqlite_schema == "0001"
+    assert RUNTIME_VERSIONS.requirement_baseline == "REQ-GC-1.0"
+    assert RUNTIME_VERSIONS.git_tag == "v1.0.0"
+    assert RUNTIME_VERSIONS.as_dict()["software"] == "1.0.0"
 
 
 def test_package_module_entrypoint_dispatches_cli(

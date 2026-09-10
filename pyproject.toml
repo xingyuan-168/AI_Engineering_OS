@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codex-ai-engineering-os"
-version = "0.3.0"
+version = "1.0.0"
 description = "Codex engineering governance layer: three stateless gates, worktrees, and memory"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

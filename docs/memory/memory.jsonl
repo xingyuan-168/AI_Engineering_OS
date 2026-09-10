@@ -1,1 +1,2 @@
 {"id":"MEM-93ca92bd4ed2","source":"docs/GOVERNANCE_RULES.md","source_commit":null,"status":"active","summary":"Keep the governance surface small and stateless.","superseded_by":null,"tags":[],"title":"Prefer narrow gates","type":"lesson"}
+{"id":"MEM-c7199beac485","source":"docs/CHANGELOG.md","source_commit":null,"status":"active","summary":"治理核心轻量化大重构完成：三 Gate + 轻量 SQLite + JSONL 单写者 Memory + disposable worktree；Dogfood 四案例通过后定稿 1.0.0。","superseded_by":null,"tags":["release","adr-0016"],"title":"Governance-core 1.0.0 定稿","type":"decision"}
