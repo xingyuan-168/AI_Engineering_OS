@@ -1,4 +1,9 @@
-"""Add concise project governance context at session startup."""
+"""Announce AI Engineering OS governance at session startup (ADR-0016).
+
+The hook only does three things: tell Codex that this project is governed,
+remind it to read AGENTS.md and project fact documents, and remind it of the
+governance preconditions. It never claims execution authority over Codex.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,14 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+_CONTEXT = (
+    "This project uses AI Engineering OS governance. Keep Codex's native "
+    "engineering workflow. Before repository-changing work: read AGENTS.md and "
+    "relevant docs; verify GitHub readiness (codex-os repo-check); complete "
+    "open-source research when required; honor frontend approval and worktree "
+    "rules. At finish: targeted tests, document impact, memory, cleanup."
+)
 
 
 def main() -> int:
@@ -17,11 +30,7 @@ def main() -> int:
     output = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": (
-                "This is an AI Engineering OS project. Use the MCP workflow state as the "
-                "execution authority; repository-changing tasks require verified artifacts, "
-                "one logical commit, an immediate push, and a clean worktree before completion."
-            ),
+            "additionalContext": _CONTEXT,
         }
     }
     print(json.dumps(output, ensure_ascii=False))

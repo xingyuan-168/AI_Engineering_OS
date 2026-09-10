@@ -1,22 +1,29 @@
-"""Codex PreToolUse governance entry point (ADR-0011).
+"""Codex PreToolUse governance entry point (ADR-0011 / ADR-0016).
 
-Two-layer design:
+Scope: protect user assets, not Codex's engineering execution strategy.
 
-1. Local defense-in-depth regexes run first. They are a degraded copy of the
-   runtime's HOST_COMMAND_RULES and catch obviously destructive host
-   commands even when the runtime cannot be reached.
-2. Initialized AI-OS projects are adjudicated by the authorization kernel
-   through ``codex-os authorize-hook``: apply_patch target paths and shell
-   redirect targets receive the same path policy as MCP/CLI operations.
+1. Unconditional denies target shared/irreversible assets: force push, remote
+   ref deletion, direct ref surgery, persistent OCI volume destruction,
+   recursive deletion of roots/home, and apply_patch writes into ``input/``.
+2. Destructive-but-local operations (``git reset --hard``, ``git clean -f``,
+   forced recursive deletes, ``git branch -D``) are context-aware: denied in
+   the main worktree, allowed inside a disposable Worktree the agent owns or
+   a system temp directory.
+3. Normal engineering commands (pip/npm/pnpm/yarn/cargo installs, builds,
+   ``sed -i``, tests) are never blocked: Codex stays the executor.
+4. Initialized AI-OS projects additionally adjudicate apply_patch targets and
+   shell redirect targets through the authorization kernel via
+   ``codex-os authorize-hook`` (path policy: ``input/``/``output/`` and
+   governance files).
 
-The hook remains a best-effort enforcement point: a host can disable hooks,
-so the runtime entry checks and post-hoc Git evidence validation stay the
-authoritative boundaries.
+The hook remains best-effort: a host can disable hooks, so the runtime entry
+checks stay the authoritative boundary.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -24,75 +31,19 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Degraded fallback rules; the authoritative list lives in
-# codex_ai_os.application.authorization.HOST_COMMAND_RULES.
-_FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
+# Unconditional denies: shared or irreversible user assets.
+_UNCONDITIONAL: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"\bgit\s+push\b[^\r\n]*(?:--force(?:-with-lease)?|(?:^|\s)-f(?:\s|$))", re.I),
         "Force push is forbidden; correct published history with a new commit or git revert.",
-    ),
-    (
-        re.compile(r"\bgit\s+reset\s+--hard\b", re.I),
-        "git reset --hard is forbidden because it can discard user changes.",
-    ),
-    (
-        re.compile(r"\bgit\s+checkout\s+--(?:\s|$)", re.I),
-        "git checkout -- is forbidden because it can discard user changes.",
-    ),
-    (
-        re.compile(r"\bgit\s+clean\b[^\r\n]*(?:^|\s)-[^\s]*f", re.I),
-        "Forced git clean is forbidden because it can delete untracked user files.",
-    ),
-    (
-        re.compile(r"\brm\s+-[^\s]*r[^\s]*f[^\r\n]*\s(?:/|~|\$HOME)(?:\s|$)", re.I),
-        "Recursive deletion of a broad root or home target is forbidden.",
-    ),
-    (
-        re.compile(
-            r"\b(?:rmdir|rd)\b(?=[^\r\n]*/s(?:\s|$))(?=[^\r\n]*/q(?:\s|$))[^\r\n]*",
-            re.I,
-        ),
-        "Recursive forced directory deletion is forbidden on the Windows host.",
-    ),
-    (
-        re.compile(
-            r"\b(?:del|erase)\b(?=[^\r\n]*/f(?:\s|$))(?=[^\r\n]*/s(?:\s|$))[^\r\n]*",
-            re.I,
-        ),
-        "Recursive forced file deletion is forbidden on the Windows host.",
-    ),
-    (
-        re.compile(
-            r"\bRemove-Item\b(?=[^\r\n]*-(?:Recurse|r)(?:\s|$))"
-            r"(?=[^\r\n]*-(?:Force|fo)(?:\s|$))[^\r\n]*",
-            re.I,
-        ),
-        "PowerShell recursive forced deletion is forbidden on the Windows host.",
     ),
     (
         re.compile(r"\bgit\s+push\b[^\r\n]*(?:--delete(?:\s|$)|\s:[^\s]+)", re.I),
         "Deleting a remote ref with git push is forbidden.",
     ),
     (
-        re.compile(r"\bgit\s+branch\b[^\r\n]*(?:^|\s)-D(?:\s|$)", re.I),
-        "Forced local branch deletion is forbidden.",
-    ),
-    (
         re.compile(r"\bgit\s+update-ref\b[^\r\n]*(?:^|\s)(?:-d|--delete)(?:\s|$)", re.I),
         "Deleting a Git ref directly is forbidden.",
-    ),
-    (
-        re.compile(r"\bsed\b[^;\r\n|]*?(?:^|\s)-i(?:\s|$)", re.I),
-        "In-place file rewriting with sed -i must run through governed worktree tools.",
-    ),
-    (
-        re.compile(
-            r"\b(?:python(?:3)?\s+-m\s+)?pip(?:3)?\s+(?:install|wheel)\b|"
-            r"\b(?:npm|pnpm|yarn)\s+(?:i|install|add|build)\b|"
-            r"\bpoetry\s+install\b|\bcargo\s+(?:install|build)\b",
-            re.I,
-        ),
-        "Project dependency installation and builds must run through the governed OCI environment.",
     ),
     (
         re.compile(
@@ -107,14 +58,66 @@ _FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
         "Persistent OCI volume deletion requires an independent operator workflow.",
     ),
     (
-        re.compile(
-            r"\b(?:docker|podman)\s+(?:system|container)\s+prune\b"
-            r"[^\r\n]*(?:-a\b|--all\b|--volumes?\b)",
-            re.I,
-        ),
-        "Broad OCI prune operations are forbidden from the Agent path.",
+        re.compile(r"\brm\s+-[^\s]*r[^\s]*f[^\r\n]*\s(?:/|~|\$HOME)(?:\s|$)", re.I),
+        "Recursive deletion of a broad root or home target is forbidden.",
     ),
 )
+
+# Context-aware denies: destructive inside the main worktree, allowed inside a
+# disposable Worktree or system temp directory the agent owns.
+_CONTEXT_AWARE: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\bgit\s+reset\s+--hard\b", re.I),
+        "git reset --hard in the main worktree can discard user changes; "
+        "use it only inside your own disposable Worktree.",
+    ),
+    (
+        re.compile(r"\bgit\s+checkout\s+--(?:\s|$)", re.I),
+        "git checkout -- in the main worktree can discard user changes; "
+        "use it only inside your own disposable Worktree.",
+    ),
+    (
+        re.compile(r"\bgit\s+clean\b[^\r\n]*(?:^|\s)-[^\s]*f", re.I),
+        "Forced git clean in the main worktree can delete untracked user files; "
+        "use it only inside your own disposable Worktree.",
+    ),
+    (
+        re.compile(r"\bgit\s+branch\b[^\r\n]*(?:^|\s)-D(?:\s|$)", re.I),
+        "Forced local branch deletion in the main worktree is restricted; "
+        "clean up task branches from your own disposable Worktree.",
+    ),
+    (
+        re.compile(
+            r"\b(?:rmdir|rd)\b(?=[^\r\n]*/s(?:\s|$))(?=[^\r\n]*/q(?:\s|$))[^\r\n]*",
+            re.I,
+        ),
+        "Recursive forced directory deletion is restricted to your own "
+        "disposable Worktree or temp directories.",
+    ),
+    (
+        re.compile(
+            r"\b(?:del|erase)\b(?=[^\r\n]*/f(?:\s|$))(?=[^\r\n]*/s(?:\s|$))[^\r\n]*",
+            re.I,
+        ),
+        "Recursive forced file deletion is restricted to your own "
+        "disposable Worktree or temp directories.",
+    ),
+    (
+        re.compile(
+            r"\bRemove-Item\b(?=[^\r\n]*-(?:Recurse|r)(?:\s|$))"
+            r"(?=[^\r\n]*-(?:Force|fo)(?:\s|$))[^\r\n]*",
+            re.I,
+        ),
+        "PowerShell recursive forced deletion is restricted to your own "
+        "disposable Worktree or temp directories.",
+    ),
+)
+
+_COPY_STYLE_PATH = re.compile(
+    r"(?:^|/)(?:src_v\d+|project_backup|backup|old|copy|final|temp|tmp|debug)(?:/|$)",
+    re.I,
+)
+_INPUT_PATH = re.compile(r"(?:^|[\"'])input/", re.I)
 
 _GATEWAY_TOOLS = {"Bash", "apply_patch"}
 
@@ -124,10 +127,26 @@ def main() -> int:
     tool_name = str(payload.get("tool_name", ""))
     command = _command_of(payload)
 
-    for pattern, reason in _FORBIDDEN:
+    for pattern, reason in _UNCONDITIONAL:
         if pattern.search(command):
             print(_decision_json("deny", reason))
             return 0
+
+    if tool_name == "apply_patch" and _targets_protected_paths(command):
+        print(
+            _decision_json(
+                "deny",
+                "input/ is read-only user input and copy-style version directories are forbidden.",
+            )
+        )
+        return 0
+
+    disposable = _in_disposable_area(str(payload.get("cwd", "") or "."))
+    if not disposable:
+        for pattern, reason in _CONTEXT_AWARE:
+            if pattern.search(command):
+                print(_decision_json("deny", reason))
+                return 0
 
     if tool_name in _GATEWAY_TOOLS:
         gateway_output = _authorize_via_runtime(payload)
@@ -147,17 +166,58 @@ def main() -> int:
                 {
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
-                        "additionalContext": (
-                            "Keep this change inside the active task's allowed paths and attach "
-                            "commit, push, artifact-hash, and verification evidence before "
-                            "completion."
-                        ),
+                        "additionalContext": _ADVISORY_CONTEXT,
                     }
                 },
                 ensure_ascii=False,
             )
         )
     return 0
+
+
+_ADVISORY_CONTEXT = (
+    "Governance boundary: protect user assets (main worktree history, input/, "
+    "output/). One-off files in your own worktree or temp dirs are yours to "
+    "clean. Finish with targeted tests, document impact, memory, cleanup."
+)
+
+
+def _in_disposable_area(cwd_value: str) -> bool:
+    """True when cwd is a disposable Worktree or a system temp directory."""
+
+    cwd = Path(cwd_value).resolve()
+    posix = cwd.as_posix().casefold()
+    if "/.worktrees/" in posix or posix.endswith("/.worktrees"):
+        return True
+    temp_roots = (
+        os.environ.get("TEMP", ""),
+        os.environ.get("TMP", ""),
+        str(Path.home() / "AppData" / "Local" / "Temp"),
+    )
+    for temp in temp_roots:
+        if not temp:
+            continue
+        try:
+            cwd.relative_to(Path(temp).resolve())
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+def _targets_protected_paths(patch_text: str) -> bool:
+    """Detect apply_patch targets inside input/ or copy-style version dirs."""
+
+    path_pattern = re.compile(
+        r"^\*\*\*\s+(?:Add|Update|Delete|Rename) File:\s*(.+?)\s*$", re.MULTILINE
+    )
+    for match in path_pattern.finditer(patch_text):
+        normalized = match.group(1).replace("\\", "/").strip()
+        if _INPUT_PATH.search(f'"{normalized}'):
+            return True
+        if _COPY_STYLE_PATH.search(normalized):
+            return True
+    return False
 
 
 def _authorize_via_runtime(payload: dict[str, Any]) -> str | None:
