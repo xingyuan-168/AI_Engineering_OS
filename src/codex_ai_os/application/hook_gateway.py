@@ -91,7 +91,6 @@ def authorize_hook_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if tool_name == "Bash":
         outcome = kernel.authorize(
             AuthorizationRequest(
-                principal="backend-engineer",
                 operation="execute",
                 tool="shell",
                 source="hook",
@@ -129,7 +128,6 @@ def authorize_hook_payload(payload: dict[str, Any]) -> dict[str, Any]:
             )
     outcome = kernel.authorize(
         AuthorizationRequest(
-            principal="backend-engineer",
             operation="write",
             tool=tool_name,
             source="hook",
@@ -231,8 +229,6 @@ def _outcome_output(outcome: AuthorizationOutcome) -> dict[str, Any]:
     details = outcome.reason
     if outcome.denied_paths:
         details = f"{details}: {sorted(outcome.denied_paths)}"
-    if outcome.ask_paths:
-        details = f"{details}: {sorted(outcome.ask_paths)}"
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
