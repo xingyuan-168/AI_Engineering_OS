@@ -265,7 +265,9 @@ def evaluate_frontend(
 
 
 _APPROVAL_BLOCK = re.compile(r"(?ms)^approval:\s*$\n((?:[ \t]+[^\n]*\n?)+)")
-_APPROVAL_FIELD = re.compile(r"(?m)^[ \t]+(type|scope|status):\s*(\S[^\n]*)$")
+_APPROVAL_FIELD = re.compile(
+    r"(?m)^[ \t]+(type|scope|status|approved_by):\s*(\S[^\n]*)$"
+)
 
 
 def _frontend_approval_fact(ui_spec_path: Path, scope: str) -> bool:
@@ -296,7 +298,13 @@ def _frontend_approval_fact(ui_spec_path: Path, scope: str) -> bool:
     )
 
 
-def write_frontend_approval(ui_spec_path: Path, *, scope: str, approved_on: str) -> None:
+def write_frontend_approval(
+    ui_spec_path: Path,
+    *,
+    scope: str,
+    approved_by: str,
+    approved_on: str,
+) -> None:
     """Record (or replace) the frontend approval fact in the UI spec.
 
     The minimal metadata block is the durable approval fact; the runtime
@@ -313,6 +321,7 @@ def write_frontend_approval(ui_spec_path: Path, *, scope: str, approved_on: str)
         "  type: frontend\n"
         "  scope: " + scope.strip() + "\n"
         "  status: approved\n"
+        "  approved_by: " + approved_by.strip() + "\n"
         "  approved_at: " + approved_on + "\n"
     )
     match = _APPROVAL_BLOCK.search(text)

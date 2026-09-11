@@ -178,6 +178,7 @@ def approval_record(
             write_frontend_approval(
                 root / "docs" / "design" / "UI_SPEC.md",
                 scope=scope,
+                approved_by=decided_by,
                 approved_on=datetime.now(UTC).date().isoformat(),
             )
         return _success(

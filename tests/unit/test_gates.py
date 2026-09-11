@@ -309,19 +309,27 @@ def test_frontend_approval_comes_from_ui_spec_fact_not_arguments(tmp_path: Path)
     ui_spec.parent.mkdir(parents=True, exist_ok=True)
     ui_spec.write_text("# UI\n", encoding="utf-8")
     _prototype(tmp_path)
-    write_frontend_approval(ui_spec, scope="admin-dashboard", approved_on="2026-09-10")
+    write_frontend_approval(
+        ui_spec,
+        scope="admin-dashboard",
+        approved_by="user",
+        approved_on="2026-09-10",
+    )
     approved = evaluate_frontend(tmp_path, impact="new_page", scope="admin-dashboard")
     assert approved.allowed is True
     text = ui_spec.read_text(encoding="utf-8")
     assert "scope: admin-dashboard" in text
     assert "status: approved" in text
+    assert "approved_by: user" in text
 
 
 def test_frontend_approval_does_not_inherit_across_scopes(tmp_path: Path) -> None:
     ui_spec = tmp_path / "docs" / "design" / "UI_SPEC.md"
     ui_spec.parent.mkdir(parents=True, exist_ok=True)
     _prototype(tmp_path)
-    write_frontend_approval(ui_spec, scope="dashboard-v1", approved_on="2026-09-10")
+    write_frontend_approval(
+        ui_spec, scope="dashboard-v1", approved_by="user", approved_on="2026-09-10"
+    )
     other_scope = evaluate_frontend(tmp_path, impact="new_page", scope="settings-page")
     assert other_scope.allowed is False
     assert any(
@@ -333,10 +341,16 @@ def test_frontend_approval_replacement_rewrites_block(tmp_path: Path) -> None:
     ui_spec = tmp_path / "docs" / "design" / "UI_SPEC.md"
     ui_spec.parent.mkdir(parents=True, exist_ok=True)
     _prototype(tmp_path)
-    write_frontend_approval(ui_spec, scope="v1", approved_on="2026-09-01")
-    write_frontend_approval(ui_spec, scope="v1", approved_on="2026-09-10")
+    write_frontend_approval(
+        ui_spec, scope="v1", approved_by="user-a", approved_on="2026-09-01"
+    )
+    write_frontend_approval(
+        ui_spec, scope="v1", approved_by="user-b", approved_on="2026-09-10"
+    )
     text = ui_spec.read_text(encoding="utf-8")
     assert text.count("status: approved") == 1
+    assert text.count("approved_by: ") == 1
+    assert "approved_by: user-b" in text
     assert "approved_at: 2026-09-10" in text
     assert evaluate_frontend(tmp_path, impact="new_page", scope="v1").allowed is True
 
