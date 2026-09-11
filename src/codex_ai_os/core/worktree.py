@@ -43,6 +43,7 @@ class WorktreeRecord:
     task_id: str | None
     disposable: bool
     status: str
+    target_branch: str | None = None
     clean: bool | None = None
 
 
@@ -64,6 +65,7 @@ class WorktreeManager:
         name: str | None = None,
         task_id: str | None = None,
         base_ref: str = "HEAD",
+        target_branch: str = "main",
     ) -> WorktreeRecord:
         """Create a disposable worktree and register it for hook path checks."""
 
@@ -92,9 +94,9 @@ class WorktreeManager:
                 connection.execute(
                     """
                     INSERT INTO worktrees(
-                        id, task_id, name, path, branch, disposable, status,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, 1, 'active', ?, ?)
+                        id, task_id, name, path, branch, target_branch,
+                        disposable, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)
                     """,
                     (
                         record_id,
@@ -102,6 +104,7 @@ class WorktreeManager:
                         slug,
                         f"{WORKTREE_ROOT}/{slug}",
                         branch,
+                        target_branch,
                         now,
                         now,
                     ),
@@ -118,6 +121,7 @@ class WorktreeManager:
             task_id=resolved_task_id,
             disposable=True,
             status="active",
+            target_branch=target_branch,
             clean=True,
         )
 
@@ -133,7 +137,11 @@ class WorktreeManager:
         return WorktreeRecord(**{**_fields(record), "clean": clean})
 
     def finish(self, *, name: str) -> WorktreeRecord:
-        """Mark a clean worktree as finished and ready for merge review."""
+        """Mark a clean worktree as finished and ready for merge review.
+
+        "ready" is not "merged": the main session (Codex or the user)
+        performs the actual merge; cleanup verifies it afterwards.
+        """
 
         record = self._record(name)
         absolute = self.root / record.path
@@ -147,40 +155,62 @@ class WorktreeManager:
                 "WORKTREE_DIRTY",
                 "commit or clean the worktree before finish; subagent work must not be lost",
             )
-        return self._set_status(record.name, "merged")
+        return self._set_status(record.name, "ready")
 
-    def cleanup(self, *, name: str, force: bool = False) -> WorktreeRecord:
-        """Remove a disposable worktree and its branch, unregistering it.
+    def cleanup(self, *, name: str) -> WorktreeRecord:
+        """Remove a proven-merged disposable worktree and its branch.
 
-        Registration exists so the hook can treat the path as disposable;
-        once the worktree is removed the row goes with it, which frees the
-        name, path, and branch for reuse.
+        Cleanup refuses to destroy unmerged or dirty work: the branch tip
+        must already be contained in the recorded target branch (verified
+        with git merge-base --is-ancestor) before anything is deleted.
+        There is no force escape on the public path.
         """
 
         record = self._record(name)
         absolute = self.root / record.path
-        if absolute.is_dir():
-            arguments = ["worktree", "remove"]
-            if force:
-                arguments.append("--force")
-            arguments.append(str(absolute))
-            result = self.git.run(*arguments)
-            if result.returncode != 0:
-                if not force:
-                    dirty = GitRunner(absolute).run("status", "--porcelain")
-                    if dirty.returncode == 0 and dirty.stdout.strip():
-                        raise WorktreeError(
-                            "WORKTREE_DIRTY",
-                            "worktree has uncommitted changes; pass force to discard them",
-                        )
-                raise WorktreeError(
-                    "WORKTREE_REMOVE_FAILED", _git_failure("git worktree remove", result)
-                )
-        branch_delete = self.git.run("branch", "-D", record.branch)
-        if branch_delete.returncode != 0 and not _branch_gone(branch_delete):
+        target = record.target_branch or "main"
+        path_exists = absolute.is_dir()
+        tip = self.git.run("rev-parse", "--verify", record.branch + "^{commit}")
+        if tip.returncode != 0 and path_exists:
             raise WorktreeError(
-                "BRANCH_DELETE_FAILED", _git_failure("git branch -D", branch_delete)
+                "WORKTREE_NOT_MERGED",
+                "branch '" + record.branch + "' cannot be resolved while the "
+                "worktree still exists; refusing to remove unverifiable work",
             )
+        if path_exists:
+            status = GitRunner(absolute).run("status", "--porcelain")
+            if status.returncode != 0 or status.stdout.strip():
+                raise WorktreeError(
+                    "WORKTREE_DIRTY",
+                    "worktree has uncommitted changes; commit or discard them "
+                    "explicitly before cleanup",
+                )
+        if tip.returncode == 0:
+            ancestor = self.git.run(
+                "merge-base", "--is-ancestor", tip.stdout.strip(), target
+            )
+            if ancestor.returncode != 0:
+                raise WorktreeError(
+                    "WORKTREE_NOT_MERGED",
+                    "branch '" + record.branch + "' is not contained in '"
+                    + target + "'; merge it before cleanup",
+                )
+        # The worktree must be detached from the branch before the branch can
+        # be deleted, so removal happens strictly before the branch delete.
+        if path_exists:
+            result = self.git.run("worktree", "remove", str(absolute))
+            if result.returncode != 0:
+                raise WorktreeError(
+                    "WORKTREE_REMOVE_FAILED",
+                    _git_failure("git worktree remove", result),
+                )
+        if tip.returncode == 0:
+            branch_delete = self.git.run("branch", "-D", record.branch)
+            if branch_delete.returncode != 0 and not _branch_gone(branch_delete):
+                raise WorktreeError(
+                    "BRANCH_DELETE_FAILED",
+                    _git_failure("git branch -D", branch_delete),
+                )
         with self.database.connection() as connection:
             connection.execute("DELETE FROM worktrees WHERE name = ?", (record.name,))
             connection.commit()
@@ -219,6 +249,7 @@ def _record_from_row(row: sqlite3.Row) -> WorktreeRecord:
         task_id=str(row["task_id"]) if row["task_id"] is not None else None,
         disposable=bool(row["disposable"]),
         status=str(row["status"]),
+        target_branch=str(row["target_branch"]) if row["target_branch"] is not None else None,
     )
 
 
@@ -231,6 +262,7 @@ def _fields(record: WorktreeRecord) -> dict[str, object]:
         "task_id": record.task_id,
         "disposable": record.disposable,
         "status": record.status,
+        "target_branch": record.target_branch,
     }
 
 

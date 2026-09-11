@@ -235,17 +235,22 @@ def worktree_manage(
     name: str | None = None,
     task_id: str | None = None,
     base_ref: str = "HEAD",
-    force: bool = False,
 ) -> dict[str, Any]:
     """Manage disposable worktrees (action=prepare|check|finish|cleanup|list)."""
 
     def operation() -> dict[str, Any]:
         root = Path(project_root).resolve()
+        config = load_project_config(root)
         database = Database(root / ".codex-os" / "state" / "state.db")
         database.migrate()
         manager = WorktreeManager(root, database=database)
         if action == "prepare":
-            record = manager.prepare(name=name, task_id=task_id, base_ref=base_ref)
+            record = manager.prepare(
+                name=name,
+                task_id=task_id,
+                base_ref=base_ref,
+                target_branch=config.target_branch,
+            )
             return _success(**_worktree_data(record))
         if action == "check":
             if name is None:
@@ -258,7 +263,7 @@ def worktree_manage(
         if action == "cleanup":
             if name is None:
                 raise ValueError("cleanup requires name")
-            return _success(**_worktree_data(manager.cleanup(name=name, force=force)))
+            return _success(**_worktree_data(manager.cleanup(name=name)))
         if action == "list":
             return _success(results=[_worktree_data(item) for item in manager.list()])
         raise ValueError("action must be one of: prepare, check, finish, cleanup, list")

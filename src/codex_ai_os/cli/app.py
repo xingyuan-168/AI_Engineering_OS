@@ -465,9 +465,14 @@ def worktree_prepare_command(
     """Create a disposable worktree under .worktrees/ and register it."""
 
     try:
-        _, database = _project_database(project_root)
+        config, database = _project_database(project_root)
         manager = WorktreeManager(project_root.resolve(), database=database)
-        record = manager.prepare(name=name, task_id=task_id, base_ref=base_ref)
+        record = manager.prepare(
+            name=name,
+            task_id=task_id,
+            base_ref=base_ref,
+            target_branch=config.target_branch,
+        )
     except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
         _fail("WORKTREE_FAILED", str(exc), 2, json_output)
         return
@@ -525,16 +530,15 @@ def worktree_finish_command(
 @worktree_app.command("cleanup")
 def worktree_cleanup_command(
     name: Annotated[str, typer.Argument(help="Worktree name.")],
-    force: Annotated[bool, typer.Option("--force", help="Discard uncommitted changes.")] = False,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
-    """Remove a disposable worktree and its branch, then unregister it."""
+    """Remove a merged disposable worktree and its branch, then unregister it."""
 
     try:
         _, database = _project_database(project_root)
         manager = WorktreeManager(project_root.resolve(), database=database)
-        record = manager.cleanup(name=name, force=force)
+        record = manager.cleanup(name=name)
     except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
         _fail("WORKTREE_FAILED", str(exc), 2, json_output)
         return

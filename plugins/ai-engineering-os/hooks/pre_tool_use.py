@@ -28,8 +28,10 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -214,26 +216,137 @@ _ADVISORY_CONTEXT = (
 
 
 def _in_disposable_area(cwd_value: str) -> bool:
-    """True when cwd is a disposable Worktree or a system temp directory."""
+    """True only for a trusted disposable Worktree or a system temp directory.
+
+    A trusted worktree must satisfy all of (ADR-0016):
+    1. the coordinator project root can be resolved;
+    2. a registration exists in the runtime database;
+    3. the registered path matches the current cwd realpath;
+    4. the worktree really exists in git worktree list --porcelain.
+    Any fake ".worktrees/" path fails closed. System temp detection uses
+    tempfile.gettempdir() (Windows/Linux/macOS) plus TEMP/TMP supplements.
+    """
 
     cwd = Path(cwd_value).resolve()
-    posix = cwd.as_posix().casefold()
-    if "/.worktrees/" in posix or posix.endswith("/.worktrees"):
+    if _trusted_disposable_worktree(cwd):
         return True
-    temp_roots = (
-        os.environ.get("TEMP", ""),
-        os.environ.get("TMP", ""),
-        str(Path.home() / "AppData" / "Local" / "Temp"),
-    )
-    for temp in temp_roots:
-        if not temp:
-            continue
+    for temp in _temp_roots():
         try:
-            cwd.relative_to(Path(temp).resolve())
+            cwd.relative_to(temp)
         except ValueError:
             continue
         return True
     return False
+
+
+def _temp_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    candidates = [tempfile.gettempdir(), os.environ.get("TEMP", ""), os.environ.get("TMP", "")]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        resolved = Path(candidate).resolve()
+        key = os.path.normcase(str(resolved))
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
+def _trusted_disposable_worktree(cwd: Path) -> bool:
+    registered = _registered_worktree_row(cwd)
+    if registered is None:
+        return False
+    record_path = registered[1]
+    coordinator = _worktree_coordinator_root(cwd)
+    if coordinator is None:
+        return False
+    absolute = (coordinator / record_path).resolve()
+    try:
+        Path(os.path.realpath(cwd)).relative_to(Path(os.path.realpath(absolute)))
+    except ValueError:
+        return False
+    listing = subprocess.run(
+        ["git", "-C", str(coordinator), "worktree", "list", "--porcelain"],
+        text=True,
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+    if listing.returncode != 0:
+        return False
+    for line in listing.stdout.splitlines():
+        if line.startswith("worktree "):
+            listed = line[len("worktree "):].strip()
+            if os.path.normcase(listed) == os.path.normcase(str(absolute)):
+                return True
+    return False
+
+
+def _worktree_coordinator_root(cwd: Path) -> Path | None:
+    """Resolve the coordinator root from a linked worktree cwd (git file)."""
+
+    marker = cwd
+    for current in [cwd, *cwd.parents]:
+        git_entry = current / ".git"
+        if git_entry.is_file():
+            marker = current
+            break
+    else:
+        return None
+    try:
+        first_line = (marker / ".git").read_text(encoding="utf-8").splitlines()[0]
+    except (OSError, UnicodeError, IndexError):
+        return None
+    if not first_line.casefold().startswith("gitdir:"):
+        return None
+    raw = first_line[len("gitdir:"):].strip()
+    git_dir = Path(raw) if Path(raw).is_absolute() else (marker / raw)
+    common_file = git_dir / "commondir"
+    try:
+        raw_common = (common_file).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return None
+    common = Path(raw_common) if Path(raw_common).is_absolute() else (git_dir / raw_common)
+    try:
+        common = common.resolve()
+    except OSError:
+        return None
+    return common.parent if common.name == ".git" else None
+
+
+def _registered_worktree_row(cwd: Path) -> tuple[str, str] | None:
+    """Return (name, record_path) when cwd matches one registration exactly."""
+
+    coordinator = _worktree_coordinator_root(cwd)
+    if coordinator is None:
+        return None
+    database_path = coordinator / ".codex-os" / "state" / "state.db"
+    if not database_path.is_file():
+        return None
+    try:
+        connection = sqlite3.connect(str(database_path), timeout=2)
+    except sqlite3.Error:
+        return None
+    try:
+        rows = connection.execute(
+            "SELECT name, path FROM worktrees WHERE disposable = 1"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    for name, path in rows:
+        record_path = str(path).replace(chr(92), "/").rstrip("/")
+        absolute = coordinator / record_path
+        try:
+            Path(os.path.realpath(cwd)).relative_to(Path(os.path.realpath(absolute)))
+        except ValueError:
+            continue
+        return str(name), record_path
+    return None
 
 
 def _targets_memory_paths(patch_text: str) -> bool:

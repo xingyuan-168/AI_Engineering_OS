@@ -17,7 +17,7 @@ def _json_output(output: str) -> dict[str, Any]:
 
 
 def _git_repo(root: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "-A"], cwd=root, check=True)
