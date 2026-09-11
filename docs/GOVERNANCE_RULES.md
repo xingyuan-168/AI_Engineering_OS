@@ -10,6 +10,16 @@
 
 不可确定性观察的检查（如"需求范围已明确"）是 AGENTS.md 的过程纪律，不进运行时。
 
+## 默认验证
+
+默认验证 ≤5 项：目标测试、ruff、`git diff --check`、仓库卫生（`codex-os check`）、必要时 pyright。每个逻辑变更还须通过仓库 Secret Scan（detect-secrets 只扫本次修改，封装在 `scripts/secret_scan_incremental.py`）。
+
+## 实现边界
+
+- Python 3.12 + uv.lock 锁定依赖；Gate/审批/SQLite 全部自研自持，无第二模型客户端。
+- 设计护栏默认保持轻量：MCP 工具/CLI 命令/活跃文档/Skills/Gate/SQLite 表数量保持现状，新增能力必须先证明必要性并经人工 review，失效能力及时删除；只做人工对照，不写运行时检测代码。
+- 不做：strict assurance Profile、SBOM、镜像扫描、dependency audit、Verification Cache、Release 发布器、Host Operation lease、每命令 Evidence、自有 Agent/Tool Runtime、DAG 调度、自研 Secret 引擎、复杂审批系统、复杂 Research 系统、复杂 Memory 状态机。
+
 ## 路径策略
 
 - 受保护路径（治理通道内禁写）：`input/**`、`.git/**`、`.codex-os/state/**`、`**.env`、`**/credentials/**`。

@@ -2,7 +2,7 @@
 
 <!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"accepted","owner":"architect","requirement_refs":["REQ-1.6.2","VERSION-001","GOV-001","DOC-001"]} -->
 
-- 状态：Accepted
+- 状态：部分 Superseded（2026-09，ADR-0016）——版本唯一事实源结论仍有效；"强制力分层声明""状态词汇对照""G3 证据绑定"小节引用的 workflow/证据运行时已随 ADR-0016 删除，仅存历史
 - 日期：2026-09-07
 - 决策版本：0.2.1 / API 1.2 / SQLite 0008
 - 澄清：ADR-0004 §2.1、ADR-0005 §2 的散文落地缺口；SCOPE §1 的强制力宣称
