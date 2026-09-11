@@ -20,7 +20,7 @@ from codex_ai_os.application.hook_gateway import authorize_hook_payload
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.cli.output import emit, error_envelope, success_envelope
-from codex_ai_os.core.gates import evaluate_finish
+from codex_ai_os.core.gates import GateError, evaluate_code_start, evaluate_finish
 from codex_ai_os.core.worktree import WorktreeError, WorktreeManager, WorktreeRecord
 from codex_ai_os.domain.config import ProjectType, RiskLevel
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
@@ -118,18 +118,37 @@ def _include_keys(values: list[str]) -> frozenset[str]:
 @app.command("check")
 def check_command(
     project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
+    change_class: Annotated[
+        str | None, typer.Option("--change-class", help="Run the Code Start gate for this class.")
+    ] = None,
+    requirement_id: Annotated[
+        str | None,
+        typer.Option("--requirement-id", help="Current requirement id for research scoping."),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
-    """Check GitHub readiness, repository hygiene, and the docs/ tree."""
+    """Check GitHub readiness, repository hygiene, the docs/ tree, and
+    optionally the Code Start gate (with --change-class)."""
 
+    gate_decision = None
     try:
         config = load_project_config(project_root.resolve())
         repository = RepositoryGovernanceService(config.root).check()
         documents = DocumentManager(config.root).check()
+        if change_class is not None:
+            gate_decision = evaluate_code_start(
+                config.root,
+                change_class=change_class,
+                requirement_id=requirement_id,
+                github_hosts=config.github_hosts,
+            )
+    except GateError as exc:
+        _fail("GATE_INPUT_INVALID", str(exc), 2, json_output)
+        return
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
         return
-    data = {
+    data: dict[str, Any] = {
         "repository": {
             "repository_ready": repository.repository_ready,
             "hygiene_ok": repository.hygiene_ok,
@@ -144,22 +163,36 @@ def check_command(
             "broken_links": list(documents.broken_links),
             "forbidden_directories": list(documents.forbidden_directories),
         },
+        "code_start": None
+        if gate_decision is None
+        else {
+            "allowed": gate_decision.allowed,
+            "blocked_by": list(gate_decision.blocked_by),
+            "findings": [
+                {"code": f.code, "message": f.message, "path": f.path, "blocking": f.blocking}
+                for f in gate_decision.findings
+            ],
+        },
     }
-    if repository.repository_ready and documents.ok:
+    docs_and_repo_ok = repository.repository_ready and documents.ok
+    gate_ok = gate_decision is None or gate_decision.allowed
+    if docs_and_repo_ok and gate_ok:
         emit(
             success_envelope(data),
             json_output=json_output,
             human="Repository and document checks passed.",
         )
         return
-    if not repository.repository_ready and repository.findings:
+    if gate_decision is not None and not gate_decision.allowed:
+        code = gate_decision.blocked_by[0] if gate_decision.blocked_by else "CODE_START_BLOCKED"
+    elif not repository.repository_ready and repository.findings:
         code = repository.findings[0].code
     else:
         code = "DOCS_INCOMPLETE"
     emit(
-        error_envelope(code, "Repository or document checks failed.", data),
+        error_envelope(code, "Repository, document, or Code Start checks failed.", data),
         json_output=json_output,
-        human="Repository or document checks failed.",
+        human="Repository, document, or Code Start checks failed.",
     )
     raise typer.Exit(code=40)
 

@@ -87,7 +87,7 @@ def governance_check(
     project_root: str,
     stage: str,
     change_class: str = "small_change",
-    research_done: bool | None = None,
+    requirement_id: str | None = None,
     frontend_impact: str = "none",
     approved: bool | None = None,
     tests_passed: bool = False,
@@ -103,7 +103,7 @@ def governance_check(
             decision = evaluate_code_start(
                 root,
                 change_class=change_class,
-                research_done=research_done,
+                requirement_id=requirement_id,
             )
         elif stage == "frontend":
             decision = evaluate_frontend(

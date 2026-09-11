@@ -6,11 +6,16 @@ from codex_ai_os.core.gates import (
     evaluate_code_start,
     evaluate_finish,
     evaluate_frontend,
+    formal_write_blockers,
 )
 
-RESEARCH_WITH_DECISION = (
-    "# Research\n\n## Candidates\n\n- some project\n"
-    "\n## Decision\n\n- build\n- reason: none fits\n"
+REQUIREMENT = "REQ-TEST"
+
+RESEARCH_COMPLETE = (
+    "# Research\n\n## Requirement\n\nrequirement_id: REQ-TEST\n"
+    "summary: Pick an orchestration layer for the sample integration.\n"
+    "\n## Candidates\n\n### Project A\n\n- URL: https://github.com/org/a\n"
+    "\n## Decision\n\ndecision: build\nreason: none of the candidates fit the boundary.\n"
 )
 
 
@@ -37,18 +42,18 @@ class FakeGitRunner:
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
-def _research(root: Path, text: str = RESEARCH_WITH_DECISION) -> Path:
+def _research(root: Path, text: str = RESEARCH_COMPLETE) -> Path:
     path = root / "docs" / "OPEN_SOURCE_RESEARCH.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
 
 
-def _start(root: Path, change_class: str, status: str = "", research_done: bool | None = None):
+def _start(root: Path, change_class: str, status: str = "", requirement_id: str | None = REQUIREMENT):
     return evaluate_code_start(
         root,
         change_class=change_class,
-        research_done=research_done,
+        requirement_id=requirement_id,
         research_path="docs/OPEN_SOURCE_RESEARCH.md",
         github_hosts=("github.com",),
         runner=FakeGitRunner(status=status),
@@ -67,22 +72,85 @@ def test_research_required_class_blocks_without_document(tmp_path: Path) -> None
     assert any(f.code == "OPEN_SOURCE_RESEARCH_MISSING" and f.blocking for f in decision.findings)
 
 
-def test_research_done_override_skips_document(tmp_path: Path) -> None:
-    decision = _start(tmp_path, "major_feature", research_done=True)
-    assert decision.allowed is True
+def test_research_gated_class_requires_requirement_id(tmp_path: Path) -> None:
+    _research(tmp_path)
+    decision = _start(tmp_path, "major_feature", requirement_id=None)
+    assert decision.allowed is False
+    assert any(f.code == "OPEN_SOURCE_RESEARCH_MISSING" and f.blocking for f in decision.findings)
 
 
-def test_research_document_without_decision_section_blocks(tmp_path: Path) -> None:
-    _research(tmp_path, "# Research\n\n## Candidates\n\n- some project\n")
+def test_empty_research_template_does_not_pass(tmp_path: Path) -> None:
+    _research(tmp_path, "# Open Source Research\n\n## Requirement\n\n## Candidates\n\n## Decision\n")
+    decision = _start(tmp_path, "major_feature")
+    assert decision.allowed is False
+    codes = {f.code for f in decision.findings}
+    assert "OPEN_SOURCE_RESEARCH_STALE" in codes
+    assert "OPEN_SOURCE_RESEARCH_INCOMPLETE" in codes
+
+
+def test_decision_heading_without_metadata_does_not_pass(tmp_path: Path) -> None:
+    _research(tmp_path, "# Research\n\n## Requirement\n\nrequirement_id: REQ-TEST\n\n## Decision\n\n- build\n")
+    decision = _start(tmp_path, "major_feature")
+    assert decision.allowed is False
+    codes = {f.code for f in decision.findings}
+    assert "OPEN_SOURCE_RESEARCH_INCOMPLETE" in codes
+
+
+def test_decision_without_reason_does_not_pass(tmp_path: Path) -> None:
+    _research(
+        tmp_path,
+        RESEARCH_COMPLETE.replace(
+            "reason: none of the candidates fit the boundary.\n", ""
+        ),
+    )
     decision = _start(tmp_path, "major_feature")
     assert decision.allowed is False
     assert any(f.code == "OPEN_SOURCE_RESEARCH_INCOMPLETE" for f in decision.findings)
 
 
-def test_research_with_decision_allows_start(tmp_path: Path) -> None:
+def test_stale_requirement_does_not_unlock_new_work(tmp_path: Path) -> None:
+    _research(tmp_path, RESEARCH_COMPLETE.replace("REQ-TEST", "REQ-OLD"))
+    decision = _start(tmp_path, "major_feature")
+    assert decision.allowed is False
+    assert any(f.code == "OPEN_SOURCE_RESEARCH_STALE" and f.blocking for f in decision.findings)
+
+
+def test_complete_research_for_current_requirement_allows_start(tmp_path: Path) -> None:
     _research(tmp_path)
     decision = _start(tmp_path, "major_feature")
     assert decision.allowed is True
+
+
+def test_explicit_no_candidate_statement_allows_start(tmp_path: Path) -> None:
+    _research(
+        tmp_path,
+        RESEARCH_COMPLETE.replace(
+            "### Project A\n\n- URL: https://github.com/org/a\n",
+            "没有合适候选：治理层不需要第二运行时依赖。\n",
+        ),
+    )
+    decision = _start(tmp_path, "major_feature")
+    assert decision.allowed is True
+
+
+def test_formal_write_blockers_allow_ready_repo(tmp_path: Path) -> None:
+    decision = formal_write_blockers(tmp_path, runner=FakeGitRunner())
+    assert decision.allowed is True
+
+
+def test_formal_write_blockers_fail_without_git(tmp_path: Path) -> None:
+    decision = formal_write_blockers(tmp_path, runner=FakeGitRunner())
+    class NotGit(FakeGitRunner):
+        def run(self, *args: str, timeout: float = 30.0):
+            if args[:2] == ("rev-parse", "--show-toplevel"):
+                from types import SimpleNamespace
+
+                return SimpleNamespace(returncode=1, stdout="", stderr="not a repo")
+            return super().run(*args, timeout=timeout)
+
+    decision = formal_write_blockers(tmp_path, runner=NotGit())
+    assert decision.allowed is False
+    assert any(f.code == "NOT_GIT_REPOSITORY" for f in decision.findings)
 
 
 def test_user_uncommitted_work_does_not_block_start(tmp_path: Path) -> None:

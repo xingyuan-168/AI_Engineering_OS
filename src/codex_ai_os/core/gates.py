@@ -56,7 +56,15 @@ FRONTEND_GATED_IMPACTS = frozenset(
 )
 FRONTEND_EXEMPT_IMPACTS = frozenset({"none", "copy_change", "component_bugfix"})
 
-DECISION_HEADING = re.compile(r"(?m)^##\s+Decision\b")
+VALID_DECISIONS = frozenset({"use", "fork", "extract", "build"})
+_REQUIREMENT_ID_FIELD = re.compile(r"(?m)^\s*requirement_id\s*:\s*(.+?)\s*$")
+_SUMMARY_FIELD = re.compile(r"(?m)^\s*summary\s*:\s*(.+?)\s*$")
+_DECISION_FIELD = re.compile(r"(?m)^\s*decision\s*:\s*(\S+)\s*$")
+_REASON_FIELD = re.compile(r"(?m)^\s*reason\s*:\s*(.+?)\s*$")
+_CANDIDATE_HEADING = re.compile(r"(?m)^###\s+\S")
+_NO_CANDIDATE_STATEMENT = re.compile(
+    r"没有合适候选|无合适候选|no\s+suitable\s+candidate", re.IGNORECASE
+)
 
 # Trees never scanned for copy-style dirt: VCS/runtime state plus the
 # user-owned input/ material (ADR-0016 directory contract).
@@ -142,16 +150,18 @@ def evaluate_code_start(
     root: Path,
     *,
     change_class: str,
-    research_done: bool | None = None,
+    requirement_id: str | None = None,
     research_path: str = RESEARCH_DOCUMENT,
     github_hosts: frozenset[str] | tuple[str, ...] = ("github.com",),
     runner: GitRunner | None = None,
 ) -> GateDecision:
     """Evaluate whether formal source implementation may start.
 
-    "research_done" overrides the repository-derived research check when
-    provided; when None the gate derives it from "research_path" (the file
-    must exist and contain a "## Decision" section).
+    Research-gated change classes must pass the current "requirement_id";
+    the gate derives the research check from "research_path" (the document
+    must record that requirement id, a summary, at least one candidate or
+    an explicit no-candidate statement, and a Decision with a non-empty
+    reason). There is no boolean bypass.
     """
 
     root = root.resolve()
@@ -165,7 +175,32 @@ def evaluate_code_start(
 
     findings.extend(_github_findings(git, github_hosts))
     findings.extend(hygiene_findings(root, git))
-    findings.extend(_research_findings(root, normalized_class, research_done, research_path))
+    findings.extend(
+        _research_findings(root, normalized_class, requirement_id, research_path)
+    )
+    return _decide(GateName.CODE_START, findings)
+
+
+def formal_write_blockers(
+    root: Path,
+    *,
+    github_hosts: frozenset[str] | tuple[str, ...] = ("github.com",),
+    runner: GitRunner | None = None,
+) -> GateDecision:
+    """Objective Code Start subset enforced at the write boundary.
+
+    The PreToolUse hook calls this for formal source writes: the gate
+    re-derives the observable facts - GitHub readiness and repository
+    hygiene - on every call, with no stored state. Requirement-scoped
+    research stays a task-start concern because the hook is stateless and
+    cannot know the current requirement.
+    """
+
+    root = root.resolve()
+    git = runner or GitRunner(root)
+    findings: list[GateFinding] = []
+    findings.extend(_github_findings(git, github_hosts))
+    findings.extend(hygiene_findings(root, git))
     return _decide(GateName.CODE_START, findings)
 
 
@@ -438,17 +473,34 @@ def _disposable_findings(git: GitRunner) -> list[GateFinding]:
 
 
 def _research_findings(
-    root: Path, change_class: str, research_done: bool | None, research_path: str
+    root: Path, change_class: str, requirement_id: str | None, research_path: str
 ) -> list[GateFinding]:
+    """Requirement-scoped research check over minimal Markdown metadata.
+
+    Accepted shape (empty values never pass)::
+
+        ## Requirement
+        requirement_id: REQ-xxx
+        summary: ...
+
+        ## Candidates
+        ### Project A
+        ...
+
+        ## Decision
+        decision: build
+        reason: ...
+    """
+
     if change_class not in RESEARCH_REQUIRED_CHANGE_CLASSES:
         return []
-    if research_done is not None:
-        if research_done:
-            return []
+    if requirement_id is None or not requirement_id.strip():
         return [
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_MISSING",
-                "change class '" + change_class + "' requires recorded open-source research",
+                "change class '" + change_class + "' requires the current "
+                "requirement_id so one research document cannot act as a "
+                "blanket pass",
                 path=research_path,
             )
         ]
@@ -461,7 +513,9 @@ def _research_findings(
                 + change_class
                 + "' requires "
                 + research_path
-                + " with a Decision section",
+                + " recording requirement '"
+                + requirement_id.strip()
+                + "'",
                 path=research_path,
             )
         ]
@@ -475,17 +529,90 @@ def _research_findings(
                 path=research_path,
             )
         ]
-    if DECISION_HEADING.search(text) is None:
+    findings: list[GateFinding] = []
+    requirement = _markdown_section(text, "Requirement")
+    if requirement is None:
         return [
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_INCOMPLETE",
                 research_path
-                + " must contain a '## Decision' section (use / fork / extract / build "
-                "plus the reason)",
+                + " must contain a '## Requirement' section with requirement_id "
+                "and summary metadata",
                 path=research_path,
             )
         ]
-    return []
+    recorded = _REQUIREMENT_ID_FIELD.search(requirement)
+    if recorded is None or recorded.group(1).strip() != requirement_id.strip():
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_STALE",
+                "research records requirement '"
+                + (recorded.group(1).strip() if recorded is not None else "none")
+                + "' but the current requirement is '"
+                + requirement_id.strip()
+                + "'; old research never unlocks new requirements",
+                path=research_path,
+            )
+        )
+    summary = _SUMMARY_FIELD.search(requirement)
+    if summary is None or not summary.group(1).strip():
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Requirement' section needs a non-empty 'summary:' field",
+                path=research_path,
+            )
+        )
+    candidates = _markdown_section(text, "Candidates")
+    if candidates is None or (
+        _CANDIDATE_HEADING.search(candidates) is None
+        and _NO_CANDIDATE_STATEMENT.search(candidates) is None
+    ):
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Candidates' section needs at least one '### ' candidate "
+                "or an explicit no-suitable-candidate statement",
+                path=research_path,
+            )
+        )
+    decision_section = _markdown_section(text, "Decision")
+    decision = (
+        _DECISION_FIELD.search(decision_section)
+        if decision_section is not None
+        else None
+    )
+    reason = (
+        _REASON_FIELD.search(decision_section)
+        if decision_section is not None
+        else None
+    )
+    if decision is None or decision.group(1).casefold() not in VALID_DECISIONS:
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Decision' section needs 'decision:' set to one of "
+                + str(sorted(VALID_DECISIONS)),
+                path=research_path,
+            )
+        )
+    if reason is None or not reason.group(1).strip():
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Decision' section needs a non-empty 'reason:' field",
+                path=research_path,
+            )
+        )
+    return findings
+
+
+def _markdown_section(text: str, heading: str) -> str | None:
+    """Return the body under a '## <heading>' section; None when absent."""
+
+    pattern = re.compile(r"(?ms)^##\s+" + re.escape(heading) + r"\s*$\n(.*?)(?=^##\s|\Z)")
+    match = pattern.search(text)
+    return match.group(1) if match is not None else None
 
 
 def _remote_host(remote_url: str) -> str | None:
@@ -512,8 +639,10 @@ __all__ = [
     "GateError",
     "GateFinding",
     "GateName",
+    "VALID_DECISIONS",
     "evaluate_code_start",
     "evaluate_finish",
     "evaluate_frontend",
+    "formal_write_blockers",
     "hygiene_findings",
 ]

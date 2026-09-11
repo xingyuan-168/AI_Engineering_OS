@@ -122,7 +122,7 @@ _COPY_STYLE_PATH = re.compile(
 _INPUT_PATH = re.compile(r"(?:^|[\"'])input/", re.I)
 _MEMORY_JSONL_PATH = re.compile(r"docs/memory/", re.I)
 
-_GATEWAY_TOOLS = {"Bash", "apply_patch"}
+_GATEWAY_TOOLS = {"Bash", "apply_patch", "Write", "Edit"}
 
 
 def main() -> int:
@@ -171,6 +171,13 @@ def main() -> int:
             return 0
 
     if tool_name in _GATEWAY_TOOLS and not disposable:
+        # Code Start write boundary, degraded fallback (ADR-0016): when the
+        # runtime CLI is unreachable, a formal source write without a GitHub
+        # remote is still denied instead of only being reminded.
+        offline = _offline_formal_write_denied(payload)
+        if offline is not None:
+            print(offline)
+            return 0
         # Kernel screening covers main-worktree operations only; disposable
         # worktrees keep the context-aware allowance above (ADR-0016).
         gateway_output = _authorize_via_runtime(payload)
@@ -265,6 +272,91 @@ def _targets_protected_paths(patch_text: str) -> bool:
         if _COPY_STYLE_PATH.search(normalized):
             return True
     return False
+
+
+_APPLY_PATCH_TARGET = re.compile(
+    r"^\*\*\*\s+(?:Add|Update|Delete|Rename) File:\s*(.+?)\s*$", re.MULTILINE
+)
+_REDIRECT_TARGET = re.compile(r"(?<![-<>])>{1,2}\s*([^\s|;&<>]+)", re.MULTILINE)
+_CODE_PATHS_BLOCK = re.compile(r"(?m)^code_paths:\s*$\n((?:^[ \t]+-.*$\n?)+)")
+_CODE_PATH_ENTRY = re.compile(r"(?m)^[ \t]+-\s*(\S+)\s*$")
+_IGNORED_REDIRECTS = {"&1", "&2", "/dev/null", "nul", "$null", "null"}
+
+
+def _write_target_paths(payload: dict[str, Any]) -> list[str]:
+    """Best-effort write targets for one payload (offline fallback)."""
+
+    tool_name = str(payload.get("tool_name", ""))
+    tool_input = payload.get("tool_input")
+    input_dict = tool_input if isinstance(tool_input, dict) else {}
+    command = str(input_dict.get("command", ""))
+    paths: list[str] = []
+    if tool_name == "apply_patch":
+        paths.extend(match.strip() for match in _APPLY_PATCH_TARGET.findall(command))
+    elif tool_name in {"Write", "Edit"}:
+        raw = input_dict.get("path") or input_dict.get("file_path") or ""
+        paths.append(str(raw).replace(chr(92), "/").strip())
+    elif tool_name == "Bash":
+        for match in _REDIRECT_TARGET.finditer(command):
+            raw = match.group(1).strip().strip(chr(34)).strip(chr(39))
+            if raw.casefold() not in _IGNORED_REDIRECTS:
+                paths.append(raw.replace(chr(92), "/"))
+    return [path.lstrip("./") for path in paths if path.strip()]
+
+
+def _code_paths(project_root: Path) -> tuple[str, ...]:
+    """Read code_paths from project.yaml text; default to a src/ only tree."""
+
+    marker = project_root / ".codex-os" / "project.yaml"
+    try:
+        text = marker.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ("src",)
+    block = _CODE_PATHS_BLOCK.search(text)
+    if block is None:
+        return ("src",)
+    entries = _CODE_PATH_ENTRY.findall(block.group(1))
+    return tuple(entries) if entries else ("src",)
+
+
+def _offline_formal_write_denied(payload: dict[str, Any]) -> str | None:
+    """Offline Code Start boundary: deny formal source writes when the
+    runtime CLI is unreachable and the project has no usable GitHub remote.
+    None means the case does not apply."""
+
+    if shutil.which("codex-os") is not None:
+        return None  # Runtime reachable: the gateway adjudicates instead.
+    cwd = Path(str(payload.get("cwd", ".") or ".")).resolve()
+    if not (cwd / ".codex-os" / "project.yaml").is_file():
+        return None
+    targets = _write_target_paths(payload)
+    if not targets:
+        return None
+    formal: list[str] = []
+    for target in targets:
+        for base in _code_paths(cwd):
+            base = base.rstrip("/")
+            if target == base or target.startswith(base + "/"):
+                formal.append(target)
+                break
+    if not formal:
+        return None
+    probe = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(cwd),
+        text=True,
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+    if probe.returncode == 0:
+        return None
+    return _decision_json(
+        "deny",
+        "CODE_START_BLOCKED: no GitHub remote is configured, so formal source "
+        "writes (" + ", ".join(formal) + ") are blocked; research, analysis, "
+        "and documentation stay allowed.",
+    )
 
 
 def _authorize_via_runtime(payload: dict[str, Any]) -> str | None:

@@ -64,6 +64,7 @@ class ProjectConfig(StrictModel):
     git_push_policy: GitPushPolicy = GitPushPolicy.REMOTE_REQUIRED
     target_branch: str = Field(default="main", pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
     github_hosts: frozenset[str] = frozenset({"github.com"})
+    code_paths: tuple[str, ...] = ("src",)
     max_parallel_agents: int = Field(default=4, ge=1, le=4)
     document_version: str | None = Field(
         default=None,
