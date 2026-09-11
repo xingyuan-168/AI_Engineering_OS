@@ -1,8 +1,11 @@
-"""YAML loading and safety-preserving configuration merge (ADR-0016 surface)."""
+"""YAML loading and unified root resolution (ADR-0016 surface)."""
 
 from __future__ import annotations
 
+import os
+import sqlite3
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -113,3 +116,84 @@ def _managed_worktree_coordinator(project_root: Path) -> Path | None:
         else (git_dir / raw_common).resolve()
     )
     return common_dir.parent if common_dir.name == ".git" else None
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeContext:
+    """One registered disposable worktree of the coordinator project."""
+
+    name: str
+    path: str
+    branch: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedRoot:
+    """The governing project root for one working directory."""
+
+    project_root: Path
+    worktree: WorktreeContext | None = None
+
+
+def resolve_runtime_root(cwd: Path) -> ResolvedRoot:
+    """Resolve one working directory to its governing project root (ADR-0016).
+
+    Main checkouts map to themselves. Registered disposable worktrees map to
+    their coordinator root plus the worktree context, so memory candidates,
+    hooks, gates, and the CLI share one resolution instead of guessing from
+    directory strings. A path under .worktrees/ without a runtime
+    registration never maps (fail closed).
+    """
+
+    requested = cwd.resolve()
+    coordinator = _managed_worktree_coordinator(requested)
+    if coordinator is None:
+        return ResolvedRoot(requested)
+    if not (coordinator / ".codex-os" / "project.yaml").is_file():
+        return ResolvedRoot(requested)
+    relative = requested.relative_to(coordinator).as_posix()
+    context = _registered_worktree(coordinator, relative, requested)
+    if context is None:
+        raise ProjectRootError(
+            "WORKTREE_NOT_REGISTERED",
+            "path lives under .worktrees/ without a runtime registration; "
+            "disposable rules do not apply",
+            coordinator_root=coordinator,
+        )
+    return ResolvedRoot(coordinator, context)
+
+
+def _registered_worktree(
+    coordinator_root: Path, relative: str, requested: Path
+) -> WorktreeContext | None:
+    """Return the matching registration for one worktree cwd, if any."""
+
+    database_path = coordinator_root / ".codex-os" / "state" / "state.db"
+    if not database_path.is_file():
+        return None
+    try:
+        connection = sqlite3.connect(str(database_path), timeout=2)
+    except sqlite3.Error:
+        return None
+    try:
+        rows = connection.execute(
+            "SELECT name, path, branch, disposable FROM worktrees"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    for name, path, branch, disposable in rows:
+        record_path = str(path).replace("\\", "/").rstrip("/")
+        if not (relative == record_path or relative.startswith(record_path + "/")):
+            continue
+        if not int(disposable or 0):
+            continue
+        registered_root = Path(os.path.realpath(coordinator_root / record_path))
+        real_requested = Path(os.path.realpath(requested))
+        try:
+            real_requested.relative_to(registered_root)
+        except ValueError:
+            continue
+        return WorktreeContext(name=str(name), path=record_path, branch=str(branch))
+    return None

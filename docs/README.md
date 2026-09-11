@@ -20,7 +20,7 @@ AI Engineering OS 是 Codex 的工程治理层。本目录只保存当前正确�
 | FRONTEND_GATE.md | 前端批准流程与豁免 | 前端任务时 |
 | OPEN_SOURCE_RESEARCH.md | 开源调研记录（本仓库自身） | 引入新依赖时 |
 | TEST_PLAN.md | 默认验证与测试映射 | 跑验证前 |
-| API_SPEC.md | MCP 7 工具 + CLI 命令契约 | 调用接口时 |
+| API_SPEC.md | MCP 8 工具 + CLI 命令契约 | 调用接口时 |
 | DATABASE.md | SQLite 四表与 memory_index | 动 schema 时 |
 | CHANGELOG.md | 变更记录 | 发布/合并前 |
 | ADR/ | 已接受/已否决的架构决策 | 重大决策前后 |

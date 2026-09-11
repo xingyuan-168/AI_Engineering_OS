@@ -6,7 +6,7 @@ SQLite 只保存运行状态与可重建索引；Markdown/Git 保存事实正文
 
 - `tasks` — id, title, branch, status(open|in_progress|blocked|done), created_at, updated_at。worktree prepare 自动登记任务。
 - `approvals` — id, subject, gate(code_start|frontend|finish), decision(approved|rejected), decided_by, reason, created_at。
-- `worktrees` — id, task_id→tasks, name/path/branch（均 UNIQUE）, disposable, status(active|merged|cleaned), created_at, updated_at。cleanup 注销删除行。
+- `worktrees` — id, task_id→tasks, name/path/branch/target_branch（name/path/branch 均 UNIQUE）, disposable, status(active|ready|cleaned), created_at, updated_at。cleanup 注销删除行。
 - `memory_index` — id, record_type, title, summary, source, source_commit, tags, status, superseded_by, line_number, indexed_at。可由 docs/memory/memory.jsonl 随时重建。
 
 ## 迁移与保护

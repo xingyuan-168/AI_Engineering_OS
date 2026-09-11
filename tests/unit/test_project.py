@@ -11,7 +11,6 @@ def test_initialize_creates_baseline(tmp_path: Path) -> None:
         project_id="PROJECT-INIT",
         name="Init",
         project_type="generic",
-        risk_level="low",
         include=frozenset(),
     )
     for relative in (
@@ -37,7 +36,6 @@ def test_initialize_with_conditional_extras(tmp_path: Path) -> None:
         project_id="PROJECT-EXTRA",
         name="Extra",
         project_type="fullstack",
-        risk_level="medium",
         include=frozenset({"frontend_design", "docker"}),
     )
     joined = "\n".join(result.created_paths)
@@ -54,7 +52,6 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
         project_id="PROJECT-IDEM",
         name="Idem",
         project_type="generic",
-        risk_level="low",
         include=frozenset(),
     )
     second = initializer.initialize(
@@ -62,7 +59,6 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
         project_id="PROJECT-IDEM",
         name="Idem",
         project_type="generic",
-        risk_level="low",
         include=frozenset(),
     )
     assert ".codex-os/project.yaml" not in second.created_paths
@@ -76,7 +72,6 @@ def test_fixture_local_policy_reports_ready(tmp_path: Path) -> None:
         project_id="PROJECT-LOCAL",
         name="Local",
         project_type="generic",
-        risk_level="low",
         git_push_policy="fixture_local_only",
         include=frozenset(),
     )

@@ -17,7 +17,7 @@ def _json_output(output: str) -> dict[str, Any]:
 
 
 def _git_repo(root: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True)
     subprocess.run(["git", "add", "-A"], cwd=root, check=True)
@@ -84,20 +84,132 @@ def test_finish_gate_blocks_then_passes(tmp_path: Path) -> None:
     assert blocked.exit_code == 40
     payload = _json_output(blocked.output)
     codes = {finding["code"] for finding in payload["error"]["details"]["findings"]}
-    assert "TESTS_NOT_PASSED" in codes
+    assert "MEMORY_MISSING" in codes
+    failing = runner.invoke(
+        app,
+        [
+            "finish",
+            str(tmp_path),
+            "--test-command",
+            'python -c "import sys; sys.exit(3)"',
+            "--memory-not-needed",
+            "--json",
+        ],
+    )
+    assert failing.exit_code == 40, failing.output
+    failed_codes = {
+        finding["code"] for finding in _json_output(failing.output)["error"]["details"]["findings"]
+    }
+    assert "TEST_COMMAND_FAILED" in failed_codes
     passing = runner.invoke(
         app,
         [
             "finish",
             str(tmp_path),
-            "--tests-passed",
-            "--docs-synced",
+            "--test-command",
+            'python -c "pass"',
             "--memory-not-needed",
             "--json",
         ],
     )
     assert passing.exit_code == 0, passing.output
     assert _json_output(passing.output)["data"]["allowed"] is True
+
+
+def test_memory_candidate_loop_via_cli(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", str(tmp_path), "--project-id", "PROJECT-MEM", "--json"])
+    recorded = runner.invoke(
+        app,
+        [
+            "memory",
+            "record",
+            "--title",
+            "Loop closes",
+            "--summary",
+            "candidate accept works",
+            "--source",
+            "src/a.py",
+            "--candidate",
+            "--project-root",
+            str(tmp_path),
+            "--json",
+        ],
+    )
+    assert recorded.exit_code == 0, recorded.output
+    candidate_id = _json_output(recorded.output)["data"]["entry"]["id"]
+    listed = runner.invoke(
+        app,
+        ["memory", "candidates", "--project-root", str(tmp_path), "--json"],
+    )
+    assert listed.exit_code == 0, listed.output
+    assert len(_json_output(listed.output)["data"]["results"]) == 1
+    accepted = runner.invoke(
+        app,
+        [
+            "memory",
+            "candidate",
+            candidate_id,
+            "--accept",
+            "--project-root",
+            str(tmp_path),
+            "--json",
+        ],
+    )
+    assert accepted.exit_code == 0, accepted.output
+    payload = _json_output(accepted.output)["data"]
+    assert payload["accepted"] is True
+    assert payload["entry"]["title"] == "Loop closes"
+    listed_again = runner.invoke(
+        app,
+        ["memory", "candidates", "--project-root", str(tmp_path), "--json"],
+    )
+    assert _json_output(listed_again.output)["data"]["results"] == []
+    rejected = runner.invoke(
+        app,
+        [
+            "memory",
+            "record",
+            "--title",
+            "Drop me",
+            "--summary",
+            "s",
+            "--source",
+            "src/a.py",
+            "--candidate",
+            "--project-root",
+            str(tmp_path),
+            "--json",
+        ],
+    )
+    assert rejected.exit_code == 0, rejected.output
+    drop_id = _json_output(rejected.output)["data"]["entry"]["id"]
+    dropped = runner.invoke(
+        app,
+        [
+            "memory",
+            "candidate",
+            drop_id,
+            "--reject",
+            "--project-root",
+            str(tmp_path),
+            "--json",
+        ],
+    )
+    assert dropped.exit_code == 0, dropped.output
+    missing = runner.invoke(
+        app,
+        [
+            "memory",
+            "candidate",
+            "MEM-nope",
+            "--accept",
+            "--project-root",
+            str(tmp_path),
+            "--json",
+        ],
+    )
+    assert missing.exit_code == 2
+    assert _json_output(missing.output)["error"]["code"] == "MEMORY_CANDIDATE_MISSING"
 
 
 def test_worktree_lifecycle_via_cli(tmp_path: Path) -> None:

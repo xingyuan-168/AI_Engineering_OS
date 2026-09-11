@@ -88,7 +88,8 @@ BASE_DOCUMENTS: dict[str, str] = {
 
 ## Requirement
 
-本次需求是什么。
+requirement_id: REQ-xxx
+summary: 本次需求是什么。
 
 ## Candidates
 
@@ -104,8 +105,8 @@ BASE_DOCUMENTS: dict[str, str] = {
 
 ## Decision
 
-- use / fork / extract / build
-- reason:
+decision: build
+reason: 为什么这个选择满足本次需求。
 """,
     "docs/CHANGELOG.md": """# Changelog
 

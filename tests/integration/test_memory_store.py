@@ -77,6 +77,69 @@ def test_candidate_flow_never_touches_jsonl(tmp_path: Path) -> None:
     assert entries == ()
 
 
+def test_accept_candidate_merges_and_removes_file(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    entry = store.record_candidate(
+        record_type="decision",
+        title="Merge me",
+        summary="candidate loop closes",
+        source="src/a.py",
+    )
+    merged = store.accept_candidate(entry.id)
+    assert merged.title == "Merge me"
+    candidate_file = (
+        tmp_path / "docs" / "memory" / "memory.jsonl"
+    ).parent / (entry.id + ".json")
+    assert not candidate_file.exists()
+    candidates = store.candidates()
+    assert candidates == ()
+    entries, invalid = store.load()
+    assert invalid == ()
+    assert [item.title for item in entries] == ["Merge me"]
+    hits = store.search("merge me")
+    assert len(hits) == 1
+
+
+def test_reject_candidate_discards_without_jsonl_write(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    entry = store.record_candidate(
+        record_type="lesson",
+        title="Drop me",
+        summary="not worth keeping",
+        source="src/a.py",
+    )
+    store.reject_candidate(entry.id)
+    assert store.candidates() == ()
+    entries, _ = store.load()
+    assert entries == ()
+
+
+def test_unknown_candidate_fails_closed(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    with pytest.raises(MemoryStoreError) as excinfo:
+        store.accept_candidate("MEM-does-not-exist")
+    assert excinfo.value.code == "MEMORY_CANDIDATE_MISSING"
+    with pytest.raises(MemoryStoreError) as excinfo:
+        store.reject_candidate("../escape")
+    assert excinfo.value.code == "MEMORY_CANDIDATE_MISSING"
+
+
+def test_accept_duplicate_candidate_cleans_up(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.record(record_type="decision", title="Already here", summary="s", source="docs/x.md")
+    entry = store.record_candidate(
+        record_type="decision",
+        title="Already here",
+        summary="same title from a subagent",
+        source="src/a.py",
+    )
+    with pytest.raises(MemoryStoreError) as excinfo:
+        store.accept_candidate(entry.id)
+    assert excinfo.value.code == "MEMORY_DUPLICATE"
+    # The stale candidate is cleaned up so the loop cannot stay stuck.
+    assert store.candidates() == ()
+
+
 def test_reindex_rebuilds_from_source_of_truth(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.record(record_type="bug", title="Root cause fixed", summary="s", source="docs/x.md")

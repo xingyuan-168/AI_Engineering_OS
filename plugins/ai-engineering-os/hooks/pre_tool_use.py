@@ -28,8 +28,10 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -122,7 +124,7 @@ _COPY_STYLE_PATH = re.compile(
 _INPUT_PATH = re.compile(r"(?:^|[\"'])input/", re.I)
 _MEMORY_JSONL_PATH = re.compile(r"docs/memory/", re.I)
 
-_GATEWAY_TOOLS = {"Bash", "apply_patch"}
+_GATEWAY_TOOLS = {"Bash", "apply_patch", "Write", "Edit"}
 
 
 def main() -> int:
@@ -171,6 +173,13 @@ def main() -> int:
             return 0
 
     if tool_name in _GATEWAY_TOOLS and not disposable:
+        # Code Start write boundary, degraded fallback (ADR-0016): when the
+        # runtime CLI is unreachable, a formal source write without a GitHub
+        # remote is still denied instead of only being reminded.
+        offline = _offline_formal_write_denied(payload)
+        if offline is not None:
+            print(offline)
+            return 0
         # Kernel screening covers main-worktree operations only; disposable
         # worktrees keep the context-aware allowance above (ADR-0016).
         gateway_output = _authorize_via_runtime(payload)
@@ -207,26 +216,137 @@ _ADVISORY_CONTEXT = (
 
 
 def _in_disposable_area(cwd_value: str) -> bool:
-    """True when cwd is a disposable Worktree or a system temp directory."""
+    """True only for a trusted disposable Worktree or a system temp directory.
+
+    A trusted worktree must satisfy all of (ADR-0016):
+    1. the coordinator project root can be resolved;
+    2. a registration exists in the runtime database;
+    3. the registered path matches the current cwd realpath;
+    4. the worktree really exists in git worktree list --porcelain.
+    Any fake ".worktrees/" path fails closed. System temp detection uses
+    tempfile.gettempdir() (Windows/Linux/macOS) plus TEMP/TMP supplements.
+    """
 
     cwd = Path(cwd_value).resolve()
-    posix = cwd.as_posix().casefold()
-    if "/.worktrees/" in posix or posix.endswith("/.worktrees"):
+    if _trusted_disposable_worktree(cwd):
         return True
-    temp_roots = (
-        os.environ.get("TEMP", ""),
-        os.environ.get("TMP", ""),
-        str(Path.home() / "AppData" / "Local" / "Temp"),
-    )
-    for temp in temp_roots:
-        if not temp:
-            continue
+    for temp in _temp_roots():
         try:
-            cwd.relative_to(Path(temp).resolve())
+            cwd.relative_to(temp)
         except ValueError:
             continue
         return True
     return False
+
+
+def _temp_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    candidates = [tempfile.gettempdir(), os.environ.get("TEMP", ""), os.environ.get("TMP", "")]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        resolved = Path(candidate).resolve()
+        key = os.path.normcase(str(resolved))
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
+def _trusted_disposable_worktree(cwd: Path) -> bool:
+    registered = _registered_worktree_row(cwd)
+    if registered is None:
+        return False
+    record_path = registered[1]
+    coordinator = _worktree_coordinator_root(cwd)
+    if coordinator is None:
+        return False
+    absolute = (coordinator / record_path).resolve()
+    try:
+        Path(os.path.realpath(cwd)).relative_to(Path(os.path.realpath(absolute)))
+    except ValueError:
+        return False
+    listing = subprocess.run(
+        ["git", "-C", str(coordinator), "worktree", "list", "--porcelain"],
+        text=True,
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+    if listing.returncode != 0:
+        return False
+    for line in listing.stdout.splitlines():
+        if line.startswith("worktree "):
+            listed = line[len("worktree "):].strip()
+            if os.path.normcase(listed) == os.path.normcase(str(absolute)):
+                return True
+    return False
+
+
+def _worktree_coordinator_root(cwd: Path) -> Path | None:
+    """Resolve the coordinator root from a linked worktree cwd (git file)."""
+
+    marker = cwd
+    for current in [cwd, *cwd.parents]:
+        git_entry = current / ".git"
+        if git_entry.is_file():
+            marker = current
+            break
+    else:
+        return None
+    try:
+        first_line = (marker / ".git").read_text(encoding="utf-8").splitlines()[0]
+    except (OSError, UnicodeError, IndexError):
+        return None
+    if not first_line.casefold().startswith("gitdir:"):
+        return None
+    raw = first_line[len("gitdir:"):].strip()
+    git_dir = Path(raw) if Path(raw).is_absolute() else (marker / raw)
+    common_file = git_dir / "commondir"
+    try:
+        raw_common = (common_file).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return None
+    common = Path(raw_common) if Path(raw_common).is_absolute() else (git_dir / raw_common)
+    try:
+        common = common.resolve()
+    except OSError:
+        return None
+    return common.parent if common.name == ".git" else None
+
+
+def _registered_worktree_row(cwd: Path) -> tuple[str, str] | None:
+    """Return (name, record_path) when cwd matches one registration exactly."""
+
+    coordinator = _worktree_coordinator_root(cwd)
+    if coordinator is None:
+        return None
+    database_path = coordinator / ".codex-os" / "state" / "state.db"
+    if not database_path.is_file():
+        return None
+    try:
+        connection = sqlite3.connect(str(database_path), timeout=2)
+    except sqlite3.Error:
+        return None
+    try:
+        rows = connection.execute(
+            "SELECT name, path FROM worktrees WHERE disposable = 1"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    for name, path in rows:
+        record_path = str(path).replace(chr(92), "/").rstrip("/")
+        absolute = coordinator / record_path
+        try:
+            Path(os.path.realpath(cwd)).relative_to(Path(os.path.realpath(absolute)))
+        except ValueError:
+            continue
+        return str(name), record_path
+    return None
 
 
 def _targets_memory_paths(patch_text: str) -> bool:
@@ -265,6 +385,91 @@ def _targets_protected_paths(patch_text: str) -> bool:
         if _COPY_STYLE_PATH.search(normalized):
             return True
     return False
+
+
+_APPLY_PATCH_TARGET = re.compile(
+    r"^\*\*\*\s+(?:Add|Update|Delete|Rename) File:\s*(.+?)\s*$", re.MULTILINE
+)
+_REDIRECT_TARGET = re.compile(r"(?<![-<>])>{1,2}\s*([^\s|;&<>]+)", re.MULTILINE)
+_CODE_PATHS_BLOCK = re.compile(r"(?m)^code_paths:\s*$\n((?:^[ \t]+-.*$\n?)+)")
+_CODE_PATH_ENTRY = re.compile(r"(?m)^[ \t]+-\s*(\S+)\s*$")
+_IGNORED_REDIRECTS = {"&1", "&2", "/dev/null", "nul", "$null", "null"}
+
+
+def _write_target_paths(payload: dict[str, Any]) -> list[str]:
+    """Best-effort write targets for one payload (offline fallback)."""
+
+    tool_name = str(payload.get("tool_name", ""))
+    tool_input = payload.get("tool_input")
+    input_dict = tool_input if isinstance(tool_input, dict) else {}
+    command = str(input_dict.get("command", ""))
+    paths: list[str] = []
+    if tool_name == "apply_patch":
+        paths.extend(match.strip() for match in _APPLY_PATCH_TARGET.findall(command))
+    elif tool_name in {"Write", "Edit"}:
+        raw = input_dict.get("path") or input_dict.get("file_path") or ""
+        paths.append(str(raw).replace(chr(92), "/").strip())
+    elif tool_name == "Bash":
+        for match in _REDIRECT_TARGET.finditer(command):
+            raw = match.group(1).strip().strip(chr(34)).strip(chr(39))
+            if raw.casefold() not in _IGNORED_REDIRECTS:
+                paths.append(raw.replace(chr(92), "/"))
+    return [path.lstrip("./") for path in paths if path.strip()]
+
+
+def _code_paths(project_root: Path) -> tuple[str, ...]:
+    """Read code_paths from project.yaml text; default to a src/ only tree."""
+
+    marker = project_root / ".codex-os" / "project.yaml"
+    try:
+        text = marker.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ("src",)
+    block = _CODE_PATHS_BLOCK.search(text)
+    if block is None:
+        return ("src",)
+    entries = _CODE_PATH_ENTRY.findall(block.group(1))
+    return tuple(entries) if entries else ("src",)
+
+
+def _offline_formal_write_denied(payload: dict[str, Any]) -> str | None:
+    """Offline Code Start boundary: deny formal source writes when the
+    runtime CLI is unreachable and the project has no usable GitHub remote.
+    None means the case does not apply."""
+
+    if shutil.which("codex-os") is not None:
+        return None  # Runtime reachable: the gateway adjudicates instead.
+    cwd = Path(str(payload.get("cwd", ".") or ".")).resolve()
+    if not (cwd / ".codex-os" / "project.yaml").is_file():
+        return None
+    targets = _write_target_paths(payload)
+    if not targets:
+        return None
+    formal: list[str] = []
+    for target in targets:
+        for base in _code_paths(cwd):
+            base = base.rstrip("/")
+            if target == base or target.startswith(base + "/"):
+                formal.append(target)
+                break
+    if not formal:
+        return None
+    probe = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(cwd),
+        text=True,
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+    if probe.returncode == 0:
+        return None
+    return _decision_json(
+        "deny",
+        "CODE_START_BLOCKED: no GitHub remote is configured, so formal source "
+        "writes (" + ", ".join(formal) + ") are blocked; research, analysis, "
+        "and documentation stay allowed.",
+    )
 
 
 def _authorize_via_runtime(payload: dict[str, Any]) -> str | None:

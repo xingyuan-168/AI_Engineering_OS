@@ -1,9 +1,16 @@
-"""Single governance authorization kernel (ADR-0011).
+"""Single governance authorization kernel (ADR-0011, slimmed by ADR-0016).
 
-Every write-class and execute-class operation must obtain its decision from
-this kernel. The kernel reuses the compiled :class:`EffectiveGovernancePolicy`
-(role boundaries, protected paths) and the shared governed-path matcher from
-the domain layer; it does not define a second set of path rules.
+Every write-class and execute-class operation obtains its decision from this
+kernel. The kernel judges operations, not principals: there are no roles and
+no workflow transitions anymore. It reuses the compiled EffectiveGovernancePolicy
+(protected paths) and the shared governed-path matcher from the domain layer;
+it does not define a second set of path rules.
+
+The kernel handles exactly five concerns: dangerous shared-Git commands,
+destructive commands in the user's main worktree, the user's "input/" assets,
+a small set of governance rule files, and the reasonable allowance for trusted
+disposable worktrees (which the hook applies by skipping this kernel outside
+the main worktree).
 
 The kernel never raises for policy outcomes: any failure to prove an
 operation safe resolves to DENY (fail-closed), with a stable rule id and
@@ -28,27 +35,21 @@ from codex_ai_os.domain.governance import (
 
 class AuthorizationDecision(StrEnum):
     ALLOW = "allow"
-    ASK = "ask"
     DENY = "deny"
 
 
 class AuthorizationOperation(StrEnum):
     WRITE = "write"
     EXECUTE = "execute"
-    TRANSITION = "transition"
 
 
 @dataclass(frozen=True, slots=True)
 class AuthorizationRequest:
-    principal: str
     operation: str
     tool: str
     source: str = "internal"
     paths: tuple[str, ...] = ()
     command: str | None = None
-    workflow_id: str | None = None
-    task_id: str | None = None
-    request_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,9 +57,7 @@ class AuthorizationOutcome:
     decision: AuthorizationDecision
     rule_id: str
     reason: str
-    policy_hash: str
     denied_paths: tuple[str, ...] = field(default_factory=tuple)
-    ask_paths: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def allowed(self) -> bool:
@@ -138,12 +137,14 @@ HOST_COMMAND_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
             re.I,
         ),
         "HOST_COMPOSE_VOLUME_DELETE",
-        "Compose volume deletion is forbidden from the Agent path.",
+        "Compose volume deletion may destroy project persistence (database "
+        "volumes); it is forbidden from the Agent path.",
     ),
     (
         re.compile(r"\b(?:docker|podman)\s+volume\s+(?:rm|prune)\b", re.I),
         "HOST_VOLUME_DELETE",
-        "Persistent OCI volume deletion requires an independent operator workflow.",
+        "Docker/podman volume deletion may destroy project persistence; "
+        "run it only with explicit human approval.",
     ),
     (
         re.compile(
@@ -152,7 +153,8 @@ HOST_COMMAND_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
             re.I,
         ),
         "HOST_BROAD_PRUNE",
-        "Broad OCI prune operations are forbidden from the Agent path.",
+        "Broad prune operations may destroy project persistence; they are "
+        "forbidden from the Agent path.",
     ),
 )
 
@@ -175,15 +177,6 @@ class GovernanceAuthorizationKernel:
     ) -> AuthorizationOutcome:
         """Return the authorization outcome for one structured operation."""
 
-        policy_hash = self._policy.policy_hash
-        boundary = self._policy.role_boundaries.get(request.principal)
-        if boundary is None:
-            return AuthorizationOutcome(
-                AuthorizationDecision.DENY,
-                "ROLE_NOT_AUTHORIZED",
-                f"unknown governance role: {request.principal}",
-                policy_hash,
-            )
         try:
             operation = AuthorizationOperation(request.operation)
         except ValueError:
@@ -191,36 +184,18 @@ class GovernanceAuthorizationKernel:
                 AuthorizationDecision.DENY,
                 "OPERATION_INVALID",
                 f"unsupported authorization operation: {request.operation}",
-                policy_hash,
-            )
-        if operation is AuthorizationOperation.TRANSITION:
-            return AuthorizationOutcome(
-                AuthorizationDecision.ALLOW,
-                "TRANSITION_ENGINE_GOVERNED",
-                "workflow transitions are governed by the workflow engine",
-                policy_hash,
             )
         if operation is AuthorizationOperation.EXECUTE:
-            return self._authorize_execute(request, boundary.can_execute_command)
+            return self._authorize_execute(request)
         return self._authorize_write(
             request,
-            boundary.can_write,
             task_allowed_paths=task_allowed_paths,
         )
 
     def _authorize_execute(
         self,
         request: AuthorizationRequest,
-        can_execute: bool,
     ) -> AuthorizationOutcome:
-        policy_hash = self._policy.policy_hash
-        if not can_execute:
-            return AuthorizationOutcome(
-                AuthorizationDecision.DENY,
-                "ROLE_BOUNDARY_EXECUTE",
-                f"role {request.principal} may not execute host commands",
-                policy_hash,
-            )
         command = request.command or ""
         for pattern, rule_id, reason in HOST_COMMAND_RULES:
             if pattern.search(command):
@@ -228,32 +203,20 @@ class GovernanceAuthorizationKernel:
                     AuthorizationDecision.DENY,
                     rule_id,
                     reason,
-                    policy_hash,
                 )
         return AuthorizationOutcome(
             AuthorizationDecision.ALLOW,
             "HOST_COMMAND_ALLOWED",
-            "command passed host screening; OCI sandbox policy still applies",
-            policy_hash,
+            "command passed host screening",
         )
 
     def _authorize_write(
         self,
         request: AuthorizationRequest,
-        can_write: bool,
         *,
         task_allowed_paths: tuple[str, ...],
     ) -> AuthorizationOutcome:
-        policy_hash = self._policy.policy_hash
-        if not can_write:
-            return AuthorizationOutcome(
-                AuthorizationDecision.DENY,
-                "ROLE_BOUNDARY_WRITE",
-                f"role {request.principal} may not produce repository writes",
-                policy_hash,
-            )
         denied: list[str] = []
-        ask: list[str] = []
         for raw_path in request.paths:
             path = str(raw_path).replace("\\", "/").strip()
             if is_unsafe_repository_path(path):
@@ -271,39 +234,17 @@ class GovernanceAuthorizationKernel:
             ):
                 denied.append(path)
                 continue
-            if (
-                any(
-                    policy_pattern_matches(pattern, normalized)
-                    for pattern in self._policy.approval_gated_paths
-                )
-                and request.source != "internal"
-            ):
-                # Maintenance mode gates governance rule files behind human
-                # approval. Internal runtime use-cases (deterministic code
-                # paths such as project init) cannot self-approve, so their
-                # explicit writes pass while every external source must ask.
-                ask.append(path)
         if denied:
             return AuthorizationOutcome(
                 AuthorizationDecision.DENY,
                 "PATH_POLICY_VIOLATION",
                 "one or more paths violate protected/scope policy",
-                policy_hash,
                 denied_paths=tuple(denied),
-            )
-        if ask:
-            return AuthorizationOutcome(
-                AuthorizationDecision.ASK,
-                "GOVERNANCE_RULE_APPROVAL",
-                "governance rule files require explicit human approval",
-                policy_hash,
-                ask_paths=tuple(ask),
             )
         return AuthorizationOutcome(
             AuthorizationDecision.ALLOW,
             "PATH_POLICY_ALLOWED",
             "all paths passed governance screening",
-            policy_hash,
         )
 
 

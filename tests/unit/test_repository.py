@@ -13,7 +13,6 @@ def _initialize(root: Path) -> None:
         project_id="PROJECT-REPO",
         name="Repo",
         project_type="generic",
-        risk_level="low",
         include=frozenset(),
     )
 
@@ -68,3 +67,45 @@ def test_input_tree_is_never_scanned(tmp_path: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
     report = RepositoryGovernanceService(tmp_path).check()
     assert not any("OUTPUT" in f.code for f in report.findings)
+
+
+def test_missing_gitignore_blocks(tmp_path: Path) -> None:
+    _initialize(tmp_path)
+    _git_repo(tmp_path)
+    (tmp_path / ".gitignore").unlink()
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    report = RepositoryGovernanceService(tmp_path).check()
+    finding = next((f for f in report.findings if f.code == "GITIGNORE_INCOMPLETE"), None)
+    assert finding is not None and finding.blocking
+
+
+def test_incomplete_gitignore_lists_missing_items(tmp_path: Path) -> None:
+    _initialize(tmp_path)
+    _git_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    report = RepositoryGovernanceService(tmp_path).check()
+    finding = next((f for f in report.findings if f.code == "GITIGNORE_INCOMPLETE"), None)
+    assert finding is not None and finding.blocking
+    assert "__pycache__" in finding.message
+    assert ".codex-os/state" in finding.message
+    assert ".worktrees" in finding.message
+
+
+def test_gitignore_equivalent_spellings_pass(tmp_path: Path) -> None:
+    _initialize(tmp_path)
+    _git_repo(tmp_path)
+    # Equivalent spellings (character-class glob, anchored forms, parent
+    # directory) must satisfy the semantic checklist without a full parser.
+    (tmp_path / ".gitignore").write_text(
+        "**/__pycache__/\n*.py[cod]\n/.pytest_cache/\n**/.ruff_cache/\n"
+        ".venv/**\n/node_modules/\nbuild/\n/dist\n*.log\n"
+        ".codex-os/**\n.worktrees/**\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    report = RepositoryGovernanceService(tmp_path).check()
+    assert not any(f.code == "GITIGNORE_INCOMPLETE" for f in report.findings)

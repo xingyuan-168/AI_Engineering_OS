@@ -18,4 +18,4 @@ Requirement → User Flow（可写入 REQUIREMENTS/UI_SPEC）→ 交互式 HTML 
 
 ## 批准
 
-用户批准通过 `approval_record(gate="frontend", subject="frontend", decision="approved", decided_by=...)` 记录；随后 `governance_check(stage="frontend", frontend_impact=..., approved=true)` 放行。禁止推断或代填批准。拒绝则回到原型，不进入实现。
+用户批准通过 `approval_record(gate="frontend", subject="frontend", scope=<范围>, decision="approved", decided_by=...)` 记录：命令同时把 `approval:` 块持久化写入 `docs/design/UI_SPEC.md`（scope 精确匹配，重复批准替换旧块）。随后 `governance_check(stage="frontend", frontend_impact=..., frontend_scope=...)` 读取该文档事实放行——没有可绕过的布尔参数；未批准过该 scope 一律阻塞。禁止推断或代填批准。拒绝则回到原型，不进入实现。

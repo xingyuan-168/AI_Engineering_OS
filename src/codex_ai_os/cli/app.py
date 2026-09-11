@@ -20,9 +20,9 @@ from codex_ai_os.application.hook_gateway import authorize_hook_payload
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.cli.output import emit, error_envelope, success_envelope
-from codex_ai_os.core.gates import evaluate_finish
+from codex_ai_os.core.gates import GateError, evaluate_code_start, evaluate_finish
 from codex_ai_os.core.worktree import WorktreeError, WorktreeManager, WorktreeRecord
-from codex_ai_os.domain.config import ProjectType, RiskLevel
+from codex_ai_os.domain.config import ProjectType
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
 from codex_ai_os.infrastructure.documents import DocumentManager
@@ -72,7 +72,6 @@ def init_command(
     project_id: Annotated[str, typer.Option("--project-id")] = "PROJECT-LOCAL",
     name: Annotated[str, typer.Option("--name")] = "AI Engineering Project",
     project_type: Annotated[ProjectType, typer.Option("--project-type")] = ProjectType.GENERIC,
-    risk_level: Annotated[RiskLevel, typer.Option("--risk-level")] = RiskLevel.MEDIUM,
     with_extra: Annotated[list[str] | None, typer.Option("--with")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
@@ -85,8 +84,7 @@ def init_command(
             project_id=project_id,
             name=name,
             project_type=project_type,
-            risk_level=risk_level,
-            include=include,
+                include=include,
         )
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
@@ -118,18 +116,37 @@ def _include_keys(values: list[str]) -> frozenset[str]:
 @app.command("check")
 def check_command(
     project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
+    change_class: Annotated[
+        str | None, typer.Option("--change-class", help="Run the Code Start gate for this class.")
+    ] = None,
+    requirement_id: Annotated[
+        str | None,
+        typer.Option("--requirement-id", help="Current requirement id for research scoping."),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
-    """Check GitHub readiness, repository hygiene, and the docs/ tree."""
+    """Check GitHub readiness, repository hygiene, the docs/ tree, and
+    optionally the Code Start gate (with --change-class)."""
 
+    gate_decision = None
     try:
         config = load_project_config(project_root.resolve())
         repository = RepositoryGovernanceService(config.root).check()
         documents = DocumentManager(config.root).check()
+        if change_class is not None:
+            gate_decision = evaluate_code_start(
+                config.root,
+                change_class=change_class,
+                requirement_id=requirement_id,
+                github_hosts=config.github_hosts,
+            )
+    except GateError as exc:
+        _fail("GATE_INPUT_INVALID", str(exc), 2, json_output)
+        return
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)
         return
-    data = {
+    data: dict[str, Any] = {
         "repository": {
             "repository_ready": repository.repository_ready,
             "hygiene_ok": repository.hygiene_ok,
@@ -144,22 +161,36 @@ def check_command(
             "broken_links": list(documents.broken_links),
             "forbidden_directories": list(documents.forbidden_directories),
         },
+        "code_start": None
+        if gate_decision is None
+        else {
+            "allowed": gate_decision.allowed,
+            "blocked_by": list(gate_decision.blocked_by),
+            "findings": [
+                {"code": f.code, "message": f.message, "path": f.path, "blocking": f.blocking}
+                for f in gate_decision.findings
+            ],
+        },
     }
-    if repository.repository_ready and documents.ok:
+    docs_and_repo_ok = repository.repository_ready and documents.ok
+    gate_ok = gate_decision is None or gate_decision.allowed
+    if docs_and_repo_ok and gate_ok:
         emit(
             success_envelope(data),
             json_output=json_output,
             human="Repository and document checks passed.",
         )
         return
-    if not repository.repository_ready and repository.findings:
+    if gate_decision is not None and not gate_decision.allowed:
+        code = gate_decision.blocked_by[0] if gate_decision.blocked_by else "CODE_START_BLOCKED"
+    elif not repository.repository_ready and repository.findings:
         code = repository.findings[0].code
     else:
         code = "DOCS_INCOMPLETE"
     emit(
-        error_envelope(code, "Repository or document checks failed.", data),
+        error_envelope(code, "Repository, document, or Code Start checks failed.", data),
         json_output=json_output,
-        human="Repository or document checks failed.",
+        human="Repository, document, or Code Start checks failed.",
     )
     raise typer.Exit(code=40)
 
@@ -167,8 +198,9 @@ def check_command(
 @app.command("finish")
 def finish_command(
     project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
-    tests_passed: Annotated[bool, typer.Option("--tests-passed")] = False,
-    docs_synced: Annotated[bool, typer.Option("--docs-synced")] = False,
+    test_command: Annotated[
+        str | None, typer.Option("--test-command", help="Verifiable test command to run.")
+    ] = None,
     memory_written: Annotated[bool, typer.Option("--memory-written")] = False,
     memory_not_needed: Annotated[bool, typer.Option("--memory-not-needed")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -178,8 +210,7 @@ def finish_command(
     try:
         decision = evaluate_finish(
             project_root,
-            tests_passed=tests_passed,
-            docs_synced=docs_synced,
+            test_command=test_command,
             memory_written=memory_written,
             memory_not_needed=memory_not_needed,
         )
@@ -408,6 +439,53 @@ def memory_candidates_command(
     )
 
 
+@memory_app.command("candidate")
+def memory_candidate_command(
+    candidate_id: Annotated[str, typer.Argument(help="Candidate id, e.g. MEM-...")],
+    accept: Annotated[
+        bool, typer.Option("--accept", help="Merge the candidate into the JSONL.")
+    ] = False,
+    reject: Annotated[
+        bool, typer.Option("--reject", help="Discard the candidate.")
+    ] = False,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Accept or reject one subagent memory candidate (main session only)."""
+
+    if accept == reject:
+        _fail("CONFIG_INVALID", "pass exactly one of --accept or --reject", 2, json_output)
+        return
+    try:
+        _, database = _project_database(project_root)
+        store = MemoryStore(database, project_root.resolve())
+        if accept:
+            entry = store.accept_candidate(candidate_id)
+        else:
+            store.reject_candidate(candidate_id)
+            entry = None
+    except MemoryStoreError as exc:
+        code = (
+            "MEMORY_CANDIDATE_MISSING"
+            if exc.code == "MEMORY_CANDIDATE_MISSING"
+            else "CONFIG_INVALID"
+        )
+        _fail(code, str(exc), 2, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    data = {
+        "accepted": accept,
+        "entry": _memory_payload(entry) if entry is not None else None,
+    }
+    if entry is not None:
+        message = "Candidate accepted: " + entry.id
+    else:
+        message = "Candidate rejected: " + candidate_id
+    emit(success_envelope(data), json_output=json_output, human=message)
+
+
 def _memory_payload(record: MemoryEntry) -> dict[str, object]:
     return {
         "id": record.id,
@@ -432,9 +510,14 @@ def worktree_prepare_command(
     """Create a disposable worktree under .worktrees/ and register it."""
 
     try:
-        _, database = _project_database(project_root)
+        config, database = _project_database(project_root)
         manager = WorktreeManager(project_root.resolve(), database=database)
-        record = manager.prepare(name=name, task_id=task_id, base_ref=base_ref)
+        record = manager.prepare(
+            name=name,
+            task_id=task_id,
+            base_ref=base_ref,
+            target_branch=config.target_branch,
+        )
     except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
         _fail("WORKTREE_FAILED", str(exc), 2, json_output)
         return
@@ -492,16 +575,15 @@ def worktree_finish_command(
 @worktree_app.command("cleanup")
 def worktree_cleanup_command(
     name: Annotated[str, typer.Argument(help="Worktree name.")],
-    force: Annotated[bool, typer.Option("--force", help="Discard uncommitted changes.")] = False,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
-    """Remove a disposable worktree and its branch, then unregister it."""
+    """Remove a merged disposable worktree and its branch, then unregister it."""
 
     try:
         _, database = _project_database(project_root)
         manager = WorktreeManager(project_root.resolve(), database=database)
-        record = manager.cleanup(name=name, force=force)
+        record = manager.cleanup(name=name)
     except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
         _fail("WORKTREE_FAILED", str(exc), 2, json_output)
         return

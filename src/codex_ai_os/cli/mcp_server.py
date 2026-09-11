@@ -1,14 +1,16 @@
 """Model Context Protocol server for AI Engineering OS (governance-core, ADR-0016).
 
-Exactly seven governance tools: project_init, governance_check,
-approval_record, context_refresh, worktree_manage, memory_search, and
-memory_record. The MCP server is a governance capability for Codex, not an
-operating-system API; it never replaces Codex's own engineering tools.
+Exactly eight governance tools: project_init, governance_check,
+approval_record, context_refresh, worktree_manage, memory_search,
+memory_record, and memory_candidate. The MCP server is a governance
+capability for Codex, not an operating-system API; it never replaces
+Codex's own engineering tools.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +22,10 @@ from codex_ai_os.core.gates import (
     evaluate_code_start,
     evaluate_finish,
     evaluate_frontend,
+    write_frontend_approval,
 )
 from codex_ai_os.core.worktree import WorktreeError, WorktreeManager, WorktreeRecord
-from codex_ai_os.domain.config import ProjectType, RiskLevel
+from codex_ai_os.domain.config import ProjectType
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
@@ -50,7 +53,6 @@ def project_init(
     project_id: str,
     name: str,
     project_type: str = "generic",
-    risk_level: str = "medium",
     include: list[str] | None = None,
 ) -> dict[str, Any]:
     """Initialize an idempotent local project, minimal documents, and runtime database."""
@@ -65,7 +67,6 @@ def project_init(
             project_id=project_id,
             name=name,
             project_type=ProjectType(project_type),
-            risk_level=RiskLevel(risk_level),
             include=frozenset(extras),
         )
         return _success(
@@ -87,11 +88,10 @@ def governance_check(
     project_root: str,
     stage: str,
     change_class: str = "small_change",
-    research_done: bool | None = None,
+    requirement_id: str | None = None,
     frontend_impact: str = "none",
-    approved: bool | None = None,
-    tests_passed: bool = False,
-    docs_synced: bool = False,
+    frontend_scope: str = "default",
+    test_command: str | None = None,
     memory_written: bool = False,
     memory_not_needed: bool = False,
 ) -> dict[str, Any]:
@@ -103,19 +103,18 @@ def governance_check(
             decision = evaluate_code_start(
                 root,
                 change_class=change_class,
-                research_done=research_done,
+                requirement_id=requirement_id,
             )
         elif stage == "frontend":
             decision = evaluate_frontend(
                 root,
                 impact=frontend_impact,
-                approved=_frontend_approved(root, approved),
+                scope=frontend_scope,
             )
         elif stage == "finish":
             decision = evaluate_finish(
                 root,
-                tests_passed=tests_passed,
-                docs_synced=docs_synced,
+                test_command=test_command,
                 memory_written=memory_written,
                 memory_not_needed=memory_not_needed,
             )
@@ -139,21 +138,6 @@ def governance_check(
     return _invoke(operation)
 
 
-def _frontend_approved(root: Path, approved: bool | None) -> bool:
-    """Use the explicit flag, else the latest recorded frontend approval."""
-
-    if approved is not None:
-        return approved
-    database = Database(root / ".codex-os" / "state" / "state.db")
-    database.migrate()
-    with database.connection() as connection:
-        row = connection.execute(
-            "SELECT decision FROM approvals WHERE gate = 'frontend' AND subject = 'frontend' "
-            "ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-    return row is not None and str(row["decision"]) == "approved"
-
-
 @mcp.tool()
 def approval_record(
     project_root: str,
@@ -161,9 +145,16 @@ def approval_record(
     subject: str,
     decision: str,
     decided_by: str,
+    scope: str = "default",
     reason: str | None = None,
 ) -> dict[str, Any]:
-    """Record one user approval or rejection for a governance gate."""
+    """Record one user approval or rejection for a governance gate.
+
+    Frontend approvals are additionally written into the Git-tracked
+    docs/design/UI_SPEC.md metadata so the approval fact survives database
+    resets; the SQLite row is an index only. A scope never inherits
+    another scope's approval.
+    """
 
     def operation() -> dict[str, Any]:
         root = Path(project_root).resolve()
@@ -173,13 +164,23 @@ def approval_record(
             raise ValueError("decision must be approved or rejected")
         if not decided_by.strip():
             raise ValueError("decided_by is required")
+        if not scope.strip():
+            raise ValueError("scope is required")
         database = Database(root / ".codex-os" / "state" / "state.db")
         database.migrate()
         approval_id = _record_approval(
             database, gate=gate, subject=subject, decision=decision,
             decided_by=decided_by, reason=reason,
         )
-        return _success(id=approval_id, gate=gate, subject=subject, decision=decision)
+        if gate == "frontend" and decision == "approved":
+            write_frontend_approval(
+                root / "docs" / "design" / "UI_SPEC.md",
+                scope=scope,
+                approved_on=datetime.now(UTC).date().isoformat(),
+            )
+        return _success(
+            id=approval_id, gate=gate, subject=subject, decision=decision, scope=scope
+        )
 
     return _invoke(operation)
 
@@ -193,8 +194,6 @@ def _record_approval(
     decided_by: str,
     reason: str | None,
 ) -> str:
-    from datetime import UTC, datetime
-
     approval_id = "APPROVAL-" + datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
     with database.connection() as connection:
         connection.execute(
@@ -233,17 +232,22 @@ def worktree_manage(
     name: str | None = None,
     task_id: str | None = None,
     base_ref: str = "HEAD",
-    force: bool = False,
 ) -> dict[str, Any]:
     """Manage disposable worktrees (action=prepare|check|finish|cleanup|list)."""
 
     def operation() -> dict[str, Any]:
         root = Path(project_root).resolve()
+        config = load_project_config(root)
         database = Database(root / ".codex-os" / "state" / "state.db")
         database.migrate()
         manager = WorktreeManager(root, database=database)
         if action == "prepare":
-            record = manager.prepare(name=name, task_id=task_id, base_ref=base_ref)
+            record = manager.prepare(
+                name=name,
+                task_id=task_id,
+                base_ref=base_ref,
+                target_branch=config.target_branch,
+            )
             return _success(**_worktree_data(record))
         if action == "check":
             if name is None:
@@ -256,7 +260,7 @@ def worktree_manage(
         if action == "cleanup":
             if name is None:
                 raise ValueError("cleanup requires name")
-            return _success(**_worktree_data(manager.cleanup(name=name, force=force)))
+            return _success(**_worktree_data(manager.cleanup(name=name)))
         if action == "list":
             return _success(results=[_worktree_data(item) for item in manager.list()])
         raise ValueError("action must be one of: prepare, check, finish, cleanup, list")
@@ -345,6 +349,49 @@ def memory_record(
             status=entry.status,
             candidate=candidate,
         )
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def memory_candidate(
+    project_root: str,
+    action: str,
+    candidate_id: str | None = None,
+) -> dict[str, Any]:
+    """List, accept, or reject subagent memory candidates (main session only)."""
+
+    def operation() -> dict[str, Any]:
+        root = Path(project_root).resolve()
+        load_project_config(root)
+        database = Database(root / ".codex-os" / "state" / "state.db")
+        database.migrate()
+        store = MemoryStore(database, root)
+        if action == "list":
+            return _success(
+                results=[
+                    {
+                        "id": record.id,
+                        "type": record.record_type,
+                        "title": record.title,
+                        "summary": record.summary,
+                        "source": record.source,
+                        "tags": list(record.tags),
+                    }
+                    for record in store.candidates()
+                ]
+            )
+        if action == "accept":
+            if candidate_id is None:
+                raise ValueError("accept requires candidate_id")
+            entry = store.accept_candidate(candidate_id)
+            return _success(id=entry.id, status=entry.status, accepted=True)
+        if action == "reject":
+            if candidate_id is None:
+                raise ValueError("reject requires candidate_id")
+            store.reject_candidate(candidate_id)
+            return _success(id=candidate_id, rejected=True)
+        raise ValueError("action must be one of: list, accept, reject")
 
     return _invoke(operation)
 

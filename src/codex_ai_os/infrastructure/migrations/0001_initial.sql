@@ -29,9 +29,10 @@ CREATE TABLE worktrees (
     name TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL UNIQUE,
     branch TEXT NOT NULL UNIQUE,
+    target_branch TEXT NOT NULL DEFAULT 'main',
     disposable INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'active'
-        CHECK (status IN ('active', 'merged', 'cleaned')),
+        CHECK (status IN ('active', 'ready', 'cleaned')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

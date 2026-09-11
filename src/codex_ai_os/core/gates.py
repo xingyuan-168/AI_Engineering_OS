@@ -13,9 +13,10 @@ state or lifecycle transitions.
 - **Frontend Approval**: only substantive frontend work requires an
   approved prototype plus UI spec; copy changes, CSS fixes, and component
   bug fixes are exempt.
-- **Finish**: task tests passed, affected documents synced, repository
-  hygiene, disposable files cleaned up, memory written or explicitly not
-  needed, and no directory-copy versioning.
+- **Finish**: the declared test command (when given), ruff when configured,
+  Git whitespace checks, repository hygiene, disposable files cleaned up,
+  memory written or explicitly not needed, and no directory-copy versioning.
+  Attested-but-unverifiable facts (--tests-passed/--docs-synced) are gone.
 
 Gate checks that cannot be observed deterministically (for example "the
 requirement scope is clear") stay process discipline in AGENTS.md; the
@@ -56,7 +57,15 @@ FRONTEND_GATED_IMPACTS = frozenset(
 )
 FRONTEND_EXEMPT_IMPACTS = frozenset({"none", "copy_change", "component_bugfix"})
 
-DECISION_HEADING = re.compile(r"(?m)^##\s+Decision\b")
+VALID_DECISIONS = frozenset({"use", "fork", "extract", "build"})
+_REQUIREMENT_ID_FIELD = re.compile(r"(?m)^\s*requirement_id\s*:\s*(.+?)\s*$")
+_SUMMARY_FIELD = re.compile(r"(?m)^\s*summary\s*:\s*(.+?)\s*$")
+_DECISION_FIELD = re.compile(r"(?m)^\s*decision\s*:\s*(\S+)\s*$")
+_REASON_FIELD = re.compile(r"(?m)^\s*reason\s*:\s*(.+?)\s*$")
+_CANDIDATE_HEADING = re.compile(r"(?m)^###\s+\S")
+_NO_CANDIDATE_STATEMENT = re.compile(
+    r"没有合适候选|无合适候选|no\s+suitable\s+candidate", re.IGNORECASE
+)
 
 # Trees never scanned for copy-style dirt: VCS/runtime state plus the
 # user-owned input/ material (ADR-0016 directory contract).
@@ -142,16 +151,18 @@ def evaluate_code_start(
     root: Path,
     *,
     change_class: str,
-    research_done: bool | None = None,
+    requirement_id: str | None = None,
     research_path: str = RESEARCH_DOCUMENT,
     github_hosts: frozenset[str] | tuple[str, ...] = ("github.com",),
     runner: GitRunner | None = None,
 ) -> GateDecision:
     """Evaluate whether formal source implementation may start.
 
-    "research_done" overrides the repository-derived research check when
-    provided; when None the gate derives it from "research_path" (the file
-    must exist and contain a "## Decision" section).
+    Research-gated change classes must pass the current "requirement_id";
+    the gate derives the research check from "research_path" (the document
+    must record that requirement id, a summary, at least one candidate or
+    an explicit no-candidate statement, and a Decision with a non-empty
+    reason). There is no boolean bypass.
     """
 
     root = root.resolve()
@@ -165,7 +176,32 @@ def evaluate_code_start(
 
     findings.extend(_github_findings(git, github_hosts))
     findings.extend(hygiene_findings(root, git))
-    findings.extend(_research_findings(root, normalized_class, research_done, research_path))
+    findings.extend(
+        _research_findings(root, normalized_class, requirement_id, research_path)
+    )
+    return _decide(GateName.CODE_START, findings)
+
+
+def formal_write_blockers(
+    root: Path,
+    *,
+    github_hosts: frozenset[str] | tuple[str, ...] = ("github.com",),
+    runner: GitRunner | None = None,
+) -> GateDecision:
+    """Objective Code Start subset enforced at the write boundary.
+
+    The PreToolUse hook calls this for formal source writes: the gate
+    re-derives the observable facts - GitHub readiness and repository
+    hygiene - on every call, with no stored state. Requirement-scoped
+    research stays a task-start concern because the hook is stateless and
+    cannot know the current requirement.
+    """
+
+    root = root.resolve()
+    git = runner or GitRunner(root)
+    findings: list[GateFinding] = []
+    findings.extend(_github_findings(git, github_hosts))
+    findings.extend(hygiene_findings(root, git))
     return _decide(GateName.CODE_START, findings)
 
 
@@ -173,15 +209,17 @@ def evaluate_frontend(
     root: Path,
     *,
     impact: str,
-    approved: bool = False,
+    scope: str = "default",
     prototype_path: str = PROTOTYPE_PATH,
     ui_spec_path: str = UI_SPEC_PATH,
 ) -> GateDecision:
     """Evaluate whether frontend implementation may start.
 
     Only substantive frontend work (FRONTEND_GATED_IMPACTS) requires an
-    existing prototype, an existing UI spec, and explicit approval; copy
-    changes, CSS fixes, and component bug fixes pass immediately.
+    existing prototype, an existing UI spec, and an approval fact recorded
+    in the UI spec metadata for the exact scope; copy changes, CSS fixes,
+    and component bug fixes pass immediately. Caller-supplied approved
+    flags do not exist on this gate.
     """
 
     root = root.resolve()
@@ -206,44 +244,98 @@ def evaluate_frontend(
                     path=ui_spec_path,
                 )
             )
-        if not approved:
+        if not _frontend_approval_fact(root / ui_spec_path, scope):
             findings.append(
                 GateFinding(
                     "FRONTEND_APPROVAL_MISSING",
-                    "user approval for the prototype and UI spec is required "
-                    "(record it with approval_record)",
+                    "no approved frontend approval for scope '" + scope.strip()
+                    + "' in " + ui_spec_path
+                    + " (record it with approval_record); approvals are read from "
+                    "the Git-tracked UI spec, never from call arguments",
+                    path=ui_spec_path,
                 )
             )
     return _decide(GateName.FRONTEND, findings)
 
 
+_APPROVAL_BLOCK = re.compile(r"(?ms)^approval:\s*$\n((?:[ \t]+[^\n]*\n?)+)")
+_APPROVAL_FIELD = re.compile(r"(?m)^[ \t]+(type|scope|status):\s*(\S[^\n]*)$")
+
+
+def _frontend_approval_fact(ui_spec_path: Path, scope: str) -> bool:
+    """True when the UI spec records an approved frontend fact for the scope.
+
+    The approval lives in the Git-tracked UI spec metadata so it survives
+    database resets and moves with the repository; SQLite only mirrors it
+    as an index. Different scopes never inherit each other's approval.
+    """
+
+    if not ui_spec_path.is_file():
+        return False
+    try:
+        text = ui_spec_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    block = _APPROVAL_BLOCK.search(text)
+    if block is None:
+        return False
+    fields = {
+        match.group(1): match.group(2).strip().strip("'").strip('"')
+        for match in _APPROVAL_FIELD.finditer(block.group(1))
+    }
+    return (
+        fields.get("type", "").casefold() == "frontend"
+        and fields.get("scope", "").casefold() == scope.strip().casefold()
+        and fields.get("status", "").casefold() == "approved"
+    )
+
+
+def write_frontend_approval(ui_spec_path: Path, *, scope: str, approved_on: str) -> None:
+    """Record (or replace) the frontend approval fact in the UI spec.
+
+    The minimal metadata block is the durable approval fact; the runtime
+    database mirrors it as an index only.
+    """
+
+    path = Path(ui_spec_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.is_file() else "# UI Spec\n"
+    if not text.endswith("\n"):
+        text += "\n"
+    block = (
+        "approval:\n"
+        "  type: frontend\n"
+        "  scope: " + scope.strip() + "\n"
+        "  status: approved\n"
+        "  approved_at: " + approved_on + "\n"
+    )
+    match = _APPROVAL_BLOCK.search(text)
+    if match is not None:
+        text = text[: match.start()] + block + text[match.end() :]
+    else:
+        text = text.rstrip("\n") + "\n\n" + block
+    path.write_text(text, encoding="utf-8")
+
+
 def evaluate_finish(
     root: Path,
     *,
-    tests_passed: bool,
-    docs_synced: bool,
+    test_command: str | None,
     memory_written: bool = False,
     memory_not_needed: bool = False,
     runner: GitRunner | None = None,
 ) -> GateDecision:
     """Evaluate whether a task may finish.
 
-    Repository-side checks (hygiene, disposable leftovers, conflicts) are
-    observed here; task-side facts (tests, document sync, memory) are
-    supplied by the caller that ran the task.
+    Only verifiable checks run here (declared test command, configured
+    linters, Git checks, hygiene, pending memory candidates); unverifiable
+    attestations were removed (ADR-0016). Memory remains a caller fact.
     """
 
-    root = root.resolve()
-    git = runner or GitRunner(root)
-    findings: list[GateFinding] = []
-    if not tests_passed:
-        findings.append(
-            GateFinding("TESTS_NOT_PASSED", "task-related tests have not passed")
-        )
-    if not docs_synced:
-        findings.append(
-            GateFinding("DOCS_NOT_SYNCED", "affected documents have not been synced")
-        )
+    # Deferred import: core.checks reuses gate helpers defined in this module.
+    from codex_ai_os.core.checks import run_thin_checks
+
+    findings = run_thin_checks(root, test_command=test_command, runner=runner)
     if not (memory_written or memory_not_needed):
         findings.append(
             GateFinding(
@@ -251,8 +343,6 @@ def evaluate_finish(
                 "memory must be written or explicitly marked as not needed",
             )
         )
-    findings.extend(hygiene_findings(root, git))
-    findings.extend(_disposable_findings(git))
     return _decide(GateName.FINISH, findings)
 
 
@@ -405,7 +495,7 @@ def _copy_style_findings(root: Path) -> list[GateFinding]:
     return findings
 
 
-def _disposable_findings(git: GitRunner) -> list[GateFinding]:
+def disposable_findings(git: GitRunner) -> list[GateFinding]:
     status = git.run("status", "--porcelain", "--untracked-files=normal")
     findings: list[GateFinding] = []
     if status.returncode != 0:
@@ -438,17 +528,34 @@ def _disposable_findings(git: GitRunner) -> list[GateFinding]:
 
 
 def _research_findings(
-    root: Path, change_class: str, research_done: bool | None, research_path: str
+    root: Path, change_class: str, requirement_id: str | None, research_path: str
 ) -> list[GateFinding]:
+    """Requirement-scoped research check over minimal Markdown metadata.
+
+    Accepted shape (empty values never pass)::
+
+        ## Requirement
+        requirement_id: REQ-xxx
+        summary: ...
+
+        ## Candidates
+        ### Project A
+        ...
+
+        ## Decision
+        decision: build
+        reason: ...
+    """
+
     if change_class not in RESEARCH_REQUIRED_CHANGE_CLASSES:
         return []
-    if research_done is not None:
-        if research_done:
-            return []
+    if requirement_id is None or not requirement_id.strip():
         return [
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_MISSING",
-                "change class '" + change_class + "' requires recorded open-source research",
+                "change class '" + change_class + "' requires the current "
+                "requirement_id so one research document cannot act as a "
+                "blanket pass",
                 path=research_path,
             )
         ]
@@ -461,7 +568,9 @@ def _research_findings(
                 + change_class
                 + "' requires "
                 + research_path
-                + " with a Decision section",
+                + " recording requirement '"
+                + requirement_id.strip()
+                + "'",
                 path=research_path,
             )
         ]
@@ -475,17 +584,90 @@ def _research_findings(
                 path=research_path,
             )
         ]
-    if DECISION_HEADING.search(text) is None:
+    findings: list[GateFinding] = []
+    requirement = _markdown_section(text, "Requirement")
+    if requirement is None:
         return [
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_INCOMPLETE",
                 research_path
-                + " must contain a '## Decision' section (use / fork / extract / build "
-                "plus the reason)",
+                + " must contain a '## Requirement' section with requirement_id "
+                "and summary metadata",
                 path=research_path,
             )
         ]
-    return []
+    recorded = _REQUIREMENT_ID_FIELD.search(requirement)
+    if recorded is None or recorded.group(1).strip() != requirement_id.strip():
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_STALE",
+                "research records requirement '"
+                + (recorded.group(1).strip() if recorded is not None else "none")
+                + "' but the current requirement is '"
+                + requirement_id.strip()
+                + "'; old research never unlocks new requirements",
+                path=research_path,
+            )
+        )
+    summary = _SUMMARY_FIELD.search(requirement)
+    if summary is None or not summary.group(1).strip():
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Requirement' section needs a non-empty 'summary:' field",
+                path=research_path,
+            )
+        )
+    candidates = _markdown_section(text, "Candidates")
+    if candidates is None or (
+        _CANDIDATE_HEADING.search(candidates) is None
+        and _NO_CANDIDATE_STATEMENT.search(candidates) is None
+    ):
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Candidates' section needs at least one '### ' candidate "
+                "or an explicit no-suitable-candidate statement",
+                path=research_path,
+            )
+        )
+    decision_section = _markdown_section(text, "Decision")
+    decision = (
+        _DECISION_FIELD.search(decision_section)
+        if decision_section is not None
+        else None
+    )
+    reason = (
+        _REASON_FIELD.search(decision_section)
+        if decision_section is not None
+        else None
+    )
+    if decision is None or decision.group(1).casefold() not in VALID_DECISIONS:
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Decision' section needs 'decision:' set to one of "
+                + str(sorted(VALID_DECISIONS)),
+                path=research_path,
+            )
+        )
+    if reason is None or not reason.group(1).strip():
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Decision' section needs a non-empty 'reason:' field",
+                path=research_path,
+            )
+        )
+    return findings
+
+
+def _markdown_section(text: str, heading: str) -> str | None:
+    """Return the body under a '## <heading>' section; None when absent."""
+
+    pattern = re.compile(r"(?ms)^##\s+" + re.escape(heading) + r"\s*$\n(.*?)(?=^##\s|\Z)")
+    match = pattern.search(text)
+    return match.group(1) if match is not None else None
 
 
 def _remote_host(remote_url: str) -> str | None:
@@ -508,12 +690,16 @@ __all__ = [
     "RESEARCH_EXEMPT_CHANGE_CLASSES",
     "RESEARCH_REQUIRED_CHANGE_CLASSES",
     "UI_SPEC_PATH",
+    "VALID_DECISIONS",
     "GateDecision",
     "GateError",
     "GateFinding",
     "GateName",
+    "disposable_findings",
     "evaluate_code_start",
     "evaluate_finish",
     "evaluate_frontend",
+    "formal_write_blockers",
     "hygiene_findings",
+    "write_frontend_approval",
 ]

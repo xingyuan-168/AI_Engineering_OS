@@ -4,9 +4,9 @@ Windows 本地、可审计的 Codex 工程治理层。Python 3.12，自研自持
 
 ## 分层
 
-- `cli/` — Typer 命令（init/check/finish/memory/worktree/mcp/doctor/authorize-hook）与 MCP stdio server（7 工具）。输出统一 ok/error envelope。
+- `cli/` — Typer 命令（init/check/finish/memory/worktree/mcp/doctor/authorize-hook）与 MCP stdio server（8 工具）。输出统一 ok/error envelope。
 - `application/` — 用例：project 初始化、repository 治理检查、doctor 诊断、hook 网关、授权内核（ADR-0011）、最小路径策略内核（governance_policy）。
-- `core/` — 无状态治理核心：`gates.py`（三 Gate 评估器）、`worktree.py`（disposable worktree 生命周期）。
+- `core/` — 无状态治理核心：`gates.py`（三 Gate 评估器）、`checks.py`（Finish 薄真实检查）、`worktree.py`（disposable worktree 生命周期）。
 - `infrastructure/` — SQLite（单迁移 0001：tasks/approvals/worktrees/memory_index）、JSONL Memory、文档管理、配置、路径编解码。
 - `adapters/` — 外部系统：GitRunner（唯一 Git 子进程封装）。
 - `domain/` — 配置模型、治理值对象、版本常量。
