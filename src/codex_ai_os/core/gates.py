@@ -208,15 +208,17 @@ def evaluate_frontend(
     root: Path,
     *,
     impact: str,
-    approved: bool = False,
+    scope: str = "default",
     prototype_path: str = PROTOTYPE_PATH,
     ui_spec_path: str = UI_SPEC_PATH,
 ) -> GateDecision:
     """Evaluate whether frontend implementation may start.
 
     Only substantive frontend work (FRONTEND_GATED_IMPACTS) requires an
-    existing prototype, an existing UI spec, and explicit approval; copy
-    changes, CSS fixes, and component bug fixes pass immediately.
+    existing prototype, an existing UI spec, and an approval fact recorded
+    in the UI spec metadata for the exact scope; copy changes, CSS fixes,
+    and component bug fixes pass immediately. Caller-supplied approved
+    flags do not exist on this gate.
     """
 
     root = root.resolve()
@@ -241,15 +243,77 @@ def evaluate_frontend(
                     path=ui_spec_path,
                 )
             )
-        if not approved:
+        if not _frontend_approval_fact(root / ui_spec_path, scope):
             findings.append(
                 GateFinding(
                     "FRONTEND_APPROVAL_MISSING",
-                    "user approval for the prototype and UI spec is required "
-                    "(record it with approval_record)",
+                    "no approved frontend approval for scope '" + scope.strip()
+                    + "' in " + ui_spec_path
+                    + " (record it with approval_record); approvals are read from "
+                    "the Git-tracked UI spec, never from call arguments",
+                    path=ui_spec_path,
                 )
             )
     return _decide(GateName.FRONTEND, findings)
+
+
+_APPROVAL_BLOCK = re.compile(r"(?ms)^approval:\s*$\n((?:[ \t]+[^\n]*\n?)+)")
+_APPROVAL_FIELD = re.compile(r"(?m)^[ \t]+(type|scope|status):\s*(\S[^\n]*)$")
+
+
+def _frontend_approval_fact(ui_spec_path: Path, scope: str) -> bool:
+    """True when the UI spec records an approved frontend fact for the scope.
+
+    The approval lives in the Git-tracked UI spec metadata so it survives
+    database resets and moves with the repository; SQLite only mirrors it
+    as an index. Different scopes never inherit each other's approval.
+    """
+
+    if not ui_spec_path.is_file():
+        return False
+    try:
+        text = ui_spec_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    block = _APPROVAL_BLOCK.search(text)
+    if block is None:
+        return False
+    fields = {
+        match.group(1): match.group(2).strip().strip("'").strip('"')
+        for match in _APPROVAL_FIELD.finditer(block.group(1))
+    }
+    return (
+        fields.get("type", "").casefold() == "frontend"
+        and fields.get("scope", "").casefold() == scope.strip().casefold()
+        and fields.get("status", "").casefold() == "approved"
+    )
+
+
+def write_frontend_approval(ui_spec_path: Path, *, scope: str, approved_on: str) -> None:
+    """Record (or replace) the frontend approval fact in the UI spec.
+
+    The minimal metadata block is the durable approval fact; the runtime
+    database mirrors it as an index only.
+    """
+
+    path = Path(ui_spec_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.is_file() else "# UI Spec\n"
+    if not text.endswith("\n"):
+        text += "\n"
+    block = (
+        "approval:\n"
+        "  type: frontend\n"
+        "  scope: " + scope.strip() + "\n"
+        "  status: approved\n"
+        "  approved_at: " + approved_on + "\n"
+    )
+    match = _APPROVAL_BLOCK.search(text)
+    if match is not None:
+        text = text[: match.start()] + block + text[match.end() :]
+    else:
+        text = text.rstrip("\n") + "\n\n" + block
+    path.write_text(text, encoding="utf-8")
 
 
 def evaluate_finish(
@@ -645,4 +709,5 @@ __all__ = [
     "evaluate_frontend",
     "formal_write_blockers",
     "hygiene_findings",
+    "write_frontend_approval",
 ]

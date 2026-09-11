@@ -9,6 +9,7 @@ operating-system API; it never replaces Codex's own engineering tools.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from codex_ai_os.core.gates import (
     evaluate_code_start,
     evaluate_finish,
     evaluate_frontend,
+    write_frontend_approval,
 )
 from codex_ai_os.core.worktree import WorktreeError, WorktreeManager, WorktreeRecord
 from codex_ai_os.domain.config import ProjectType, RiskLevel
@@ -89,7 +91,7 @@ def governance_check(
     change_class: str = "small_change",
     requirement_id: str | None = None,
     frontend_impact: str = "none",
-    approved: bool | None = None,
+    frontend_scope: str = "default",
     tests_passed: bool = False,
     docs_synced: bool = False,
     memory_written: bool = False,
@@ -109,7 +111,7 @@ def governance_check(
             decision = evaluate_frontend(
                 root,
                 impact=frontend_impact,
-                approved=_frontend_approved(root, approved),
+                scope=frontend_scope,
             )
         elif stage == "finish":
             decision = evaluate_finish(
@@ -139,21 +141,6 @@ def governance_check(
     return _invoke(operation)
 
 
-def _frontend_approved(root: Path, approved: bool | None) -> bool:
-    """Use the explicit flag, else the latest recorded frontend approval."""
-
-    if approved is not None:
-        return approved
-    database = Database(root / ".codex-os" / "state" / "state.db")
-    database.migrate()
-    with database.connection() as connection:
-        row = connection.execute(
-            "SELECT decision FROM approvals WHERE gate = 'frontend' AND subject = 'frontend' "
-            "ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-    return row is not None and str(row["decision"]) == "approved"
-
-
 @mcp.tool()
 def approval_record(
     project_root: str,
@@ -161,9 +148,16 @@ def approval_record(
     subject: str,
     decision: str,
     decided_by: str,
+    scope: str = "default",
     reason: str | None = None,
 ) -> dict[str, Any]:
-    """Record one user approval or rejection for a governance gate."""
+    """Record one user approval or rejection for a governance gate.
+
+    Frontend approvals are additionally written into the Git-tracked
+    docs/design/UI_SPEC.md metadata so the approval fact survives database
+    resets; the SQLite row is an index only. A scope never inherits
+    another scope's approval.
+    """
 
     def operation() -> dict[str, Any]:
         root = Path(project_root).resolve()
@@ -173,13 +167,23 @@ def approval_record(
             raise ValueError("decision must be approved or rejected")
         if not decided_by.strip():
             raise ValueError("decided_by is required")
+        if not scope.strip():
+            raise ValueError("scope is required")
         database = Database(root / ".codex-os" / "state" / "state.db")
         database.migrate()
         approval_id = _record_approval(
             database, gate=gate, subject=subject, decision=decision,
             decided_by=decided_by, reason=reason,
         )
-        return _success(id=approval_id, gate=gate, subject=subject, decision=decision)
+        if gate == "frontend" and decision == "approved":
+            write_frontend_approval(
+                root / "docs" / "design" / "UI_SPEC.md",
+                scope=scope,
+                approved_on=datetime.now(UTC).date().isoformat(),
+            )
+        return _success(
+            id=approval_id, gate=gate, subject=subject, decision=decision, scope=scope
+        )
 
     return _invoke(operation)
 
@@ -193,8 +197,6 @@ def _record_approval(
     decided_by: str,
     reason: str | None,
 ) -> str:
-    from datetime import UTC, datetime
-
     approval_id = "APPROVAL-" + datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
     with database.connection() as connection:
         connection.execute(

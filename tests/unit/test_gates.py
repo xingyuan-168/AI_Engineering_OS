@@ -7,6 +7,7 @@ from codex_ai_os.core.gates import (
     evaluate_finish,
     evaluate_frontend,
     formal_write_blockers,
+    write_frontend_approval,
 )
 
 REQUIREMENT = "REQ-TEST"
@@ -238,7 +239,6 @@ def test_frontend_gate_layering(tmp_path: Path) -> None:
     exempt = evaluate_frontend(
         tmp_path,
         impact="copy_change",
-        approved=False,
         prototype_path="docs/design/PROTOTYPE.html",
         ui_spec_path="docs/design/UI_SPEC.md",
     )
@@ -246,7 +246,6 @@ def test_frontend_gate_layering(tmp_path: Path) -> None:
     blocked = evaluate_frontend(
         tmp_path,
         impact="new_page",
-        approved=False,
         prototype_path="docs/design/PROTOTYPE.html",
         ui_spec_path="docs/design/UI_SPEC.md",
     )
@@ -259,14 +258,59 @@ def test_frontend_gate_layering(tmp_path: Path) -> None:
     prototype.parent.mkdir(parents=True, exist_ok=True)
     prototype.write_text("<html></html>", encoding="utf-8")
     (tmp_path / "docs" / "design" / "UI_SPEC.md").write_text("# UI\n", encoding="utf-8")
-    allowed = evaluate_frontend(
+    still_blocked = evaluate_frontend(
         tmp_path,
         impact="new_page",
-        approved=True,
         prototype_path="docs/design/PROTOTYPE.html",
         ui_spec_path="docs/design/UI_SPEC.md",
     )
-    assert allowed.allowed is True
+    assert still_blocked.allowed is False
+    assert any(
+        f.code == "FRONTEND_APPROVAL_MISSING" for f in still_blocked.findings
+    )
+
+
+def test_frontend_approval_comes_from_ui_spec_fact_not_arguments(tmp_path: Path) -> None:
+    ui_spec = tmp_path / "docs" / "design" / "UI_SPEC.md"
+    ui_spec.parent.mkdir(parents=True, exist_ok=True)
+    ui_spec.write_text("# UI\n", encoding="utf-8")
+    _prototype(tmp_path)
+    write_frontend_approval(ui_spec, scope="admin-dashboard", approved_on="2026-09-10")
+    approved = evaluate_frontend(tmp_path, impact="new_page", scope="admin-dashboard")
+    assert approved.allowed is True
+    text = ui_spec.read_text(encoding="utf-8")
+    assert "scope: admin-dashboard" in text
+    assert "status: approved" in text
+
+
+def test_frontend_approval_does_not_inherit_across_scopes(tmp_path: Path) -> None:
+    ui_spec = tmp_path / "docs" / "design" / "UI_SPEC.md"
+    ui_spec.parent.mkdir(parents=True, exist_ok=True)
+    _prototype(tmp_path)
+    write_frontend_approval(ui_spec, scope="dashboard-v1", approved_on="2026-09-10")
+    other_scope = evaluate_frontend(tmp_path, impact="new_page", scope="settings-page")
+    assert other_scope.allowed is False
+    assert any(
+        f.code == "FRONTEND_APPROVAL_MISSING" for f in other_scope.findings
+    )
+
+
+def test_frontend_approval_replacement_rewrites_block(tmp_path: Path) -> None:
+    ui_spec = tmp_path / "docs" / "design" / "UI_SPEC.md"
+    ui_spec.parent.mkdir(parents=True, exist_ok=True)
+    _prototype(tmp_path)
+    write_frontend_approval(ui_spec, scope="v1", approved_on="2026-09-01")
+    write_frontend_approval(ui_spec, scope="v1", approved_on="2026-09-10")
+    text = ui_spec.read_text(encoding="utf-8")
+    assert text.count("status: approved") == 1
+    assert "approved_at: 2026-09-10" in text
+    assert evaluate_frontend(tmp_path, impact="new_page", scope="v1").allowed is True
+
+
+def _prototype(root: Path) -> None:
+    prototype = root / "docs" / "design" / "PROTOTYPE.html"
+    prototype.parent.mkdir(parents=True, exist_ok=True)
+    prototype.write_text("<html></html>", encoding="utf-8")
 
 
 def test_finish_gate_requires_task_facts(tmp_path: Path) -> None:
