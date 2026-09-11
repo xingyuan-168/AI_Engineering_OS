@@ -6,9 +6,9 @@ AI Engineering OS 是 Codex 的**工程治理层**：无状态三 Gate（Code St
 
 - **GitHub 前置**：正式 src/ 实现前必须有可达的 GitHub remote；没有时允许读 input/、分析、调研、规划、写文档。
 - **仓库卫生**：复制式版本目录/文件、被跟踪的污染内容、未解决冲突精确判定并阻塞；用户自己的未提交工作永不阻塞。
-- **开源调研分层**：新项目/新模块/重大功能/新技术栈/新集成必须先记录 use / fork / extract / build 决策。
-- **前端人工确认**：新页面/新交互流/重大 UI 重构先出 docs/design/PROTOTYPE.html + UI_SPEC，用户批准后编码；文案/CSS/组件修复豁免。
-- **Worktree 隔离**：disposable worktree 登记进 SQLite 供 Hook 判定；完成后 review、merge、cleanup。
+- **开源调研分层**：新项目/新模块/重大功能/新技术栈/新集成必须先在 docs/OPEN_SOURCE_RESEARCH.md 记录 requirement_id、summary 与 use / fork / extract / build 决策；空模板/stale id 一律阻塞。
+- **前端人工确认**：新页面/新交互流/重大 UI 重构先出 docs/design/PROTOTYPE.html + UI_SPEC，用户批准作为 approval 块持久化进 UI_SPEC（scope 精确匹配）；文案/CSS/组件修复豁免。
+- **Worktree 隔离**：disposable worktree 登记进 SQLite 供 Hook 判定（伪造目录失败封闭）；完成后 review、merge，cleanup 需 merge 证明，无 force。
 - **轻量 Memory**：docs/memory/memory.jsonl 是唯一事实源（Git 跟踪），SQLite memory_index 可随时重建；单写者规则——子 Agent 只提交 candidate。
 - **保护用户资产**：Hook 拦截 force push、删远端 ref、主工作区递归强删；pip/npm/sed -i 等正常工程命令全面放行。
 
@@ -25,17 +25,17 @@ uv run codex-os doctor --json
 
 ```text
 codex-os init <project-root> --project-id PROJECT-001 --name example
-codex-os check <project-root>
-codex-os finish <project-root> --tests-passed --docs-synced --memory-not-needed
-codex-os memory search|record|reindex|candidates
+codex-os check <project-root> [--change-class --requirement-id]
+codex-os finish <project-root> --test-command "pytest" --memory-not-needed
+codex-os memory search|record|reindex|candidates|candidate --accept|--reject
 codex-os worktree prepare|check|finish|cleanup|list
 codex-os doctor
 codex-os mcp
 ```
 
-业务命令支持 --json（统一 ok/error envelope）。MCP 公开 7 个工具：project_init、governance_check、approval_record、context_refresh、worktree_manage、memory_search、memory_record。
+业务命令支持 --json（统一 ok/error envelope）。MCP 公开 8 个工具：project_init、governance_check、approval_record、context_refresh、worktree_manage、memory_search、memory_record、memory_candidate。
 
-仓库级插件位于 plugins/ai-engineering-os/（8 个治理 Skill + SessionStart/PreToolUse Hooks）。Hook 属于纵深防御，宿主可禁用；运行时入口检查才是权威边界。
+仓库级插件位于 plugins/ai-engineering-os/（8 个治理 Skill + SessionStart/PreToolUse Hooks）。Hook 属于纵深防御：客观边界（GitHub 就绪、伪造 worktree 封闭、无 GitHub 时禁写 src/）在 Hook 内离线强制，宿主可禁用；运行时入口检查仍是权威边界。
 
 ## 事实源
 
