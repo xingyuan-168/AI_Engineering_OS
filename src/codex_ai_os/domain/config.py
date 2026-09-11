@@ -1,4 +1,11 @@
-"""Strict configuration models and security policy types."""
+"""Strict configuration models (governance-core, slimmed by ADR-0016).
+
+The project configuration keeps only the fields the runtime still reads:
+identity, template selection (project_type), push policy, target branch,
+GitHub hosts, and the formal code paths the Code Start boundary protects.
+Execution-policy and risk tiers are gone: there is no second runtime to
+configure, and the hook judges operations directly (ADR-0016).
+"""
 
 from __future__ import annotations
 
@@ -23,31 +30,9 @@ class ProjectType(StrEnum):
     GENERIC = "generic"
 
 
-class RiskLevel(StrEnum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
-
-
-class NetworkMode(StrEnum):
-    DISABLED = "disabled"
-    ALLOWLIST = "allowlist"
-
-
 class GitPushPolicy(StrEnum):
     REMOTE_REQUIRED = "remote_required"
     FIXTURE_LOCAL_ONLY = "fixture_local_only"
-
-
-class SandboxBackend(StrEnum):
-    DOCKER = "docker"
-    PODMAN = "podman"
-
-
-class EnvironmentMode(StrEnum):
-    LEGACY = "legacy"
-    OCI_FIRST = "oci-first"
 
 
 class ProjectConfig(StrictModel):
@@ -56,21 +41,11 @@ class ProjectConfig(StrictModel):
     name: str = Field(min_length=1, max_length=100)
     root: Path
     project_type: ProjectType = ProjectType.GENERIC
-    risk_level: RiskLevel = RiskLevel.MEDIUM
     source_of_truth: Path = Path("docs")
-    active_workflow: str = "new-project"
-    approval_policy: Literal["critical-gates-human"] = "critical-gates-human"
-    default_agent_profile: str = "standard"
     git_push_policy: GitPushPolicy = GitPushPolicy.REMOTE_REQUIRED
     target_branch: str = Field(default="main", pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
     github_hosts: frozenset[str] = frozenset({"github.com"})
     code_paths: tuple[str, ...] = ("src",)
-    max_parallel_agents: int = Field(default=4, ge=1, le=4)
-    document_version: str | None = Field(
-        default=None,
-        pattern=r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$",
-    )
-    environment_mode: EnvironmentMode = EnvironmentMode.LEGACY
 
     @field_validator("root")
     @classmethod
@@ -106,21 +81,18 @@ class ProjectConfig(StrictModel):
             raise ValueError("github_hosts must contain host names only")
         return normalized
 
-
-class ExecutionPolicy(StrictModel):
-    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
-    sandbox: SandboxBackend = SandboxBackend.PODMAN
-    network: NetworkMode = NetworkMode.DISABLED
-    allowed_network_hosts: frozenset[str] = frozenset()
-    allowed_mounts: frozenset[str] = frozenset({"worktree", "artifacts", "cache"})
-    allowed_commands: frozenset[str] = frozenset(
-        {"git", "python", "pytest", "ruff", "pyright", "pip-audit", "detect-secrets"}
-    )
-    approval_for: frozenset[str] = frozenset(
-        {"network", "migration", "delete", "credential", "release"}
-    )
-    max_duration_seconds: int = Field(default=1800, ge=1, le=7200)
-    allow_host_execution: bool = False
-
-
-DEFAULT_EXECUTION_POLICY = ExecutionPolicy()
+    @field_validator("code_paths")
+    @classmethod
+    def code_paths_are_repository_relative(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if not values:
+            raise ValueError("code_paths cannot be empty")
+        for value in values:
+            normalized = value.replace("\\", "/").strip("/")
+            if (
+                not normalized
+                or normalized.startswith(".")
+                or ":" in normalized
+                or normalized.startswith("/")
+            ):
+                raise ValueError(f"code_paths entries must be relative repository paths: {value!r}")
+        return tuple(dict.fromkeys(value.replace("\\", "/").strip("/") for value in values))

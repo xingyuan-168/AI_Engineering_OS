@@ -18,7 +18,6 @@ def _initialize(root: Path) -> None:
         project_id="PROJECT-CFG",
         name="Config",
         project_type="backend",
-        risk_level="high",
         include=frozenset(),
     )
 
@@ -29,7 +28,7 @@ def test_round_trip_loads_initialized_config(tmp_path: Path) -> None:
     assert config.project_id == "PROJECT-CFG"
     assert config.name == "Config"
     assert config.project_type.value == "backend"
-    assert config.risk_level.value == "high"
+    assert config.code_paths == ("src",)
     assert config.root == tmp_path.resolve()
 
 

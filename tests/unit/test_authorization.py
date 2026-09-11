@@ -19,7 +19,6 @@ def _kernel(tmp_path: Path) -> GovernanceAuthorizationKernel:
         project_id="PROJECT-AUTH",
         name="Auth",
         project_type="generic",
-        risk_level="low",
         include=frozenset(),
     )
     return GovernanceAuthorizationKernel(GovernancePolicyCompiler(tmp_path).compile())

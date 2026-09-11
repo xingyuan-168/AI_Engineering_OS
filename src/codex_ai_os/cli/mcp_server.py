@@ -25,7 +25,7 @@ from codex_ai_os.core.gates import (
     write_frontend_approval,
 )
 from codex_ai_os.core.worktree import WorktreeError, WorktreeManager, WorktreeRecord
-from codex_ai_os.domain.config import ProjectType, RiskLevel
+from codex_ai_os.domain.config import ProjectType
 from codex_ai_os.domain.versions import RUNTIME_VERSIONS
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
@@ -53,7 +53,6 @@ def project_init(
     project_id: str,
     name: str,
     project_type: str = "generic",
-    risk_level: str = "medium",
     include: list[str] | None = None,
 ) -> dict[str, Any]:
     """Initialize an idempotent local project, minimal documents, and runtime database."""
@@ -68,7 +67,6 @@ def project_init(
             project_id=project_id,
             name=name,
             project_type=ProjectType(project_type),
-            risk_level=RiskLevel(risk_level),
             include=frozenset(extras),
         )
         return _success(

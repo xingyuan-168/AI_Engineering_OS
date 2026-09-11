@@ -12,7 +12,6 @@ from codex_ai_os.domain.config import (
     GitPushPolicy,
     ProjectConfig,
     ProjectType,
-    RiskLevel,
 )
 from codex_ai_os.infrastructure.config import load_project_config
 from codex_ai_os.infrastructure.database import Database
@@ -38,7 +37,6 @@ class ProjectInitializer:
         project_id: str,
         name: str,
         project_type: ProjectType,
-        risk_level: RiskLevel = RiskLevel.MEDIUM,
         git_push_policy: GitPushPolicy = GitPushPolicy.REMOTE_REQUIRED,
         include: frozenset[str] | set[str] = frozenset(),
     ) -> ProjectInitResult:
@@ -57,7 +55,6 @@ class ProjectInitializer:
                 name=name,
                 root=root,
                 project_type=project_type,
-                risk_level=risk_level,
                 git_push_policy=git_push_policy,
             )
             config_text = yaml.safe_dump(

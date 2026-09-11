@@ -22,7 +22,7 @@ from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.cli.output import emit, error_envelope, success_envelope
 from codex_ai_os.core.gates import GateError, evaluate_code_start, evaluate_finish
 from codex_ai_os.core.worktree import WorktreeError, WorktreeManager, WorktreeRecord
-from codex_ai_os.domain.config import ProjectType, RiskLevel
+from codex_ai_os.domain.config import ProjectType
 from codex_ai_os.infrastructure.config import ConfigError, load_project_config
 from codex_ai_os.infrastructure.database import Database, MigrationError
 from codex_ai_os.infrastructure.documents import DocumentManager
@@ -72,7 +72,6 @@ def init_command(
     project_id: Annotated[str, typer.Option("--project-id")] = "PROJECT-LOCAL",
     name: Annotated[str, typer.Option("--name")] = "AI Engineering Project",
     project_type: Annotated[ProjectType, typer.Option("--project-type")] = ProjectType.GENERIC,
-    risk_level: Annotated[RiskLevel, typer.Option("--risk-level")] = RiskLevel.MEDIUM,
     with_extra: Annotated[list[str] | None, typer.Option("--with")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
@@ -85,8 +84,7 @@ def init_command(
             project_id=project_id,
             name=name,
             project_type=project_type,
-            risk_level=risk_level,
-            include=include,
+                include=include,
         )
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
         _fail("CONFIG_INVALID", str(exc), 2, json_output)

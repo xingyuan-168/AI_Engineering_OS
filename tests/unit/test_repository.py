@@ -13,7 +13,6 @@ def _initialize(root: Path) -> None:
         project_id="PROJECT-REPO",
         name="Repo",
         project_type="generic",
-        risk_level="low",
         include=frozenset(),
     )
 
