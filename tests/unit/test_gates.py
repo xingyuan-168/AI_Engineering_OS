@@ -183,8 +183,7 @@ def test_user_uncommitted_work_does_not_block_start(tmp_path: Path) -> None:
 def test_user_uncommitted_work_warns_but_does_not_block_finish(tmp_path: Path) -> None:
     decision = evaluate_finish(
         tmp_path,
-        tests_passed=True,
-        docs_synced=True,
+        test_command=None,
         memory_not_needed=True,
         runner=FakeGitRunner(status="?? notes.txt\n"),
     )
@@ -313,23 +312,33 @@ def _prototype(root: Path) -> None:
     prototype.write_text("<html></html>", encoding="utf-8")
 
 
-def test_finish_gate_requires_task_facts(tmp_path: Path) -> None:
+def test_finish_runs_the_declared_test_command(tmp_path: Path) -> None:
     blocked = evaluate_finish(
         tmp_path,
-        tests_passed=False,
-        docs_synced=False,
+        test_command='python -c "import sys; sys.exit(3)"',
+        memory_not_needed=True,
         runner=FakeGitRunner(),
     )
     assert blocked.allowed is False
     codes = {f.code for f in blocked.findings}
-    assert "TESTS_NOT_PASSED" in codes
-    assert "DOCS_NOT_SYNCED" in codes
-    assert "MEMORY_MISSING" in codes
+    assert "TEST_COMMAND_FAILED" in codes
+    # Attested-but-unverifiable facts are gone (ADR-0016).
+    assert "TESTS_NOT_PASSED" not in codes
+    assert "DOCS_NOT_SYNCED" not in codes
     allowed = evaluate_finish(
         tmp_path,
-        tests_passed=True,
-        docs_synced=True,
+        test_command='python -c "pass"',
         memory_written=False,
+        memory_not_needed=True,
+        runner=FakeGitRunner(),
+    )
+    assert allowed.allowed is True
+
+
+def test_finish_without_test_command_still_checks_the_rest(tmp_path: Path) -> None:
+    allowed = evaluate_finish(
+        tmp_path,
+        test_command=None,
         memory_not_needed=True,
         runner=FakeGitRunner(),
     )
@@ -339,8 +348,7 @@ def test_finish_gate_requires_task_facts(tmp_path: Path) -> None:
 def test_finish_without_memory_fact_blocks(tmp_path: Path) -> None:
     decision = evaluate_finish(
         tmp_path,
-        tests_passed=True,
-        docs_synced=True,
+        test_command=None,
         memory_written=False,
         memory_not_needed=False,
         runner=FakeGitRunner(),

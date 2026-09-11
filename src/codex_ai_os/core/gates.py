@@ -13,9 +13,10 @@ state or lifecycle transitions.
 - **Frontend Approval**: only substantive frontend work requires an
   approved prototype plus UI spec; copy changes, CSS fixes, and component
   bug fixes are exempt.
-- **Finish**: task tests passed, affected documents synced, repository
-  hygiene, disposable files cleaned up, memory written or explicitly not
-  needed, and no directory-copy versioning.
+- **Finish**: the declared test command (when given), ruff when configured,
+  Git whitespace checks, repository hygiene, disposable files cleaned up,
+  memory written or explicitly not needed, and no directory-copy versioning.
+  Attested-but-unverifiable facts (--tests-passed/--docs-synced) are gone.
 
 Gate checks that cannot be observed deterministically (for example "the
 requirement scope is clear") stay process discipline in AGENTS.md; the
@@ -319,30 +320,22 @@ def write_frontend_approval(ui_spec_path: Path, *, scope: str, approved_on: str)
 def evaluate_finish(
     root: Path,
     *,
-    tests_passed: bool,
-    docs_synced: bool,
+    test_command: str | None,
     memory_written: bool = False,
     memory_not_needed: bool = False,
     runner: GitRunner | None = None,
 ) -> GateDecision:
     """Evaluate whether a task may finish.
 
-    Repository-side checks (hygiene, disposable leftovers, conflicts) are
-    observed here; task-side facts (tests, document sync, memory) are
-    supplied by the caller that ran the task.
+    Only verifiable checks run here (declared test command, configured
+    linters, Git checks, hygiene, pending memory candidates); unverifiable
+    attestations were removed (ADR-0016). Memory remains a caller fact.
     """
 
-    root = root.resolve()
-    git = runner or GitRunner(root)
-    findings: list[GateFinding] = []
-    if not tests_passed:
-        findings.append(
-            GateFinding("TESTS_NOT_PASSED", "task-related tests have not passed")
-        )
-    if not docs_synced:
-        findings.append(
-            GateFinding("DOCS_NOT_SYNCED", "affected documents have not been synced")
-        )
+    # Deferred import: core.checks reuses gate helpers defined in this module.
+    from codex_ai_os.core.checks import run_thin_checks
+
+    findings = run_thin_checks(root, test_command=test_command, runner=runner)
     if not (memory_written or memory_not_needed):
         findings.append(
             GateFinding(
@@ -350,8 +343,6 @@ def evaluate_finish(
                 "memory must be written or explicitly marked as not needed",
             )
         )
-    findings.extend(hygiene_findings(root, git))
-    findings.extend(_disposable_findings(git))
     return _decide(GateName.FINISH, findings)
 
 
@@ -504,7 +495,7 @@ def _copy_style_findings(root: Path) -> list[GateFinding]:
     return findings
 
 
-def _disposable_findings(git: GitRunner) -> list[GateFinding]:
+def disposable_findings(git: GitRunner) -> list[GateFinding]:
     status = git.run("status", "--porcelain", "--untracked-files=normal")
     findings: list[GateFinding] = []
     if status.returncode != 0:
@@ -704,6 +695,7 @@ __all__ = [
     "GateError",
     "GateFinding",
     "GateName",
+    "disposable_findings",
     "evaluate_code_start",
     "evaluate_finish",
     "evaluate_frontend",

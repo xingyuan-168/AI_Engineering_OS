@@ -84,14 +84,30 @@ def test_finish_gate_blocks_then_passes(tmp_path: Path) -> None:
     assert blocked.exit_code == 40
     payload = _json_output(blocked.output)
     codes = {finding["code"] for finding in payload["error"]["details"]["findings"]}
-    assert "TESTS_NOT_PASSED" in codes
+    assert "MEMORY_MISSING" in codes
+    failing = runner.invoke(
+        app,
+        [
+            "finish",
+            str(tmp_path),
+            "--test-command",
+            'python -c "import sys; sys.exit(3)"',
+            "--memory-not-needed",
+            "--json",
+        ],
+    )
+    assert failing.exit_code == 40, failing.output
+    failed_codes = {
+        finding["code"] for finding in _json_output(failing.output)["error"]["details"]["findings"]
+    }
+    assert "TEST_COMMAND_FAILED" in failed_codes
     passing = runner.invoke(
         app,
         [
             "finish",
             str(tmp_path),
-            "--tests-passed",
-            "--docs-synced",
+            "--test-command",
+            'python -c "pass"',
             "--memory-not-needed",
             "--json",
         ],

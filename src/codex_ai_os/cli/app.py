@@ -200,8 +200,9 @@ def check_command(
 @app.command("finish")
 def finish_command(
     project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
-    tests_passed: Annotated[bool, typer.Option("--tests-passed")] = False,
-    docs_synced: Annotated[bool, typer.Option("--docs-synced")] = False,
+    test_command: Annotated[
+        str | None, typer.Option("--test-command", help="Verifiable test command to run.")
+    ] = None,
     memory_written: Annotated[bool, typer.Option("--memory-written")] = False,
     memory_not_needed: Annotated[bool, typer.Option("--memory-not-needed")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -211,8 +212,7 @@ def finish_command(
     try:
         decision = evaluate_finish(
             project_root,
-            tests_passed=tests_passed,
-            docs_synced=docs_synced,
+            test_command=test_command,
             memory_written=memory_written,
             memory_not_needed=memory_not_needed,
         )

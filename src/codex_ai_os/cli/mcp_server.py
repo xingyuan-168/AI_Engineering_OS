@@ -92,8 +92,7 @@ def governance_check(
     requirement_id: str | None = None,
     frontend_impact: str = "none",
     frontend_scope: str = "default",
-    tests_passed: bool = False,
-    docs_synced: bool = False,
+    test_command: str | None = None,
     memory_written: bool = False,
     memory_not_needed: bool = False,
 ) -> dict[str, Any]:
@@ -116,8 +115,7 @@ def governance_check(
         elif stage == "finish":
             decision = evaluate_finish(
                 root,
-                tests_passed=tests_passed,
-                docs_synced=docs_synced,
+                test_command=test_command,
                 memory_written=memory_written,
                 memory_not_needed=memory_not_needed,
             )
