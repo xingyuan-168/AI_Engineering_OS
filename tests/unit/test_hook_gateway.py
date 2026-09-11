@@ -73,6 +73,10 @@ def _allowed_start() -> GateDecision:
     return GateDecision(gate=GateName.CODE_START, allowed=True, findings=())
 
 
+def _patch_output(root: Path, verb: str, path: str) -> dict[str, Any]:
+    return authorize_hook_payload(_payload(root, "apply_patch", _patch(verb, path)))
+
+
 def _blocked_start(code: str = "GITHUB_REMOTE_MISSING") -> GateDecision:
     from codex_ai_os.core.gates import GateFinding
 
@@ -127,20 +131,20 @@ class TestAuthorizeHookPayload:
 
     def test_apply_patch_protected_path_denies(self, tmp_path: Path) -> None:
         root = _initialized_project(tmp_path)
-        output = authorize_hook_payload(_payload(root, "apply_patch", _patch("add", ".git/hooks/evil")))
+        output = _patch_output(root, "add", ".git/hooks/evil")
         decision = output["hookSpecificOutput"]
         assert decision["permissionDecision"] == "deny"
         assert "PATH_POLICY_VIOLATION" in decision["permissionDecisionReason"]
 
     def test_apply_patch_governance_rule_path_denies(self, tmp_path: Path) -> None:
         root = _initialized_project(tmp_path)
-        output = authorize_hook_payload(_payload(root, "apply_patch", _patch("update", "AGENTS.md")))
+        output = _patch_output(root, "update", "AGENTS.md")
         decision = output["hookSpecificOutput"]
         assert decision["permissionDecision"] == "deny"
 
     def test_input_write_denies(self, tmp_path: Path) -> None:
         root = _initialized_project(tmp_path)
-        output = authorize_hook_payload(_payload(root, "apply_patch", _patch("add", "input/notes.txt")))
+        output = _patch_output(root, "add", "input/notes.txt")
         decision = output["hookSpecificOutput"]
         assert decision["permissionDecision"] == "deny"
         assert "PATH_POLICY_VIOLATION" in decision["permissionDecisionReason"]
@@ -154,7 +158,8 @@ class TestAuthorizeHookPayload:
 
     def test_no_github_allows_documentation_write(self, tmp_path: Path) -> None:
         root = _initialized_project(tmp_path)
-        assert authorize_hook_payload(_payload(root, "apply_patch", _patch("add", "docs/notes.md"))) == {}
+        patch = _patch("add", "docs/notes.md")
+        assert authorize_hook_payload(_payload(root, "apply_patch", patch)) == {}
 
     def test_write_tool_formal_target_follows_same_boundary(self, tmp_path: Path) -> None:
         root = _initialized_project(tmp_path)
@@ -173,8 +178,11 @@ class TestAuthorizeHookPayload:
         root = _initialized_project(tmp_path)
         import codex_ai_os.application.hook_gateway as gateway
 
-        monkeypatch.setattr(gateway, "_formal_boundary", lambda root, github_hosts: _allowed_start())
-        assert authorize_hook_payload(_payload(root, "apply_patch", _patch("add", "src/app.py"))) == {}
+        monkeypatch.setattr(
+            gateway, "_formal_boundary", lambda root, github_hosts: _allowed_start()
+        )
+        patch = _patch("add", "src/app.py")
+        assert authorize_hook_payload(_payload(root, "apply_patch", patch)) == {}
 
     def test_github_boundary_block_denies_formal_write(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -203,8 +211,11 @@ class TestAuthorizeHookPayload:
         (root / "src" / "auth.py").write_text("x = 2\n", encoding="utf-8")
         import codex_ai_os.application.hook_gateway as gateway
 
-        monkeypatch.setattr(gateway, "_formal_boundary", lambda root, github_hosts: _allowed_start())
-        output = authorize_hook_payload(_payload(root, "apply_patch", _patch("update", "src/auth.py")))
+        monkeypatch.setattr(
+            gateway, "_formal_boundary", lambda root, github_hosts: _allowed_start()
+        )
+        patch = _patch("update", "src/auth.py")
+        output = authorize_hook_payload(_payload(root, "apply_patch", patch))
         decision = output["hookSpecificOutput"]
         assert decision["permissionDecision"] == "ask"
         assert "USER_DIRTY_CONFLICT" in decision["permissionDecisionReason"]
@@ -244,7 +255,9 @@ class TestAuthorizeHookCommand:
         result = RUNNER.invoke(
             app,
             ["authorize-hook"],
-            input=json.dumps(_payload(root, "apply_patch", _patch("add", ".codex-os/state/inject.db"))),
+            input=json.dumps(
+                _payload(root, "apply_patch", _patch("add", ".codex-os/state/inject.db"))
+            ),
         )
         assert result.exit_code == 0
         decision = json.loads(result.stdout)["hookSpecificOutput"]
