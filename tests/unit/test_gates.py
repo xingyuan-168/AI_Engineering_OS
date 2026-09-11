@@ -143,7 +143,7 @@ def test_explicit_no_candidate_statement_allows_start(tmp_path: Path) -> None:
         tmp_path,
         RESEARCH_COMPLETE.replace(
             "### Project A\n\n- URL: https://github.com/org/a\n",
-            "没有合适候选，治理层不需要第二运行时依赖。\n",
+            "没有合适候选: no second runtime dependency is needed.\n",
         ),
     )
     decision = _start(tmp_path, "major_feature")
