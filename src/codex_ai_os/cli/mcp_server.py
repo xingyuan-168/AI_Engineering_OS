@@ -1,9 +1,10 @@
 """Model Context Protocol server for AI Engineering OS (governance-core, ADR-0016).
 
-Exactly seven governance tools: project_init, governance_check,
-approval_record, context_refresh, worktree_manage, memory_search, and
-memory_record. The MCP server is a governance capability for Codex, not an
-operating-system API; it never replaces Codex's own engineering tools.
+Exactly eight governance tools: project_init, governance_check,
+approval_record, context_refresh, worktree_manage, memory_search,
+memory_record, and memory_candidate. The MCP server is a governance
+capability for Codex, not an operating-system API; it never replaces
+Codex's own engineering tools.
 """
 
 from __future__ import annotations
@@ -350,6 +351,49 @@ def memory_record(
             status=entry.status,
             candidate=candidate,
         )
+
+    return _invoke(operation)
+
+
+@mcp.tool()
+def memory_candidate(
+    project_root: str,
+    action: str,
+    candidate_id: str | None = None,
+) -> dict[str, Any]:
+    """List, accept, or reject subagent memory candidates (main session only)."""
+
+    def operation() -> dict[str, Any]:
+        root = Path(project_root).resolve()
+        load_project_config(root)
+        database = Database(root / ".codex-os" / "state" / "state.db")
+        database.migrate()
+        store = MemoryStore(database, root)
+        if action == "list":
+            return _success(
+                results=[
+                    {
+                        "id": record.id,
+                        "type": record.record_type,
+                        "title": record.title,
+                        "summary": record.summary,
+                        "source": record.source,
+                        "tags": list(record.tags),
+                    }
+                    for record in store.candidates()
+                ]
+            )
+        if action == "accept":
+            if candidate_id is None:
+                raise ValueError("accept requires candidate_id")
+            entry = store.accept_candidate(candidate_id)
+            return _success(id=entry.id, status=entry.status, accepted=True)
+        if action == "reject":
+            if candidate_id is None:
+                raise ValueError("reject requires candidate_id")
+            store.reject_candidate(candidate_id)
+            return _success(id=candidate_id, rejected=True)
+        raise ValueError("action must be one of: list, accept, reject")
 
     return _invoke(operation)
 

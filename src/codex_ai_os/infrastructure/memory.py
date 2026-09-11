@@ -190,6 +190,67 @@ class MemoryStore:
                 continue
         return tuple(found)
 
+    def accept_candidate(self, candidate_id: str) -> MemoryEntry:
+        """Merge one candidate into the JSONL (main-session writer only).
+
+        The merge re-validates the candidate against the JSONL contract; a
+        duplicate (already merged) candidate is cleaned up before the error
+        is re-raised, so retrying stays safe.
+        """
+
+        path = self._candidate_path(candidate_id)
+        if path is None:
+            raise MemoryStoreError(
+                "MEMORY_CANDIDATE_MISSING",
+                f"memory candidate not found: {candidate_id}",
+            )
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            entry = _entry_from_payload(raw, line_number=None)
+        except (OSError, UnicodeError, ValueError, MemoryStoreError) as exc:
+            raise MemoryStoreError(
+                "MEMORY_CANDIDATE_MISSING",
+                f"memory candidate is unreadable: {candidate_id}: {exc}",
+            ) from exc
+        try:
+            merged = self.record(
+                record_type=entry.record_type,
+                title=entry.title,
+                summary=entry.summary,
+                source=entry.source,
+                source_commit=entry.source_commit,
+                tags=entry.tags,
+                status=entry.status,
+                superseded_by=entry.superseded_by,
+            )
+        except MemoryStoreError:
+            path.unlink(missing_ok=True)
+            raise
+        path.unlink(missing_ok=True)
+        return merged
+
+    def reject_candidate(self, candidate_id: str) -> None:
+        """Discard one candidate without touching the JSONL."""
+
+        path = self._candidate_path(candidate_id)
+        if path is None:
+            raise MemoryStoreError(
+                "MEMORY_CANDIDATE_MISSING",
+                f"memory candidate not found: {candidate_id}",
+            )
+        path.unlink()
+
+    def _candidate_path(self, candidate_id: str) -> Path | None:
+        normalized = candidate_id.strip()
+        if (
+            not normalized
+            or _ID_PATTERN.match(normalized) is None
+            or Path(normalized).name != normalized
+        ):
+            return None
+        path = self.root / CANDIDATE_DIRECTORY / (normalized + ".json")
+        return path if path.is_file() else None
+
     def load(self) -> tuple[tuple[MemoryEntry, ...], tuple[str, ...]]:
         """Return (entries, invalid-line descriptions) from the JSONL."""
 

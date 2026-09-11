@@ -441,6 +441,53 @@ def memory_candidates_command(
     )
 
 
+@memory_app.command("candidate")
+def memory_candidate_command(
+    candidate_id: Annotated[str, typer.Argument(help="Candidate id, e.g. MEM-...")],
+    accept: Annotated[
+        bool, typer.Option("--accept", help="Merge the candidate into the JSONL.")
+    ] = False,
+    reject: Annotated[
+        bool, typer.Option("--reject", help="Discard the candidate.")
+    ] = False,
+    project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Accept or reject one subagent memory candidate (main session only)."""
+
+    if accept == reject:
+        _fail("CONFIG_INVALID", "pass exactly one of --accept or --reject", 2, json_output)
+        return
+    try:
+        _, database = _project_database(project_root)
+        store = MemoryStore(database, project_root.resolve())
+        if accept:
+            entry = store.accept_candidate(candidate_id)
+        else:
+            store.reject_candidate(candidate_id)
+            entry = None
+    except MemoryStoreError as exc:
+        code = (
+            "MEMORY_CANDIDATE_MISSING"
+            if exc.code == "MEMORY_CANDIDATE_MISSING"
+            else "CONFIG_INVALID"
+        )
+        _fail(code, str(exc), 2, json_output)
+        return
+    except (ConfigError, MigrationError, ValueError, OSError) as exc:
+        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        return
+    data = {
+        "accepted": accept,
+        "entry": _memory_payload(entry) if entry is not None else None,
+    }
+    if entry is not None:
+        message = "Candidate accepted: " + entry.id
+    else:
+        message = "Candidate rejected: " + candidate_id
+    emit(success_envelope(data), json_output=json_output, human=message)
+
+
 def _memory_payload(record: MemoryEntry) -> dict[str, object]:
     return {
         "id": record.id,
