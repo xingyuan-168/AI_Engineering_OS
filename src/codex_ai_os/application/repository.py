@@ -38,11 +38,34 @@ _HYGIENE_CODES = frozenset(
         "COPY_STYLE_DIRECTORY",
         "COPY_STYLE_FILE",
         "TRACKED_POLLUTION",
-        "GITIGNORE_MISSING",
+        "GITIGNORE_INCOMPLETE",
         "OUTPUT_IMPURE",
         "LEGACY_DOC_TREE",
         "SECRET_DETECTED",
     }
+)
+# The fifteen runtime artifact families that must never reach Git. The
+# .gitignore check is a semantic checklist, not a full gitignore parser:
+# equivalent spellings (parent directories, character-class globs, anchored
+# forms) satisfy an entry (P1-6).
+_GITIGNORE_BASENAMES = (
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "node_modules",
+    "build",
+    "dist",
+    ".worktrees",
+)
+_GITIGNORE_GLOBS = ("*.pyc", "*.log")
+_GITIGNORE_GLOB_EQUIVALENTS = {"*.pyc": ("*.py[cod]", "*.py[co]", "*.py?")}
+_GITIGNORE_PATHS = (
+    ".codex-os/state",
+    ".codex-os/logs",
+    ".codex-os/cache",
+    ".codex-os/tmp",
+    ".codex-os/artifacts",
 )
 
 
@@ -95,6 +118,7 @@ class RepositoryGovernanceService:
                 findings.append(GateFinding("HEAD_MISSING", "repository has no committed HEAD"))
 
             findings.extend(hygiene_findings(self.root, git))
+            findings.extend(_gitignore_findings(self.root))
             findings.extend(_legacy_tree_findings(self.root))
             findings.extend(_output_purity_findings(self.root))
             if not fixture:
@@ -160,6 +184,84 @@ def _configured_remote_host(git: GitRunner) -> str | None:
     if remote.returncode != 0:
         return None
     return _remote_host(remote.stdout.strip())
+
+
+def _gitignore_findings(root: Path) -> list[GateFinding]:
+    """Verify .gitignore covers the fifteen runtime artifact families."""
+
+    path = root / ".gitignore"
+    if not path.is_file():
+        return [
+            GateFinding(
+                "GITIGNORE_INCOMPLETE",
+                ".gitignore is missing; runtime artifacts would be trackable",
+                path=".gitignore",
+            )
+        ]
+    try:
+        raw_lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        return [
+            GateFinding(
+                "GITIGNORE_INCOMPLETE",
+                ".gitignore is unreadable: " + str(exc),
+                path=".gitignore",
+            )
+        ]
+    patterns = tuple(
+        normalized for line in raw_lines for normalized in (_normalize_ignore(line),) if normalized
+    )
+    missing: list[str] = []
+    for basename in _GITIGNORE_BASENAMES:
+        if not any(_covers_basename(pattern, basename) for pattern in patterns):
+            missing.append(basename)
+    for glob_pattern in _GITIGNORE_GLOBS:
+        if not any(_covers_glob(pattern, glob_pattern) for pattern in patterns):
+            missing.append(glob_pattern)
+    for required in _GITIGNORE_PATHS:
+        if not any(_covers_path(pattern, required) for pattern in patterns):
+            missing.append(required)
+    if not missing:
+        return []
+    return [
+        GateFinding(
+            "GITIGNORE_INCOMPLETE",
+            ".gitignore must also ignore: " + ", ".join(missing),
+            path=".gitignore",
+        )
+    ]
+
+
+def _normalize_ignore(raw: str) -> str:
+    line = raw.strip()
+    if not line or line.startswith("#") or line.startswith("!"):
+        return ""
+    line = line.replace("\\", "/").lstrip("/").rstrip("/")
+    if line.endswith("/**"):
+        line = line[:-3]
+    return line
+
+
+def _covers_basename(pattern: str, basename: str) -> bool:
+    return pattern.split("/")[-1] == basename or pattern == "**/" + basename
+
+
+def _covers_glob(pattern: str, glob_pattern: str) -> bool:
+    if pattern == glob_pattern or pattern == "**/" + glob_pattern:
+        return True
+    return pattern in _GITIGNORE_GLOB_EQUIVALENTS.get(glob_pattern, ())
+
+
+def _covers_path(pattern: str, required: str) -> bool:
+    parent = required.rsplit("/", 1)[0]
+    return pattern in {
+        required,
+        required + "/**",
+        required + "/*",
+        parent,
+        parent + "/**",
+        "**/" + required,
+    }
 
 
 def _legacy_tree_findings(root: Path) -> list[GateFinding]:
