@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -62,6 +63,11 @@ _REQUIREMENT_ID_FIELD = re.compile(r"(?m)^\s*requirement_id\s*:\s*(.+?)\s*$")
 _SUMMARY_FIELD = re.compile(r"(?m)^\s*summary\s*:\s*(.+?)\s*$")
 _DECISION_FIELD = re.compile(r"(?m)^\s*decision\s*:\s*(\S+)\s*$")
 _REASON_FIELD = re.compile(r"(?m)^\s*reason\s*:\s*(.+?)\s*$")
+# Scope accepts either an inline CSV form ('scope: a, b') or a block list
+# ('scope:' followed by '- item' lines); at least one entry is required.
+_SCOPE_LIST_FIELD = re.compile(r"(?ms)^\s*scope\s*:\s*$\n(?:\s+-\s+\S.*\n?)+")
+_SCOPE_INLINE_FIELD = re.compile(r"(?m)^\s*scope\s*:\s*(\S[^\n]*)$")
+_UPDATED_AT_FIELD = re.compile(r"(?m)^\s*updated_at\s*:\s*(\d{4}-\d{2}-\d{2})\s*$")
 _CANDIDATE_HEADING = re.compile(r"(?m)^###\s+\S")
 _NO_CANDIDATE_STATEMENT = re.compile(
     r"没有合适候选|无合适候选|no\s+suitable\s+candidate", re.IGNORECASE
@@ -527,6 +533,22 @@ def disposable_findings(git: GitRunner) -> list[GateFinding]:
     return findings
 
 
+def _scope_entries(requirement: str) -> list[str]:
+    """Extract scope entries from the inline CSV or block-list form."""
+
+    block = _SCOPE_LIST_FIELD.search(requirement)
+    if block is not None:
+        entries = [
+            line.strip().lstrip("-").strip()
+            for line in block.group(0).splitlines()[1:]
+        ]
+        return [entry for entry in entries if entry]
+    inline = _SCOPE_INLINE_FIELD.search(requirement)
+    if inline is None:
+        return []
+    return [item.strip() for item in inline.group(1).split(",") if item.strip()]
+
+
 def _research_findings(
     root: Path, change_class: str, requirement_id: str | None, research_path: str
 ) -> list[GateFinding]:
@@ -591,8 +613,8 @@ def _research_findings(
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_INCOMPLETE",
                 research_path
-                + " must contain a '## Requirement' section with requirement_id "
-                "and summary metadata",
+                + " must contain a '## Requirement' section with requirement_id, "
+                "summary, scope, and updated_at metadata",
                 path=research_path,
             )
         ]
@@ -615,6 +637,32 @@ def _research_findings(
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_INCOMPLETE",
                 "the '## Requirement' section needs a non-empty 'summary:' field",
+                path=research_path,
+            )
+        )
+    if not _scope_entries(requirement):
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Requirement' section needs a 'scope:' field with at "
+                "least one entry (inline 'scope: a, b' or a '- item' list)",
+                path=research_path,
+            )
+        )
+    updated_at = _UPDATED_AT_FIELD.search(requirement)
+    valid_date = False
+    if updated_at is not None:
+        try:
+            date.fromisoformat(updated_at.group(1))
+            valid_date = True
+        except ValueError:
+            valid_date = False
+    if not valid_date:
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Requirement' section needs 'updated_at:' as a valid "
+                "YYYY-MM-DD date",
                 path=research_path,
             )
         )

@@ -15,6 +15,8 @@ REQUIREMENT = "REQ-TEST"
 RESEARCH_COMPLETE = (
     "# Research\n\n## Requirement\n\nrequirement_id: REQ-TEST\n"
     "summary: Pick an orchestration layer for the sample integration.\n"
+    "scope:\n  - orchestration\n  - sample-integration\n"
+    "updated_at: 2026-09-11\n"
     "\n## Candidates\n\n### Project A\n\n- URL: https://github.com/org/a\n"
     "\n## Decision\n\ndecision: build\nreason: none of the candidates fit the boundary.\n"
 )
@@ -120,6 +122,39 @@ def test_decision_without_reason_does_not_pass(tmp_path: Path) -> None:
     decision = _start(tmp_path, "major_feature")
     assert decision.allowed is False
     assert any(f.code == "OPEN_SOURCE_RESEARCH_INCOMPLETE" for f in decision.findings)
+
+
+def test_research_requires_scope_and_valid_updated_at(tmp_path: Path) -> None:
+    missing_scope = RESEARCH_COMPLETE.replace(
+        "scope:\n  - orchestration\n  - sample-integration\n", ""
+    )
+    _research(tmp_path, missing_scope)
+    decision = _start(tmp_path, "major_feature")
+    assert decision.allowed is False
+    assert any(
+        f.code == "OPEN_SOURCE_RESEARCH_INCOMPLETE" and "scope:" in f.message
+        for f in decision.findings
+    )
+    bad_date = RESEARCH_COMPLETE.replace("updated_at: 2026-09-11", "updated_at: 2026-9-1")
+    _research(tmp_path, bad_date)
+    decision = _start(tmp_path, "major_feature")
+    assert decision.allowed is False
+    assert any(
+        f.code == "OPEN_SOURCE_RESEARCH_INCOMPLETE" and "updated_at:" in f.message
+        for f in decision.findings
+    )
+
+
+def test_research_accepts_inline_scope_form(tmp_path: Path) -> None:
+    _research(
+        tmp_path,
+        RESEARCH_COMPLETE.replace(
+            "scope:\n  - orchestration\n  - sample-integration\n",
+            "scope: orchestration, sample-integration\n",
+        ),
+    )
+    decision = _start(tmp_path, "major_feature")
+    assert decision.allowed is True
 
 
 def test_stale_requirement_does_not_unlock_new_work(tmp_path: Path) -> None:
