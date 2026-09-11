@@ -114,6 +114,19 @@ def test_finish_gate_blocks_then_passes(tmp_path: Path) -> None:
     )
     assert passing.exit_code == 0, passing.output
     assert _json_output(passing.output)["data"]["allowed"] is True
+    # Second layer: uncommitted formal code without a change class blocks.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "new.py").write_text("x = 1\n", encoding="utf-8")
+    unverified = runner.invoke(
+        app,
+        ["finish", str(tmp_path), "--memory-not-needed", "--json"],
+    )
+    assert unverified.exit_code == 40, unverified.output
+    unverified_codes = {
+        finding["code"]
+        for finding in _json_output(unverified.output)["error"]["details"]["findings"]
+    }
+    assert "CODE_START_UNVERIFIED" in unverified_codes
 
 
 def test_memory_candidate_loop_via_cli(tmp_path: Path) -> None:

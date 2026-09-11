@@ -115,6 +115,8 @@ def governance_check(
             decision = evaluate_finish(
                 root,
                 test_command=test_command,
+                change_class=change_class,
+                requirement_id=requirement_id,
                 memory_written=memory_written,
                 memory_not_needed=memory_not_needed,
             )

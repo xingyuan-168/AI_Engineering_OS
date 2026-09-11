@@ -380,6 +380,69 @@ def test_finish_without_test_command_still_checks_the_rest(tmp_path: Path) -> No
     assert allowed.allowed is True
 
 
+def _initialized_finish_project(tmp_path: Path) -> None:
+    from codex_ai_os.application.project import ProjectInitializer
+
+    ProjectInitializer().initialize(
+        tmp_path,
+        project_id="PROJECT-FIN2",
+        name="Fin",
+        project_type="generic",
+        include=frozenset(),
+    )
+
+
+def test_finish_unverified_formal_change_blocks(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
+    decision = evaluate_finish(
+        tmp_path,
+        test_command=None,
+        memory_not_needed=True,
+        runner=FakeGitRunner(status=" M src/app.py\n"),
+    )
+    assert decision.allowed is False
+    unverified = [f for f in decision.findings if f.code == "CODE_START_UNVERIFIED"]
+    assert unverified and unverified[0].blocking
+
+
+def test_finish_formal_change_with_exempt_class_passes(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
+    decision = evaluate_finish(
+        tmp_path,
+        test_command=None,
+        change_class="bugfix",
+        memory_not_needed=True,
+        runner=FakeGitRunner(status=" M src/app.py\n"),
+    )
+    assert decision.allowed is True
+
+
+def test_finish_formal_change_with_stale_research_blocks(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
+    _research(tmp_path, RESEARCH_COMPLETE.replace("REQ-TEST", "REQ-OLD"))
+    decision = evaluate_finish(
+        tmp_path,
+        test_command=None,
+        change_class="major_feature",
+        requirement_id="REQ-TEST",
+        memory_not_needed=True,
+        runner=FakeGitRunner(status=" M src/app.py\n"),
+    )
+    assert decision.allowed is False
+    assert any(f.code == "OPEN_SOURCE_RESEARCH_STALE" for f in decision.findings)
+
+
+def test_finish_docs_only_change_needs_no_code_start(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
+    decision = evaluate_finish(
+        tmp_path,
+        test_command=None,
+        memory_not_needed=True,
+        runner=FakeGitRunner(status=" M docs/notes.md\n"),
+    )
+    assert decision.allowed is True
+
+
 def test_finish_without_memory_fact_blocks(tmp_path: Path) -> None:
     decision = evaluate_finish(
         tmp_path,

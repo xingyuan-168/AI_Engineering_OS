@@ -329,19 +329,29 @@ def evaluate_finish(
     test_command: str | None,
     memory_written: bool = False,
     memory_not_needed: bool = False,
+    change_class: str | None = None,
+    requirement_id: str | None = None,
     runner: GitRunner | None = None,
 ) -> GateDecision:
     """Evaluate whether a task may finish.
 
     Only verifiable checks run here (declared test command, configured
-    linters, Git checks, hygiene, pending memory candidates); unverifiable
-    attestations were removed (ADR-0016). Memory remains a caller fact.
+    linters, Git checks, hygiene, pending memory candidates, and the
+    second-layer Code Start re-verification when formal code changed);
+    unverifiable attestations were removed (ADR-0016). Memory remains a
+    caller fact.
     """
 
     # Deferred import: core.checks reuses gate helpers defined in this module.
     from codex_ai_os.core.checks import run_thin_checks
 
-    findings = run_thin_checks(root, test_command=test_command, runner=runner)
+    findings = run_thin_checks(
+        root,
+        test_command=test_command,
+        change_class=change_class,
+        requirement_id=requirement_id,
+        runner=runner,
+    )
     if not (memory_written or memory_not_needed):
         findings.append(
             GateFinding(

@@ -201,6 +201,14 @@ def finish_command(
     test_command: Annotated[
         str | None, typer.Option("--test-command", help="Verifiable test command to run.")
     ] = None,
+    change_class: Annotated[
+        str | None,
+        typer.Option("--change-class", help="Re-verify Code Start when formal code changed."),
+    ] = None,
+    requirement_id: Annotated[
+        str | None,
+        typer.Option("--requirement-id", help="Current requirement for research re-check."),
+    ] = None,
     memory_written: Annotated[bool, typer.Option("--memory-written")] = False,
     memory_not_needed: Annotated[bool, typer.Option("--memory-not-needed")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -211,6 +219,8 @@ def finish_command(
         decision = evaluate_finish(
             project_root,
             test_command=test_command,
+            change_class=change_class,
+            requirement_id=requirement_id,
             memory_written=memory_written,
             memory_not_needed=memory_not_needed,
         )

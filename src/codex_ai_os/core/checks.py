@@ -3,9 +3,11 @@
 The finish gate used to trust caller-supplied attestations (--tests-passed,
 --docs-synced). It now runs only checks that can be verified in place: the
 declared test command (when given), ruff when the project configures it,
-"git diff --check", repository hygiene, and the pending memory-candidate
-count. Professional judgments such as "the docs are consistent with the
-change" remain Codex's duty and are deliberately not re-implemented here.
+"git diff --check", repository hygiene, the pending memory-candidate count,
+and a second-layer Code Start re-verification when uncommitted or staged
+changes touch the formal code paths (P0-001). Professional judgments such
+as "the docs are consistent with the change" remain Codex's duty and are
+deliberately not re-implemented here.
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ def run_thin_checks(
     root: Path,
     *,
     test_command: str | None,
+    change_class: str | None = None,
+    requirement_id: str | None = None,
     runner: GitRunner | None = None,
 ) -> list[GateFinding]:
     """Run only the finish checks that can be verified in place."""
@@ -40,7 +44,89 @@ def run_thin_checks(
     findings.extend(hygiene_findings(root, git))
     findings.extend(disposable_findings(git))
     findings.extend(_memory_candidate_findings(root))
+    findings.extend(
+        _code_start_recheck_findings(
+            root, git, change_class=change_class, requirement_id=requirement_id
+        )
+    )
     return findings
+
+
+def _formal_dirty_paths(root: Path, git: GitRunner) -> list[str]:
+    """Uncommitted or staged paths that fall under the formal code paths."""
+
+    status = git.run("status", "--porcelain", "--untracked-files=normal")
+    if status.returncode != 0:
+        return []
+    # Deferred import: infrastructure.config reads the project contract.
+    from codex_ai_os.infrastructure.config import load_project_config
+
+    try:
+        code_paths = load_project_config(root).code_paths
+    except Exception:  # pragma: no cover - config errors surface elsewhere
+        return []
+    dirty: list[str] = []
+    for line in status.stdout.splitlines():
+        entry = line[3:].strip().strip('"').replace("\\", "/")
+        if not entry:
+            continue
+        if " -> " in entry:
+            entry = entry.split(" -> ", 1)[1]
+        if any(
+            entry == prefix or entry.startswith(prefix + "/") for prefix in code_paths
+        ):
+            dirty.append(entry)
+    return dirty
+
+
+def _code_start_recheck_findings(
+    root: Path,
+    git: GitRunner,
+    *,
+    change_class: str | None,
+    requirement_id: str | None,
+) -> list[GateFinding]:
+    """Second Code Start layer: formal code changed, so prove the basis.
+
+    Covers the indirect-write hole (``python generate.py`` and friends): the
+    Hook screens the write attempt, this re-check screens the result. Already
+    merged parallel-task work is covered by the first layer at write time
+    plus the worktree cleanup merge proof; no extra state is kept.
+    """
+
+    formal = _formal_dirty_paths(root, git)
+    if not formal:
+        return []
+    if change_class is None or not change_class.strip():
+        return [
+            GateFinding(
+                "CODE_START_UNVERIFIED",
+                "formal code paths changed ("
+                + ", ".join(formal[:3])
+                + ") but no Code Start basis was verified; pass --change-class "
+                "(and --requirement-id when the class requires research)",
+                path=formal[0],
+            )
+        ]
+    # Deferred import: gates re-exports the evaluator defined in this package.
+    from codex_ai_os.core.gates import evaluate_code_start
+
+    try:
+        decision = evaluate_code_start(
+            root,
+            change_class=change_class,
+            requirement_id=requirement_id,
+            runner=git,
+        )
+    except Exception as exc:  # invalid change class: fail closed
+        return [
+            GateFinding(
+                "CODE_START_UNVERIFIED",
+                "Code Start re-verification failed: " + str(exc),
+                path=formal[0],
+            )
+        ]
+    return list(decision.findings)
 
 
 def _test_command_findings(
