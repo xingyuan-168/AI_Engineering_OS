@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -62,6 +63,11 @@ _REQUIREMENT_ID_FIELD = re.compile(r"(?m)^\s*requirement_id\s*:\s*(.+?)\s*$")
 _SUMMARY_FIELD = re.compile(r"(?m)^\s*summary\s*:\s*(.+?)\s*$")
 _DECISION_FIELD = re.compile(r"(?m)^\s*decision\s*:\s*(\S+)\s*$")
 _REASON_FIELD = re.compile(r"(?m)^\s*reason\s*:\s*(.+?)\s*$")
+# Scope accepts either an inline CSV form ('scope: a, b') or a block list
+# ('scope:' followed by '- item' lines); at least one entry is required.
+_SCOPE_LIST_FIELD = re.compile(r"(?ms)^\s*scope\s*:\s*$\n(?:\s+-\s+\S.*\n?)+")
+_SCOPE_INLINE_FIELD = re.compile(r"(?m)^\s*scope\s*:\s*(\S[^\n]*)$")
+_UPDATED_AT_FIELD = re.compile(r"(?m)^\s*updated_at\s*:\s*(\d{4}-\d{2}-\d{2})\s*$")
 _CANDIDATE_HEADING = re.compile(r"(?m)^###\s+\S")
 _NO_CANDIDATE_STATEMENT = re.compile(
     r"没有合适候选|无合适候选|no\s+suitable\s+candidate", re.IGNORECASE
@@ -259,7 +265,9 @@ def evaluate_frontend(
 
 
 _APPROVAL_BLOCK = re.compile(r"(?ms)^approval:\s*$\n((?:[ \t]+[^\n]*\n?)+)")
-_APPROVAL_FIELD = re.compile(r"(?m)^[ \t]+(type|scope|status):\s*(\S[^\n]*)$")
+_APPROVAL_FIELD = re.compile(
+    r"(?m)^[ \t]+(type|scope|status|approved_by):\s*(\S[^\n]*)$"
+)
 
 
 def _frontend_approval_fact(ui_spec_path: Path, scope: str) -> bool:
@@ -290,7 +298,13 @@ def _frontend_approval_fact(ui_spec_path: Path, scope: str) -> bool:
     )
 
 
-def write_frontend_approval(ui_spec_path: Path, *, scope: str, approved_on: str) -> None:
+def write_frontend_approval(
+    ui_spec_path: Path,
+    *,
+    scope: str,
+    approved_by: str,
+    approved_on: str,
+) -> None:
     """Record (or replace) the frontend approval fact in the UI spec.
 
     The minimal metadata block is the durable approval fact; the runtime
@@ -307,6 +321,7 @@ def write_frontend_approval(ui_spec_path: Path, *, scope: str, approved_on: str)
         "  type: frontend\n"
         "  scope: " + scope.strip() + "\n"
         "  status: approved\n"
+        "  approved_by: " + approved_by.strip() + "\n"
         "  approved_at: " + approved_on + "\n"
     )
     match = _APPROVAL_BLOCK.search(text)
@@ -323,19 +338,29 @@ def evaluate_finish(
     test_command: str | None,
     memory_written: bool = False,
     memory_not_needed: bool = False,
+    change_class: str | None = None,
+    requirement_id: str | None = None,
     runner: GitRunner | None = None,
 ) -> GateDecision:
     """Evaluate whether a task may finish.
 
     Only verifiable checks run here (declared test command, configured
-    linters, Git checks, hygiene, pending memory candidates); unverifiable
-    attestations were removed (ADR-0016). Memory remains a caller fact.
+    linters, Git checks, hygiene, pending memory candidates, and the
+    second-layer Code Start re-verification when formal code changed);
+    unverifiable attestations were removed (ADR-0016). Memory remains a
+    caller fact.
     """
 
     # Deferred import: core.checks reuses gate helpers defined in this module.
     from codex_ai_os.core.checks import run_thin_checks
 
-    findings = run_thin_checks(root, test_command=test_command, runner=runner)
+    findings = run_thin_checks(
+        root,
+        test_command=test_command,
+        change_class=change_class,
+        requirement_id=requirement_id,
+        runner=runner,
+    )
     if not (memory_written or memory_not_needed):
         findings.append(
             GateFinding(
@@ -527,6 +552,22 @@ def disposable_findings(git: GitRunner) -> list[GateFinding]:
     return findings
 
 
+def _scope_entries(requirement: str) -> list[str]:
+    """Extract scope entries from the inline CSV or block-list form."""
+
+    block = _SCOPE_LIST_FIELD.search(requirement)
+    if block is not None:
+        entries = [
+            line.strip().lstrip("-").strip()
+            for line in block.group(0).splitlines()[1:]
+        ]
+        return [entry for entry in entries if entry]
+    inline = _SCOPE_INLINE_FIELD.search(requirement)
+    if inline is None:
+        return []
+    return [item.strip() for item in inline.group(1).split(",") if item.strip()]
+
+
 def _research_findings(
     root: Path, change_class: str, requirement_id: str | None, research_path: str
 ) -> list[GateFinding]:
@@ -591,8 +632,8 @@ def _research_findings(
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_INCOMPLETE",
                 research_path
-                + " must contain a '## Requirement' section with requirement_id "
-                "and summary metadata",
+                + " must contain a '## Requirement' section with requirement_id, "
+                "summary, scope, and updated_at metadata",
                 path=research_path,
             )
         ]
@@ -615,6 +656,32 @@ def _research_findings(
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_INCOMPLETE",
                 "the '## Requirement' section needs a non-empty 'summary:' field",
+                path=research_path,
+            )
+        )
+    if not _scope_entries(requirement):
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Requirement' section needs a 'scope:' field with at "
+                "least one entry (inline 'scope: a, b' or a '- item' list)",
+                path=research_path,
+            )
+        )
+    updated_at = _UPDATED_AT_FIELD.search(requirement)
+    valid_date = False
+    if updated_at is not None:
+        try:
+            date.fromisoformat(updated_at.group(1))
+            valid_date = True
+        except ValueError:
+            valid_date = False
+    if not valid_date:
+        findings.append(
+            GateFinding(
+                "OPEN_SOURCE_RESEARCH_INCOMPLETE",
+                "the '## Requirement' section needs 'updated_at:' as a valid "
+                "YYYY-MM-DD date",
                 path=research_path,
             )
         )

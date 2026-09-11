@@ -90,6 +90,9 @@ BASE_DOCUMENTS: dict[str, str] = {
 
 requirement_id: REQ-xxx
 summary: 本次需求是什么。
+scope:
+  - 受影响模块或范围，例如 memory
+updated_at: 1970-01-01
 
 ## Candidates
 

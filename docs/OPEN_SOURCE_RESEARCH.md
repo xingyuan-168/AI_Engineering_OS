@@ -4,6 +4,11 @@
 
 requirement_id: REQ-GC-1.0
 summary: governance-core 轻量化重构（ADR-0016）：把过度工程化的治理运行时收敛为无状态三 Gate + 轻量 Memory/Worktree，删除自有执行平台。
+scope:
+  - gates
+  - memory
+  - worktree
+updated_at: 2026-09-11
 
 ## Candidates
 

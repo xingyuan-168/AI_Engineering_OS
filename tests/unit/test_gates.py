@@ -15,6 +15,8 @@ REQUIREMENT = "REQ-TEST"
 RESEARCH_COMPLETE = (
     "# Research\n\n## Requirement\n\nrequirement_id: REQ-TEST\n"
     "summary: Pick an orchestration layer for the sample integration.\n"
+    "scope:\n  - orchestration\n  - sample-integration\n"
+    "updated_at: 2026-09-11\n"
     "\n## Candidates\n\n### Project A\n\n- URL: https://github.com/org/a\n"
     "\n## Decision\n\ndecision: build\nreason: none of the candidates fit the boundary.\n"
 )
@@ -120,6 +122,39 @@ def test_decision_without_reason_does_not_pass(tmp_path: Path) -> None:
     decision = _start(tmp_path, "major_feature")
     assert decision.allowed is False
     assert any(f.code == "OPEN_SOURCE_RESEARCH_INCOMPLETE" for f in decision.findings)
+
+
+def test_research_requires_scope_and_valid_updated_at(tmp_path: Path) -> None:
+    missing_scope = RESEARCH_COMPLETE.replace(
+        "scope:\n  - orchestration\n  - sample-integration\n", ""
+    )
+    _research(tmp_path, missing_scope)
+    decision = _start(tmp_path, "major_feature")
+    assert decision.allowed is False
+    assert any(
+        f.code == "OPEN_SOURCE_RESEARCH_INCOMPLETE" and "scope:" in f.message
+        for f in decision.findings
+    )
+    bad_date = RESEARCH_COMPLETE.replace("updated_at: 2026-09-11", "updated_at: 2026-9-1")
+    _research(tmp_path, bad_date)
+    decision = _start(tmp_path, "major_feature")
+    assert decision.allowed is False
+    assert any(
+        f.code == "OPEN_SOURCE_RESEARCH_INCOMPLETE" and "updated_at:" in f.message
+        for f in decision.findings
+    )
+
+
+def test_research_accepts_inline_scope_form(tmp_path: Path) -> None:
+    _research(
+        tmp_path,
+        RESEARCH_COMPLETE.replace(
+            "scope:\n  - orchestration\n  - sample-integration\n",
+            "scope: orchestration, sample-integration\n",
+        ),
+    )
+    decision = _start(tmp_path, "major_feature")
+    assert decision.allowed is True
 
 
 def test_stale_requirement_does_not_unlock_new_work(tmp_path: Path) -> None:
@@ -274,19 +309,27 @@ def test_frontend_approval_comes_from_ui_spec_fact_not_arguments(tmp_path: Path)
     ui_spec.parent.mkdir(parents=True, exist_ok=True)
     ui_spec.write_text("# UI\n", encoding="utf-8")
     _prototype(tmp_path)
-    write_frontend_approval(ui_spec, scope="admin-dashboard", approved_on="2026-09-10")
+    write_frontend_approval(
+        ui_spec,
+        scope="admin-dashboard",
+        approved_by="user",
+        approved_on="2026-09-10",
+    )
     approved = evaluate_frontend(tmp_path, impact="new_page", scope="admin-dashboard")
     assert approved.allowed is True
     text = ui_spec.read_text(encoding="utf-8")
     assert "scope: admin-dashboard" in text
     assert "status: approved" in text
+    assert "approved_by: user" in text
 
 
 def test_frontend_approval_does_not_inherit_across_scopes(tmp_path: Path) -> None:
     ui_spec = tmp_path / "docs" / "design" / "UI_SPEC.md"
     ui_spec.parent.mkdir(parents=True, exist_ok=True)
     _prototype(tmp_path)
-    write_frontend_approval(ui_spec, scope="dashboard-v1", approved_on="2026-09-10")
+    write_frontend_approval(
+        ui_spec, scope="dashboard-v1", approved_by="user", approved_on="2026-09-10"
+    )
     other_scope = evaluate_frontend(tmp_path, impact="new_page", scope="settings-page")
     assert other_scope.allowed is False
     assert any(
@@ -298,10 +341,16 @@ def test_frontend_approval_replacement_rewrites_block(tmp_path: Path) -> None:
     ui_spec = tmp_path / "docs" / "design" / "UI_SPEC.md"
     ui_spec.parent.mkdir(parents=True, exist_ok=True)
     _prototype(tmp_path)
-    write_frontend_approval(ui_spec, scope="v1", approved_on="2026-09-01")
-    write_frontend_approval(ui_spec, scope="v1", approved_on="2026-09-10")
+    write_frontend_approval(
+        ui_spec, scope="v1", approved_by="user-a", approved_on="2026-09-01"
+    )
+    write_frontend_approval(
+        ui_spec, scope="v1", approved_by="user-b", approved_on="2026-09-10"
+    )
     text = ui_spec.read_text(encoding="utf-8")
     assert text.count("status: approved") == 1
+    assert text.count("approved_by: ") == 1
+    assert "approved_by: user-b" in text
     assert "approved_at: 2026-09-10" in text
     assert evaluate_frontend(tmp_path, impact="new_page", scope="v1").allowed is True
 
@@ -343,6 +392,69 @@ def test_finish_without_test_command_still_checks_the_rest(tmp_path: Path) -> No
         runner=FakeGitRunner(),
     )
     assert allowed.allowed is True
+
+
+def _initialized_finish_project(tmp_path: Path) -> None:
+    from codex_ai_os.application.project import ProjectInitializer
+
+    ProjectInitializer().initialize(
+        tmp_path,
+        project_id="PROJECT-FIN2",
+        name="Fin",
+        project_type="generic",
+        include=frozenset(),
+    )
+
+
+def test_finish_unverified_formal_change_blocks(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
+    decision = evaluate_finish(
+        tmp_path,
+        test_command=None,
+        memory_not_needed=True,
+        runner=FakeGitRunner(status=" M src/app.py\n"),
+    )
+    assert decision.allowed is False
+    unverified = [f for f in decision.findings if f.code == "CODE_START_UNVERIFIED"]
+    assert unverified and unverified[0].blocking
+
+
+def test_finish_formal_change_with_exempt_class_passes(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
+    decision = evaluate_finish(
+        tmp_path,
+        test_command=None,
+        change_class="bugfix",
+        memory_not_needed=True,
+        runner=FakeGitRunner(status=" M src/app.py\n"),
+    )
+    assert decision.allowed is True
+
+
+def test_finish_formal_change_with_stale_research_blocks(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
+    _research(tmp_path, RESEARCH_COMPLETE.replace("REQ-TEST", "REQ-OLD"))
+    decision = evaluate_finish(
+        tmp_path,
+        test_command=None,
+        change_class="major_feature",
+        requirement_id="REQ-TEST",
+        memory_not_needed=True,
+        runner=FakeGitRunner(status=" M src/app.py\n"),
+    )
+    assert decision.allowed is False
+    assert any(f.code == "OPEN_SOURCE_RESEARCH_STALE" for f in decision.findings)
+
+
+def test_finish_docs_only_change_needs_no_code_start(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
+    decision = evaluate_finish(
+        tmp_path,
+        test_command=None,
+        memory_not_needed=True,
+        runner=FakeGitRunner(status=" M docs/notes.md\n"),
+    )
+    assert decision.allowed is True
 
 
 def test_finish_without_memory_fact_blocks(tmp_path: Path) -> None:
