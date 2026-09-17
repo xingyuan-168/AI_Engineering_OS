@@ -14,10 +14,10 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from codex_ai_os.adapters.git import GitRunner
 from codex_ai_os.core.gates import GateFinding, hygiene_findings
+from codex_ai_os.core.github_remote import remote_host as _remote_host
 from codex_ai_os.domain.config import GitPushPolicy, ProjectConfig
 from codex_ai_os.domain.governance import RepositoryCheckReport, RepositoryFinding
 from codex_ai_os.infrastructure.config import load_project_config
@@ -327,16 +327,6 @@ def _convert(findings: list[GateFinding]) -> tuple[RepositoryFinding, ...]:
     )
 
 
-def _remote_host(remote_url: str) -> str | None:
-    value = remote_url.strip()
-    if re.fullmatch(r"git@[^:]+:[^/]+/[^/]+(?:\.git)?", value):
-        return value.split("@", 1)[1].split(":", 1)[0].casefold()
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"https", "ssh"} or parsed.username not in {None, "git"}:
-        return None
-    if parsed.password is not None or not parsed.hostname:
-        return None
-    return parsed.hostname.casefold()
 
 
 __all__ = [

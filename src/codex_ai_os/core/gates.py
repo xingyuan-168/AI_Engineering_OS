@@ -31,9 +31,9 @@ from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from codex_ai_os.adapters.git import GitRunner
+from codex_ai_os.core.github_remote import remote_host as _remote_host
 
 RESEARCH_DOCUMENT = "docs/OPEN_SOURCE_RESEARCH.md"
 PROTOTYPE_PATH = "docs/design/PROTOTYPE.html"
@@ -737,16 +737,6 @@ def _markdown_section(text: str, heading: str) -> str | None:
     return match.group(1) if match is not None else None
 
 
-def _remote_host(remote_url: str) -> str | None:
-    value = remote_url.strip()
-    if re.fullmatch(r"git@[^:]+:[^/]+/[^/]+(?:\.git)?", value):
-        return value.split("@", 1)[1].split(":", 1)[0].casefold()
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"https", "ssh"} or parsed.username not in {None, "git"}:
-        return None
-    if parsed.password is not None or not parsed.hostname:
-        return None
-    return parsed.hostname.casefold()
 
 
 __all__ = [

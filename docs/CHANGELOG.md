@@ -8,6 +8,12 @@
 
 ## Unreleased
 
+### GitHub 官方 SSH endpoint 兼容（2026-09-17）
+
+- 门禁与仓库检查共用精确主机解析；将 `ssh.github.com`（SSH URL 可指定 443）规范化为 `github.com`，不接受通配符、相似域名、任意 SSH 主机或非官方端口。
+- 保留原始 `origin` 的 `git ls-remote` 可达性检查；补充官方端点、伪装域名、非法端口及不可达回归测试。
+
+
 ### governance-core 审计修复（fix/governance-hardening）
 
 - fix(gates): Code Start 强制 GitHub remote + 复制式脏乱判定；开源调研文档要求 requirement_id 开头并给出 summary 与 Decision/reason，空模板/stale id/缺 reason 均阻塞，无布尔绕过。
