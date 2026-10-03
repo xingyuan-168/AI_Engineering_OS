@@ -15,3 +15,5 @@
 部分 Superseded 标注（0010/0011/0015）只改状态行，不改历史正文：保留仍有效的结论，失效小节在状态行内说明并被 ADR-0016 取代；Codex 以状态行为准，不按失效小节执行。
 
 新增 ADR 必须使用唯一编号，记录状态、上下文、选项、决定和后果；不得覆盖既有历史。
+
+- [ADR-0017 — Existing native repositories](ADR-0017-existing-native-repositories.md)

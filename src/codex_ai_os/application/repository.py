@@ -37,6 +37,7 @@ _HYGIENE_CODES = frozenset(
     {
         "COPY_STYLE_DIRECTORY",
         "COPY_STYLE_FILE",
+        "FIRST_PARTY_SOURCE_COPY",
         "TRACKED_POLLUTION",
         "GITIGNORE_INCOMPLETE",
         "OUTPUT_IMPURE",
@@ -99,9 +100,7 @@ class RepositoryGovernanceService:
 
         top = git.run("rev-parse", "--show-toplevel")
         if top.returncode != 0:
-            findings.append(
-                GateFinding("NOT_GIT_REPOSITORY", "project is not a Git repository")
-            )
+            findings.append(GateFinding("NOT_GIT_REPOSITORY", "project is not a Git repository"))
         else:
             reported = Path(top.stdout.strip()).resolve()
             if reported != self.root:
@@ -336,6 +335,12 @@ def _remote_host(remote_url: str) -> str | None:
         return None
     if parsed.password is not None or not parsed.hostname:
         return None
+    if (
+        parsed.scheme == "ssh"
+        and parsed.hostname.casefold() == "ssh.github.com"
+        and parsed.port == 443
+    ):
+        return "github.com"
     return parsed.hostname.casefold()
 
 

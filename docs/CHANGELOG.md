@@ -27,3 +27,7 @@
 - fix(frontend): approval 块持久化 approved_by（decided_by 传递），SQLite 仍只是索引。
 - docs(governance): AGENTS.md 收敛为十条宪法 + Git 节奏 + 原则化护栏，验证与实现边界细节下沉 GOVERNANCE_RULES；ADR-0010/0011/0015 标注部分 Superseded（只改状态行，不改历史正文）。
 - chore(repo): 删除 .codex-os/tmp 一次性编辑脚本与本地缓存残留。
+
+## Existing native repository compatibility — 2026-10-03
+
+Preserve existing input/output contents, prove generated CMake/vendor trees, and retain blocking detection of first-party source copies. See ADR-0017.

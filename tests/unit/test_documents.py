@@ -21,9 +21,7 @@ def test_check_reports_missing_and_broken_links(tmp_path: Path) -> None:
     manager = DocumentManager(tmp_path)
     manager.initialize_documents("Demo", "generic", include=frozenset())
     (tmp_path / "docs" / "SCOPE.md").unlink()
-    (tmp_path / "docs" / "REQUIREMENTS.md").write_text(
-        "[ghost](./GHOST.md)\n", encoding="utf-8"
-    )
+    (tmp_path / "docs" / "REQUIREMENTS.md").write_text("[ghost](./GHOST.md)\n", encoding="utf-8")
     report = manager.check()
     assert report.ok is False
     assert "docs/SCOPE.md" in report.missing
@@ -63,3 +61,31 @@ def test_write_atomic_refuses_escapes(tmp_path: Path) -> None:
     manager = DocumentManager(tmp_path)
     with pytest.raises(PathDeniedError):
         manager.write_atomic("../outside.md", "no", overwrite=True)
+
+
+@pytest.mark.parametrize("populated", [False, True])
+def test_existing_data_directories_keep_their_contents(tmp_path: Path, populated: bool) -> None:
+    before = {}
+    for name in ("input", "output"):
+        directory = tmp_path / name
+        directory.mkdir()
+        if populated:
+            (directory / "user.dat").write_bytes(b"protected\x00data")
+        before[name] = {p.name: p.read_bytes() for p in directory.iterdir()}
+    manager = DocumentManager(tmp_path)
+    created = manager.initialize_documents("Existing", "generic")
+    assert "input/.gitkeep" not in created
+    assert "output/.gitkeep" not in created
+    for name in before:
+        assert {p.name: p.read_bytes() for p in (tmp_path / name).iterdir()} == before[name]
+    assert manager.check().ok
+
+
+def test_data_directory_presence_does_not_require_markers(tmp_path: Path) -> None:
+    manager = DocumentManager(tmp_path)
+    manager.initialize_documents("Existing", "generic")
+    for name in ("input", "output"):
+        (tmp_path / name / ".gitkeep").unlink()
+    assert manager.check().ok
+    (tmp_path / "output").rmdir()
+    assert "output/.gitkeep" in manager.check().missing

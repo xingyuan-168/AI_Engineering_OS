@@ -25,6 +25,8 @@ gates only judge observable facts.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -49,13 +51,9 @@ RESEARCH_REQUIRED_CHANGE_CLASSES = frozenset(
         "mature_wheel_candidate",
     }
 )
-RESEARCH_EXEMPT_CHANGE_CLASSES = frozenset(
-    {"bugfix", "typo", "tests_only", "small_change"}
-)
+RESEARCH_EXEMPT_CHANGE_CLASSES = frozenset({"bugfix", "typo", "tests_only", "small_change"})
 
-FRONTEND_GATED_IMPACTS = frozenset(
-    {"new_page", "new_interaction_flow", "major_ui_refactor"}
-)
+FRONTEND_GATED_IMPACTS = frozenset({"new_page", "new_interaction_flow", "major_ui_refactor"})
 FRONTEND_EXEMPT_IMPACTS = frozenset({"none", "copy_change", "component_bugfix"})
 
 VALID_DECISIONS = frozenset({"use", "fork", "extract", "build"})
@@ -182,9 +180,7 @@ def evaluate_code_start(
 
     findings.extend(_github_findings(git, github_hosts))
     findings.extend(hygiene_findings(root, git))
-    findings.extend(
-        _research_findings(root, normalized_class, requirement_id, research_path)
-    )
+    findings.extend(_research_findings(root, normalized_class, requirement_id, research_path))
     return _decide(GateName.CODE_START, findings)
 
 
@@ -254,8 +250,10 @@ def evaluate_frontend(
             findings.append(
                 GateFinding(
                     "FRONTEND_APPROVAL_MISSING",
-                    "no approved frontend approval for scope '" + scope.strip()
-                    + "' in " + ui_spec_path
+                    "no approved frontend approval for scope '"
+                    + scope.strip()
+                    + "' in "
+                    + ui_spec_path
                     + " (record it with approval_record); approvals are read from "
                     "the Git-tracked UI spec, never from call arguments",
                     path=ui_spec_path,
@@ -265,9 +263,7 @@ def evaluate_frontend(
 
 
 _APPROVAL_BLOCK = re.compile(r"(?ms)^approval:\s*$\n((?:[ \t]+[^\n]*\n?)+)")
-_APPROVAL_FIELD = re.compile(
-    r"(?m)^[ \t]+(type|scope|status|approved_by):\s*(\S[^\n]*)$"
-)
+_APPROVAL_FIELD = re.compile(r"(?m)^[ \t]+(type|scope|status|approved_by):\s*(\S[^\n]*)$")
 
 
 def _frontend_approval_fact(ui_spec_path: Path, scope: str) -> bool:
@@ -395,9 +391,7 @@ def _github_findings(
     findings: list[GateFinding] = []
     top = git.run("rev-parse", "--show-toplevel")
     if top.returncode != 0:
-        findings.append(
-            GateFinding("NOT_GIT_REPOSITORY", "project is not a Git repository")
-        )
+        findings.append(GateFinding("NOT_GIT_REPOSITORY", "project is not a Git repository"))
         return findings
     remote = git.run("remote", "get-url", "origin")
     if remote.returncode != 0:
@@ -477,6 +471,7 @@ def _copy_style_findings(root: Path) -> list[GateFinding]:
     findings: list[GateFinding] = []
     if not root.is_dir():
         return findings
+    generated, vendors, source_hashes = _proven_source_trees(root)
     for current, directories, files in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current)
         relative = current_path.relative_to(root)
@@ -484,6 +479,11 @@ def _copy_style_findings(root: Path) -> list[GateFinding]:
         kept: list[str] = []
         for name in directories:
             if name.casefold() in _EXCLUDED_TREE_NAMES:
+                continue
+            candidate = current_path / name
+            if candidate in generated or candidate in vendors:
+                duplicates = _first_party_duplicates(root, candidate, source_hashes)
+                findings.extend(duplicates)
                 continue
             kept.append(name)
             copy_path = (relative / name).as_posix()
@@ -518,6 +518,101 @@ def _copy_style_findings(root: Path) -> list[GateFinding]:
                     )
                 )
     return findings
+
+
+def _first_party_duplicates(root: Path, tree: Path, hashes: set[str]) -> list[GateFinding]:
+    findings = []
+    for path in tree.rglob("*"):
+        if path.is_file() and path.suffix in {".cpp", ".c", ".h", ".hpp", ".cu", ".py"}:
+            data = path.read_bytes().replace(b"\r\n", b"\n")
+            if len(data) >= 64 and hashlib.sha256(data).hexdigest() in hashes:
+                findings.append(
+                    GateFinding(
+                        "FIRST_PARTY_SOURCE_COPY",
+                        "first-party source copied into generated/vendor tree",
+                        path=path.relative_to(root).as_posix(),
+                    )
+                )
+    return findings
+
+
+def _proven_source_trees(root: Path) -> tuple[set[Path], set[Path], set[str]]:
+    """Prove generated CMake subtrees and explicitly pinned vendor checkouts.
+
+    Ignore patterns alone never establish provenance. Only CMakeFiles is excluded,
+    not an entire build directory; vendor origin, commit and declared patch bytes
+    must all match. Copies of configured first-party source remain blocking.
+    """
+    from codex_ai_os.infrastructure.config import ConfigError, load_project_config
+
+    try:
+        prefixes = load_project_config(root).code_paths
+    except ConfigError:
+        prefixes = ("src",)
+    hashes = set()
+    for prefix in prefixes:
+        for path in (root / prefix).rglob("*"):
+            if path.is_file() and path.suffix in {".cpp", ".c", ".h", ".hpp", ".cu", ".py"}:
+                data = path.read_bytes().replace(b"\r\n", b"\n")
+                if len(data) >= 64:
+                    hashes.add(hashlib.sha256(data).hexdigest())
+    generated = set()
+    for directory in root.iterdir():
+        cache = directory / "CMakeCache.txt"
+        if directory.is_dir() and not directory.is_symlink() and cache.is_file():
+            values = {}
+            for line in cache.read_text(encoding="utf-8").splitlines():
+                if line.startswith(("CMAKE_HOME_DIRECTORY:", "CMAKE_CACHEFILE_DIR:")):
+                    key, value = line.split("=", 1)
+                    values[key.split(":", 1)[0]] = Path(value).resolve()
+            if (
+                values.get("CMAKE_HOME_DIRECTORY") == root.resolve()
+                and values.get("CMAKE_CACHEFILE_DIR") == directory.resolve()
+            ):
+                generated.add(directory / "CMakeFiles")
+    vendors = set()
+    record = root / ".codex-os/source-provenance.json"
+    if record.is_file():
+        specification = json.loads(record.read_text(encoding="utf-8"))
+        for item in specification.get("vendors", []):
+            directory = (root / item["path"]).resolve()
+            if not directory.is_relative_to(root.resolve()) or directory == root.resolve():
+                continue
+            git = GitRunner(directory)
+            checks = (
+                ("rev-parse", "--show-toplevel"),
+                ("rev-parse", "HEAD"),
+                ("remote", "get-url", "origin"),
+            )
+            results = [git.run(*arguments) for arguments in checks]
+            if any(result.returncode for result in results):
+                continue
+            if (
+                Path(results[0].stdout.strip()).resolve() != directory
+                or results[1].stdout.strip() != item["commit"]
+                or results[2].stdout.strip() != item["origin"]
+            ):
+                continue
+            status = git.run("status", "--porcelain", "--untracked-files=all")
+            allowed = item.get("patched_files", {})
+            if status.returncode:
+                continue
+            valid = True
+            for line in status.stdout.splitlines():
+                name = line[3:].strip().strip('"')
+                path = (directory / name).resolve()
+                if (
+                    name not in allowed
+                    or not path.is_relative_to(directory)
+                    or not path.is_file()
+                    or hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+                    != allowed[name]
+                ):
+                    valid = False
+                    break
+            if valid:
+                vendors.add(directory)
+    return generated, vendors, hashes
 
 
 def disposable_findings(git: GitRunner) -> list[GateFinding]:
@@ -557,10 +652,7 @@ def _scope_entries(requirement: str) -> list[str]:
 
     block = _SCOPE_LIST_FIELD.search(requirement)
     if block is not None:
-        entries = [
-            line.strip().lstrip("-").strip()
-            for line in block.group(0).splitlines()[1:]
-        ]
+        entries = [line.strip().lstrip("-").strip() for line in block.group(0).splitlines()[1:]]
         return [entry for entry in entries if entry]
     inline = _SCOPE_INLINE_FIELD.search(requirement)
     if inline is None:
@@ -631,8 +723,7 @@ def _research_findings(
         return [
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_INCOMPLETE",
-                research_path
-                + " must contain a '## Requirement' section with requirement_id, "
+                research_path + " must contain a '## Requirement' section with requirement_id, "
                 "summary, scope, and updated_at metadata",
                 path=research_path,
             )
@@ -680,8 +771,7 @@ def _research_findings(
         findings.append(
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_INCOMPLETE",
-                "the '## Requirement' section needs 'updated_at:' as a valid "
-                "YYYY-MM-DD date",
+                "the '## Requirement' section needs 'updated_at:' as a valid YYYY-MM-DD date",
                 path=research_path,
             )
         )
@@ -699,16 +789,8 @@ def _research_findings(
             )
         )
     decision_section = _markdown_section(text, "Decision")
-    decision = (
-        _DECISION_FIELD.search(decision_section)
-        if decision_section is not None
-        else None
-    )
-    reason = (
-        _REASON_FIELD.search(decision_section)
-        if decision_section is not None
-        else None
-    )
+    decision = _DECISION_FIELD.search(decision_section) if decision_section is not None else None
+    reason = _REASON_FIELD.search(decision_section) if decision_section is not None else None
     if decision is None or decision.group(1).casefold() not in VALID_DECISIONS:
         findings.append(
             GateFinding(
@@ -746,6 +828,12 @@ def _remote_host(remote_url: str) -> str | None:
         return None
     if parsed.password is not None or not parsed.hostname:
         return None
+    if (
+        parsed.scheme == "ssh"
+        and parsed.hostname.casefold() == "ssh.github.com"
+        and parsed.port == 443
+    ):
+        return "github.com"
     return parsed.hostname.casefold()
 
 
