@@ -1,4 +1,9 @@
+import hashlib
+import json
+import re
 import runpy
+import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -34,3 +39,51 @@ def test_package_module_entrypoint_dispatches_cli(
     runpy.run_path(str(entrypoint), run_name="__main__")
 
     assert called == [True]
+
+
+def test_sdist_keeps_script_contracts_and_windows_launcher_exit_status() -> None:
+    root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "scripts" in metadata["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+    launcher = (root / "plugins/ai-engineering-os/scripts/launch_mcp.cmd").read_text()
+    assert "if %ERRORLEVEL% EQU 0 (" not in launcher
+    assert len(re.findall(r"mcp\nexit /b %ERRORLEVEL%", launcher)) == 1
+    assert "runtime_entry.py" in launcher
+    assert (root / "plugins/ai-engineering-os/scripts/runtime_entry.py").read_bytes() == (
+        root / "src/codex_ai_os/runtime_entry.py"
+    ).read_bytes()
+
+
+def test_wheel_plugin_delivery_share_exact_runtime_and_skill_contracts(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    build = runpy.run_path(str(root / "scripts/build_delivery.py"))["build"]
+    output = build(root, tmp_path)
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["installation"] == "not_performed"
+    wheel = next(output.glob("*.whl"))
+    with (
+        zipfile.ZipFile(wheel) as runtime,
+        zipfile.ZipFile(output / "ai-engineering-os.zip") as plugin,
+    ):
+        assert runtime.read("codex_ai_os/runtime_entry.py") == plugin.read(
+            "scripts/runtime_entry.py"
+        )
+        assert runtime.read("codex_ai_os/process_control.py") == plugin.read(
+            "scripts/process_control.py"
+        )
+        assert json.loads(plugin.read("runtime-build.json")) == manifest["runtime"]
+        assert json.loads(plugin.read(".codex-plugin/plugin.json"))["version"] == (
+            manifest["plugin_version"]
+        )
+        assert manifest["plugin_version"].endswith(manifest["delivery_fingerprint"][:12])
+        assert all(
+            hashlib.sha256(plugin.read(name)).hexdigest() == digest
+            for name, digest in manifest["plugin_files"].items()
+        )
+        skills = [name for name in plugin.namelist() if name.endswith("/SKILL.md")]
+        assert len(skills) == 8
+        for name in skills:
+            assert plugin.read(name) == (root / "plugins/ai-engineering-os" / name).read_bytes()
+        assert b"CODEX_OS_RUNTIME" in plugin.read(".mcp.json")
+    with pytest.raises(FileExistsError):
+        build(root, tmp_path)

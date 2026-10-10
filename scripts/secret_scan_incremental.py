@@ -14,20 +14,39 @@ with detect-secrets and prints one JSON line:
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 
-def _findings(files: list[str]) -> list[dict[str, object]]:
+def _findings(files: list[str], *, staged: bool = False) -> list[dict[str, object]]:
     from detect_secrets.core.scan import scan_file
     from detect_secrets.settings import default_settings
 
     results: list[dict[str, object]] = []
-    with default_settings():
+    with tempfile.TemporaryDirectory(prefix="aios-secret-scan-") as snapshot, default_settings():
         for filename in files:
-            for secret in scan_file(filename):
+            if staged:
+                result = subprocess.run(
+                    ["git", "show", ":" + filename], capture_output=True, check=True
+                )
+                # scan_line is an eager, ad-hoc API, not file scanning: it bypasses
+                # entropy thresholds. Use scan_file on an exact isolated index snapshot.
+                target = (Path(snapshot) / filename).resolve()
+                if not target.is_relative_to(Path(snapshot).resolve()):
+                    raise ValueError("staged paths must be repository relative")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(result.stdout.decode("utf-8"), encoding="utf-8")
+                scan_path = str(target)
+            else:
+                # scan_file intentionally skips unreadable/missing files; preflight is mandatory.
+                Path(filename).read_text(encoding="utf-8")
+                scan_path = filename
+            for secret in scan_file(scan_path):
                 results.append(
                     {
-                        "file": getattr(secret, "filename", filename),
+                        "file": filename,
                         "type": getattr(secret, "type", "unknown"),
                         "line_number": getattr(secret, "line_number", 0),
                     }
@@ -36,12 +55,17 @@ def _findings(files: list[str]) -> list[dict[str, object]]:
 
 
 def main(argv: list[str]) -> int:
-    files = [name for name in argv if name.strip()]
-    if not files:
-        print(json.dumps({"valid": True, "findings": []}))
-        return 0
+    staged = "--staged" in argv
+    files = [name for name in argv if name.strip() and name != "--staged"]
     try:
-        findings = _findings(files)
+        if staged and not files:
+            changed = subprocess.run(
+                ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"],
+                capture_output=True,
+                check=True,
+            )
+            files = [name for name in changed.stdout.decode("utf-8").split("\0") if name]
+        findings = _findings(files, staged=staged)
     except Exception as exc:  # fail closed: an unusable scan is not a pass
         print(json.dumps({"valid": False, "error": f"secret scan failed: {exc}"}))
         return 2

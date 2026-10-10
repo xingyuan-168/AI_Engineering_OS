@@ -236,11 +236,14 @@ CONDITIONAL_DOCUMENTS: dict[str, dict[str, str]] = {
 
 WORKDIR /app
 COPY . .
-CMD ["python", "main.py"]
+# Replace the smoke command with the project's actual development entry point.
+CMD ["python", "--version"]
 """,
         "compose.yaml": """services:
   app:
-    build: ./docker
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
     volumes:
       - .:/app
 """,

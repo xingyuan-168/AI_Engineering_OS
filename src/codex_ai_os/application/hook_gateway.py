@@ -1,265 +1,268 @@
-"""Bridge between the Codex PreToolUse hook and the authorization kernel.
-
-The hook payload is translated into kernel operations (ADR-0011) plus the
-enforced Code Start write boundary (ADR-0016):
-
-- "Bash" commands become an execute request (host command screening) plus a
-  write request for any redirect targets the command appears to produce.
-- "apply_patch" payloads become a write request over every path the patch
-  adds, updates, deletes or renames.
-- "Write"/"Edit" payloads become a write request over their target path.
-
-When a write targets the formal source tree (the project "code_paths"), the
-stateless Code Start boundary check runs first: a blocking finding becomes
-a real deny, not a reminder. Declared write targets that collide with the
-user's own uncommitted changes ask for confirmation instead of silently
-overwriting them.
-
-The gateway only enforces inside initialized projects (".codex-os/
-project.yaml" present; registered disposable worktrees map to their
-coordinator project through the shared root resolution); everywhere else it
-stays silent so the host keeps its default behaviour. All failures are
-fail-closed on the runtime side and the hook script keeps an explicit
-degraded fallback for when this CLI cannot be reached at all.
-"""
+"""Read-only Codex hook adapter; AIOS decisions never grant host execution authority."""
 
 from __future__ import annotations
 
 import re
+import shlex
+import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from codex_ai_os.adapters.git import GitRunner
 from codex_ai_os.application.authorization import (
-    AuthorizationDecision,
-    AuthorizationOutcome,
     AuthorizationRequest,
     GovernanceAuthorizationKernel,
 )
+from codex_ai_os.application.cleanup_policy import (
+    is_reparse,
+    literal_cleanup_target,
+    literal_tokens,
+)
+from codex_ai_os.application.command_syntax import executable_name, shell_commands
 from codex_ai_os.application.governance_policy import GovernancePolicyCompiler
 from codex_ai_os.core.gates import GateDecision, formal_write_blockers
-from codex_ai_os.infrastructure.config import (
-    ProjectRootError,
-    load_project_config,
-    resolve_runtime_root,
+from codex_ai_os.infrastructure.config import load_project_config, resolve_runtime_root
+
+_PATH_HEADER = re.compile(
+    r"^\*\*\*\s+(?:Add File|Update File|Delete File|Move to):\s*(.+?)\s*$", re.MULTILINE
 )
-
-_HOOK_TOOL_OPERATIONS = {"Bash", "apply_patch", "Write", "Edit"}
-
-_ADD_FILE = re.compile(r"^\*\*\*\s+Add File:\s*(.+?)\s*$", re.MULTILINE)
-_UPDATE_FILE = re.compile(r"^\*\*\*\s+Update File:\s*(.+?)\s*$", re.MULTILINE)
-_DELETE_FILE = re.compile(r"^\*\*\*\s+Delete File:\s*(.+?)\s*$", re.MULTILINE)
-_RENAME_FILE = re.compile(r"^\*\*\*\s+Rename File:\s*(.+?)\s*$", re.MULTILINE)
-_MOVE_TO = re.compile(r"^\*\*\*\s+Move to:\s*(.+?)\s*$", re.MULTILINE)
-_REDIRECT_TARGETS = re.compile(r"(?<![-<>])>{1,2}\s*([^\s|;&<>]+)", re.MULTILINE)
+_REDIRECT_TARGETS = re.compile(r"""(?<![-<>])>{1,2}\s*("[^"]+"|'[^']+'|[^\s|;&<>]+)""")
+_CONTEXT = (
+    "AI Engineering OS governs this project. Read AGENTS.md and relevant fact documents. "
+    "Keep Codex's native workflow and approval boundaries. Record the starting Git ref; "
+    "run Code Start before implementation and Finish with that base ref. Codex must confirm "
+    "task ownership before cleanup and protect the user's existing changes."
+)
 
 
 class HookGatewayError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
         self.code = code
+        super().__init__(message)
 
 
-def authorize_hook_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return the Codex hook JSON for one PreToolUse payload (may be empty)."""
+def _result(decision: str, code: str, reason: str, targets: tuple[str, ...] = ()) -> dict[str, Any]:
+    return {
+        "layer": "aios",
+        "decision": decision,
+        "rule_id": code,
+        "reason": reason,
+        "targets": list(targets),
+        "next_step": (
+            "Resolve the named finding; host policy remains independent."
+            if decision == "deny"
+            else "Codex must confirm task scope, ownership and native permissions."
+        ),
+    }
 
-    tool_name = str(payload.get("tool_name", ""))
-    if tool_name not in _HOOK_TOOL_OPERATIONS:
-        return {}
-    tool_input = payload.get("tool_input")
-    input_dict: dict[str, Any] = tool_input if isinstance(tool_input, dict) else {}
-    command = str(input_dict.get("command", ""))
-    cwd_value = str(payload.get("cwd", "") or ".")
+
+def explain_hook_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Explain the same checks as the hook without executing the proposed operation."""
     try:
-        resolved = resolve_runtime_root(Path(cwd_value))
-    except ProjectRootError as exc:
-        # Unregistered .worktrees paths never gain disposable-worktree rights.
-        return _deny_output(exc.code, str(exc))
-    project_root = resolved.project_root
-    if not (project_root / ".codex-os" / "project.yaml").is_file():
-        return {}
-    try:
-        config = load_project_config(project_root)
-        policy = GovernancePolicyCompiler(project_root).compile()
-    except Exception as exc:  # pragma: no cover - defensive: never fail open
-        return _deny_output(
-            "POLICY_COMPILE_FAILED",
-            f"authorization kernel could not compile project policy: {exc}",
+        result = _evaluate(payload)
+    except Exception as exc:
+        result = _result("deny", getattr(exc, "code", "POLICY_CHECK_FAILED"), str(exc))
+    data = payload.get("tool_input") or {}
+    data = data if isinstance(data, dict) else {}
+    command = str(data.get("command", ""))
+    result["requested_action"] = command or str(payload.get("tool_name", ""))
+    requested, parsed = [], []
+    with suppress(ValueError):
+        for words in shell_commands(command).commands:
+            program = executable_name(words[0])
+            if program in {"remove-item", "rm", "rmdir", "rd", "del", "erase"}:
+                requested.append(literal_cleanup_target(shlex.join([program, *words[1:]])))
+    if not requested and (data.get("path") or data.get("file_path")):
+        requested = [str(data.get("path") or data.get("file_path"))]
+    cwd = Path(str(data.get("workdir") or payload.get("cwd") or "."))
+    for value in requested:
+        path = Path(value)
+        path = path if path.is_absolute() else cwd / path
+        if str(path).startswith(("\\\\", "//")) or any(
+            is_reparse(p) for p in (path, *path.parents)
+        ):
+            parsed.append(None)
+        else:
+            parsed.append(str(path.resolve()))
+    result.update(
+        requested_paths=requested,
+        resolved_paths=parsed,
+        target_status="identified" if requested and all(parsed) else "unknown",
+        host_policy="independent; specific host rule was not provided",
+    )
+    return result
+
+
+def _evaluate(payload: dict[str, Any]) -> dict[str, Any]:
+    tool = str(payload.get("tool_name", ""))
+    data = payload.get("tool_input")
+    data = data if isinstance(data, dict) else {}
+    cwd = Path(str(data.get("workdir") or payload.get("cwd") or ".")).resolve()
+    resolved = resolve_runtime_root(cwd)
+    initialized = (resolved.project_root / ".codex-os/project.yaml").is_file()
+    if payload.get("hook_event_name") == "SessionStart":
+        return _result("context" if initialized else "allow", "SESSION_CONTEXT", _CONTEXT)
+    if tool not in {"Bash", "apply_patch", "Write", "Edit"}:
+        return _result("allow", "OUTSIDE_HOOK_SCOPE", "no AIOS check for this tool")
+    command = str(data.get("command", ""))
+    if tool == "Bash":
+        kernel = GovernanceAuthorizationKernel(
+            GovernancePolicyCompiler(resolved.project_root).compile()
         )
-    kernel = GovernanceAuthorizationKernel(policy)
-
-    if tool_name == "Bash":
         outcome = kernel.authorize(
             AuthorizationRequest(
                 operation="execute",
-                tool="shell",
-                source="hook",
+                tool=tool,
                 command=command,
+                cwd=cwd,
+                checkout=resolved.checkout_root,
+                disposable=resolved.worktree is not None,
             )
         )
-        if outcome.decision is AuthorizationDecision.DENY:
-            return _outcome_output(outcome)
+        if not outcome.allowed:
+            return _result("deny", outcome.rule_id, outcome.reason, outcome.denied_paths)
+        if outcome.rule_id == "CLEANUP_TARGET_CHECKED":
+            return _result("allow", outcome.rule_id, outcome.reason, outcome.denied_paths)
+    paths = _write_targets(tool, command, data)
+    boundaries: dict[Path, GateDecision] = {}
+    network_deadline = time.monotonic() + 5
+    if tool in {"apply_patch", "Write", "Edit"} and not paths and initialized:
+        return _result(
+            "deny", "PATCH_TARGET_UNRESOLVED", "patch contains no supported file headers"
+        )
+    for raw in paths:
+        path = Path(raw)
+        lexical = path if path.is_absolute() else cwd / path
+        if any(is_reparse(parent) for parent in (lexical, *lexical.parents)):
+            return _result(
+                "deny",
+                "WRITE_TARGET_REPARSE",
+                "write traverses a link or junction",
+                (lexical.as_posix(),),
+            )
+        target = lexical.resolve()
+        owner = resolve_runtime_root(target.parent)
+        if not (owner.project_root / ".codex-os/project.yaml").is_file():
+            continue
+        if resolved.worktree and not target.is_relative_to(resolved.checkout_root):
+            return _result(
+                "deny",
+                "WORKTREE_WRITE_OUTSIDE",
+                "worktree may not write another checkout",
+                (target.as_posix(),),
+            )
+        relative = target.relative_to(owner.checkout_root).as_posix()
+        if owner.worktree and (relative == "docs/memory" or relative.startswith("docs/memory/")):
+            return _result(
+                "deny",
+                "MEMORY_SINGLE_WRITER",
+                "submit a memory candidate instead",
+                (target.as_posix(),),
+            )
+        kernel = GovernanceAuthorizationKernel(
+            GovernancePolicyCompiler(owner.project_root).compile()
+        )
+        outcome = kernel.authorize(
+            AuthorizationRequest(operation="write", tool=tool, paths=(relative,))
+        )
+        if not outcome.allowed:
+            return _result("deny", outcome.rule_id, outcome.reason, (target.as_posix(),))
+        config = load_project_config(owner.project_root)
+        if _formal_write_targets((relative,), config.code_paths):
+            if owner.checkout_root not in boundaries:
+                remaining = network_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise HookGatewayError(
+                        "NETWORK_BUDGET_EXHAUSTED", "remote check budget exhausted"
+                    )
+                boundaries[owner.checkout_root] = _formal_boundary(
+                    owner.checkout_root, config.github_hosts, timeout=remaining
+                )
+            boundary = boundaries[owner.checkout_root]
+            if not boundary.allowed:
+                return _result(
+                    "deny",
+                    "CODE_START_BLOCKED",
+                    ", ".join(boundary.blocked_by),
+                    (target.as_posix(),),
+                )
+    return _result("allow", "AIOS_CHECKS_PASSED", "no objective AIOS blocker", paths)
 
-    write_targets = _write_targets(tool_name, command, input_dict)
-    if not write_targets:
-        return {}
-    formal = _formal_write_targets(write_targets, config.code_paths)
-    if formal:
-        boundary = _formal_boundary(project_root, config.github_hosts)
-        if not boundary.allowed:
-            codes = ", ".join(
-                finding.code for finding in boundary.findings if finding.blocking
-            )
-            return _deny_output(
-                "CODE_START_BLOCKED",
-                "formal source write is blocked by the Code Start gate ("
-                + codes
-                + "); resolve the findings or work outside "
-                + ", ".join(config.code_paths),
-            )
-        conflicts = _user_dirty_conflicts(project_root, formal)
-        if conflicts:
-            return _ask_output(
-                "USER_DIRTY_CONFLICT",
-                "the user has uncommitted changes in "
-                + ", ".join(conflicts)
-                + "; isolate the task in a registered worktree or request "
-                "explicit confirmation before overwriting",
-            )
-    outcome = kernel.authorize(
-        AuthorizationRequest(
-            operation="write",
-            tool=tool_name,
-            source="hook",
-            paths=write_targets,
-        )
-    )
-    return _outcome_output(outcome)
+
+def authorize_hook_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    outcome = explain_hook_payload(payload)
+    if outcome["decision"] == "context":
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": outcome["reason"],
+            }
+        }
+    if outcome["decision"] != "deny":
+        return {}  # Defer to native permissions; never auto-approve/rewrite a tool call.
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": outcome["rule_id"]
+            + ": "
+            + outcome["reason"]
+            + ("; targets=" + ", ".join(outcome["targets"]) if outcome["targets"] else ""),
+        }
+    }
 
 
 def parse_apply_patch_paths(patch_text: str) -> tuple[str, ...]:
-    """Extract every target path referenced by an apply_patch payload."""
-
-    paths: list[str] = []
-    for pattern in (_ADD_FILE, _UPDATE_FILE, _DELETE_FILE, _RENAME_FILE):
-        paths.extend(match.strip() for match in pattern.findall(patch_text))
-    for rename_block in _RENAME_FILE.split(patch_text)[1:]:
-        move = _MOVE_TO.search(rename_block)
-        if move is not None:
-            paths.append(move.group(1).strip())
-    ordered: list[str] = []
-    for path in paths:
-        normalized = path.replace("\\", "/").strip()
-        if normalized and normalized not in ordered:
-            ordered.append(normalized)
-    return tuple(ordered)
+    return tuple(
+        dict.fromkeys(path.strip().replace("\\", "/") for path in _PATH_HEADER.findall(patch_text))
+    )
 
 
 def _formal_boundary(
-    project_root: Path, github_hosts: frozenset[str] | tuple[str, ...]
+    root: Path, github_hosts: frozenset[str] | tuple[str, ...], *, timeout: float = 5
 ) -> GateDecision:
-    """Indirection point for the Code Start boundary (tests monkeypatch this)."""
-
-    return formal_write_blockers(project_root, github_hosts=github_hosts)
+    return formal_write_blockers(root, github_hosts=github_hosts, network_timeout=timeout)
 
 
-def _write_targets(
-    tool_name: str, command: str, tool_input: dict[str, Any]
-) -> tuple[str, ...]:
-    """Collect the paths one hook payload would write."""
-
-    if tool_name == "apply_patch":
+def _write_targets(tool: str, command: str, data: dict[str, Any]) -> tuple[str, ...]:
+    if tool == "apply_patch":
         return parse_apply_patch_paths(command)
-    if tool_name in {"Write", "Edit"}:
-        raw = tool_input.get("path") or tool_input.get("file_path") or ""
-        normalized = str(raw).replace("\\", "/").strip()
-        return (normalized,) if normalized else ()
-    return tuple(path for path in _extract_redirect_paths(command) if path)
+    if tool in {"Write", "Edit"}:
+        path = str(data.get("path") or data.get("file_path") or "")
+        return (path,) if path else ()
+    parsed = shell_commands(command)
+    if any(
+        executable_name(words[0])
+        in {"set-content", "add-content", "out-file", "copy-item", "move-item", "new-item"}
+        for words in parsed.commands
+    ):
+        raise HookGatewayError(
+            "WRITE_TARGET_UNRESOLVED",
+            "shell write targets cannot be proven by this bounded parser; "
+            "provide structured file targets for independent checking",
+        )
+    redirects = tuple(
+        target
+        for target in parsed.redirects
+        if target.casefold() not in {"&1", "&2", "/dev/null", "nul", "$null"}
+    )
+    for target in redirects:
+        try:
+            literal_tokens(target)
+        except ValueError as exc:
+            raise HookGatewayError("WRITE_TARGET_UNRESOLVED", str(exc)) from exc
+    return redirects
 
 
 def _formal_write_targets(
     targets: tuple[str, ...], code_paths: tuple[str, ...] | list[str]
 ) -> tuple[str, ...]:
-    """Return the targets that fall under the project's formal code paths."""
-
-    formal: list[str] = []
-    for target in targets:
-        posix = target.strip().lstrip("./").replace("\\", "/")
-        for code_path in code_paths:
-            base = code_path.strip().rstrip("/")
-            if posix == base or posix.startswith(base + "/"):
-                formal.append(posix)
-                break
-    return tuple(dict.fromkeys(formal))
-
-
-def _user_dirty_conflicts(
-    project_root: Path, formal: tuple[str, ...]
-) -> tuple[str, ...]:
-    """Return formal targets the user already has uncommitted changes in."""
-
-    status = GitRunner(project_root).run("status", "--porcelain")
-    if status.returncode != 0:
-        return ()
-    dirty: set[str] = set()
-    for line in status.stdout.splitlines():
-        if len(line) < 4:
-            continue
-        entry = line[3:].strip()
-        if " -> " in entry:
-            entry = entry.split(" -> ", 1)[1]
-        dirty.add(entry.strip().strip('"').replace("\\", "/"))
-    wanted = {path.casefold() for path in formal}
-    return tuple(sorted(path for path in dirty if path.casefold() in wanted))
-
-
-def _extract_redirect_paths(command: str) -> tuple[str, ...]:
-    paths: list[str] = []
-    for match in _REDIRECT_TARGETS.finditer(command):
-        raw = match.group(1).strip().strip("'\"")
-        if not raw or raw.casefold() in {"&1", "&2", "/dev/null", "nul", "$null", "null"}:
-            continue
-        paths.append(raw)
-    return tuple(paths)
-
-
-def _outcome_output(outcome: AuthorizationOutcome) -> dict[str, Any]:
-    if outcome.decision is AuthorizationDecision.ALLOW:
-        return {}
-    details = outcome.reason
-    if outcome.denied_paths:
-        details = f"{details}: {sorted(outcome.denied_paths)}"
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": outcome.decision.value,
-            "permissionDecisionReason": f"{outcome.rule_id}: {details}",
-        }
-    }
-
-
-def _deny_output(rule_id: str, reason: str) -> dict[str, Any]:
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": f"{rule_id}: {reason}",
-        }
-    }
-
-
-def _ask_output(rule_id: str, reason: str) -> dict[str, Any]:
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "ask",
-            "permissionDecisionReason": f"{rule_id}: {reason}",
-        }
-    }
-
-
-__all__ = [
-    "HookGatewayError",
-    "authorize_hook_payload",
-    "parse_apply_patch_paths",
-]
+    return tuple(
+        target
+        for target in targets
+        if any(
+            target.casefold() == base.casefold()
+            or target.casefold().startswith(base.casefold() + "/")
+            for base in code_paths
+        )
+    )

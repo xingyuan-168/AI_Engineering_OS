@@ -9,8 +9,14 @@ description: Gate substantive frontend implementation behind explicit user appro
 
 1. Verify `docs/design/PROTOTYPE.html` and `docs/design/UI_SPEC.md` exist and match the requirement.
 2. Ask the user to review the prototype in a browser and approve or reject it.
-3. Record the outcome: `approval_record(project_root, gate="frontend", subject="frontend", decision="approved"|"rejected", decided_by="user")`.
-4. Call `governance_check(stage="frontend", frontend_impact=..., approved=true)`; implement only after it allows.
+3. Record the actual user outcome with the same scope as the gate (use `decision="rejected"` for a rejection):
+
+```python
+approval_record(project_root="<project-root>", gate="frontend", subject="dashboard", scope="dashboard", decision="approved", decided_by="user")
+governance_check(project_root="<project-root>", stage="frontend", frontend_impact="new_page", frontend_scope="dashboard")
+```
+
+4. Implement only after the gate allows. Both outcomes update the Git-tracked approval block; rejection revokes prior approval. Scope, prototype and UI spec digests must match. Changed designs or legacy approval blocks without digests require another explicit user review.
 
 ## Rules
 

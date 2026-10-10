@@ -11,6 +11,7 @@ from codex_ai_os.application.authorization import (
 )
 from codex_ai_os.application.governance_policy import GovernancePolicyCompiler
 from codex_ai_os.application.project import ProjectInitializer
+from codex_ai_os.domain.config import ProjectType
 
 
 def _kernel(tmp_path: Path) -> GovernanceAuthorizationKernel:
@@ -18,7 +19,7 @@ def _kernel(tmp_path: Path) -> GovernanceAuthorizationKernel:
         tmp_path,
         project_id="PROJECT-AUTH",
         name="Auth",
-        project_type="generic",
+        project_type=ProjectType.GENERIC,
         include=frozenset(),
     )
     return GovernanceAuthorizationKernel(GovernancePolicyCompiler(tmp_path).compile())
@@ -129,10 +130,7 @@ def test_invalid_operation_fails_closed(tmp_path: Path) -> None:
             tool="workflow",
         )
     )
-    assert (
-        outcome.decision is AuthorizationDecision.DENY
-        and outcome.rule_id == "OPERATION_INVALID"
-    )
+    assert outcome.decision is AuthorizationDecision.DENY and outcome.rule_id == "OPERATION_INVALID"
 
 
 def test_operations_are_only_write_and_execute() -> None:

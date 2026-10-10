@@ -5,6 +5,7 @@ from pathlib import Path
 
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.repository import RepositoryGovernanceService
+from codex_ai_os.domain.config import ProjectType
 
 
 def _initialize(root: Path) -> None:
@@ -12,7 +13,7 @@ def _initialize(root: Path) -> None:
         root,
         project_id="PROJECT-REPO",
         name="Repo",
-        project_type="generic",
+        project_type=ProjectType.GENERIC,
         include=frozenset(),
     )
 
@@ -38,7 +39,7 @@ def test_git_repository_without_remote_blocks(tmp_path: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
     report = RepositoryGovernanceService(tmp_path).check()
     assert report.repository_ready is False
-    assert any(f.code == "GITHUB_REMOTE_REQUIRED" for f in report.findings)
+    assert any(f.code == "GITHUB_REMOTE_MISSING" for f in report.findings)
 
 
 def test_output_junk_and_archive_trees_are_flagged(tmp_path: Path) -> None:

@@ -7,24 +7,35 @@ import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from codex_ai_os.adapters.git import GitRunner
 from codex_ai_os.domain.config import ProjectConfig
+from codex_ai_os.infrastructure.errors import DiagnosticError
 
 
-class ConfigError(ValueError):
+class ConfigError(DiagnosticError):
     """Raised when a configuration file is invalid or unsafe."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "CONFIG_INVALID",
+        path: Path | str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, path=path, details=details)
 
 
 class ProjectRootError(ConfigError):
     """Raised when a public call targets a different or managed checkout."""
 
     def __init__(self, code: str, message: str, *, coordinator_root: Path | None = None) -> None:
-        super().__init__(message)
-        self.code = code
+        super().__init__(message, code=code)
         self.coordinator_root = coordinator_root
 
 
@@ -36,7 +47,9 @@ def load_yaml_model[ModelT: BaseModel](path: Path, model: type[ModelT]) -> Model
     try:
         return model.model_validate(raw)
     except ValidationError as exc:
-        raise ConfigError(f"invalid configuration {path}: {exc}") from exc
+        raise ConfigError(
+            f"invalid configuration {path}: {exc}", path=path, details={"exception": str(exc)}
+        ) from exc
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, object]:
@@ -44,13 +57,29 @@ def _load_yaml_mapping(path: Path) -> dict[str, object]:
 
     try:
         raw: object = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        raise ConfigError(f"cannot read configuration {path}: {exc}") from exc
+    except FileNotFoundError as exc:
+        raise ConfigError(
+            f"cannot read configuration {path}: {exc}",
+            code="CONFIG_MISSING",
+            path=path,
+            details={"exception": str(exc)},
+        ) from exc
+    except OSError as exc:
+        raise ConfigError(
+            f"cannot read configuration {path}: {exc}",
+            code="CONFIG_UNREADABLE",
+            path=path,
+            details={"exception": str(exc)},
+        ) from exc
+    except (UnicodeError, yaml.YAMLError) as exc:
+        raise ConfigError(
+            f"invalid configuration {path}: {exc}", path=path, details={"exception": str(exc)}
+        ) from exc
 
     if raw is None:
         raw = {}
     if not isinstance(raw, Mapping):
-        raise ConfigError(f"configuration {path} must contain a YAML mapping")
+        raise ConfigError(f"configuration {path} must contain a YAML mapping", path=path)
 
     return cast(dict[str, object], raw)
 
@@ -67,6 +96,13 @@ def load_project_config(project_root: Path) -> ProjectConfig:
         )
 
     path = requested_root / ".codex-os" / "project.yaml"
+    if not path.exists() and (requested_root / ".aios/project.yaml").exists():
+        raise ConfigError(
+            ".aios configuration belongs to a different runtime family; "
+            "explicit migration is required",
+            code="CONFIG_RUNTIME_MISMATCH",
+            path=path,
+        )
     raw = _load_yaml_mapping(path)
     configured = Path(str(raw.get("root", ".")))
     configured_root = (
@@ -85,7 +121,9 @@ def load_project_config(project_root: Path) -> ProjectConfig:
     try:
         return ProjectConfig.model_validate(raw)
     except ValidationError as exc:
-        raise ConfigError(f"invalid configuration {path}: {exc}") from exc
+        raise ConfigError(
+            f"invalid configuration {path}: {exc}", path=path, details={"exception": str(exc)}
+        ) from exc
 
 
 def _managed_worktree_coordinator(project_root: Path) -> Path | None:
@@ -111,9 +149,7 @@ def _managed_worktree_coordinator(project_root: Path) -> Path | None:
     except (OSError, UnicodeError):
         return None
     common_dir = (
-        raw_common.resolve()
-        if raw_common.is_absolute()
-        else (git_dir / raw_common).resolve()
+        raw_common.resolve() if raw_common.is_absolute() else (git_dir / raw_common).resolve()
     )
     return common_dir.parent if common_dir.name == ".git" else None
 
@@ -134,6 +170,21 @@ class ResolvedRoot:
     project_root: Path
     worktree: WorktreeContext | None = None
 
+    @property
+    def checkout_root(self) -> Path:
+        return self.project_root / self.worktree.path if self.worktree else self.project_root
+
+
+def locate_checkout(cwd: Path) -> Path:
+    """Find the nearest checkout/contract, including from a nested directory."""
+    requested = cwd.resolve()
+    if requested.is_file():
+        requested = requested.parent
+    for parent in (requested, *requested.parents):
+        if (parent / ".git").exists() or (parent / ".codex-os/project.yaml").is_file():
+            return parent
+    return requested
+
 
 def resolve_runtime_root(cwd: Path) -> ResolvedRoot:
     """Resolve one working directory to its governing project root (ADR-0016).
@@ -145,13 +196,21 @@ def resolve_runtime_root(cwd: Path) -> ResolvedRoot:
     registration never maps (fail closed).
     """
 
-    requested = cwd.resolve()
+    requested = locate_checkout(cwd)
     coordinator = _managed_worktree_coordinator(requested)
     if coordinator is None:
+        relative = cwd.resolve().relative_to(requested)
+        if ".worktrees" in relative.parts:
+            raise ProjectRootError("WORKTREE_NOT_REGISTERED", "not a registered Git worktree")
         return ResolvedRoot(requested)
     if not (coordinator / ".codex-os" / "project.yaml").is_file():
         return ResolvedRoot(requested)
-    relative = requested.relative_to(coordinator).as_posix()
+    try:
+        relative = requested.relative_to(coordinator).as_posix()
+    except ValueError as exc:
+        raise ProjectRootError(
+            "WORKTREE_NOT_REGISTERED", "worktree is outside the coordinator's disposable area"
+        ) from exc
     context = _registered_worktree(coordinator, relative, requested)
     if context is None:
         raise ProjectRootError(
@@ -172,25 +231,40 @@ def _registered_worktree(
     if not database_path.is_file():
         return None
     try:
-        connection = sqlite3.connect(str(database_path), timeout=2)
+        connection = sqlite3.connect(database_path.as_uri() + "?mode=ro", uri=True, timeout=2)
     except sqlite3.Error:
         return None
     try:
         rows = connection.execute(
-            "SELECT name, path, branch, disposable FROM worktrees"
+            "SELECT name, path, branch, disposable FROM worktrees "
+            "WHERE status IN ('active', 'ready')"
         ).fetchall()
     except sqlite3.Error:
         return None
     finally:
         connection.close()
+    listing = GitRunner(coordinator_root).run("worktree", "list", "--porcelain", timeout=5)
+    if listing.returncode != 0:
+        return None
+    actual = {
+        os.path.normcase(str(Path(line[9:]).resolve())): block
+        for block in listing.stdout.split("\n\n")
+        for line in block.splitlines()
+        if line.startswith("worktree ")
+    }
     for name, path, branch, disposable in rows:
         record_path = str(path).replace("\\", "/").rstrip("/")
+        if not record_path.startswith(".worktrees/") or ".." in Path(record_path).parts:
+            continue
         if not (relative == record_path or relative.startswith(record_path + "/")):
             continue
         if not int(disposable or 0):
             continue
         registered_root = Path(os.path.realpath(coordinator_root / record_path))
         real_requested = Path(os.path.realpath(requested))
+        block = actual.get(os.path.normcase(str(registered_root)), "")
+        if f"branch refs/heads/{branch}" not in block.splitlines():
+            continue
         try:
             real_requested.relative_to(registered_root)
         except ValueError:

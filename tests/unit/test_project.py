@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from codex_ai_os.application.project import ProjectInitializer
+from codex_ai_os.domain.config import GitPushPolicy, ProjectType
 
 
 def test_initialize_creates_baseline(tmp_path: Path) -> None:
@@ -10,7 +11,7 @@ def test_initialize_creates_baseline(tmp_path: Path) -> None:
         tmp_path,
         project_id="PROJECT-INIT",
         name="Init",
-        project_type="generic",
+        project_type=ProjectType.GENERIC,
         include=frozenset(),
     )
     for relative in (
@@ -35,7 +36,7 @@ def test_initialize_with_conditional_extras(tmp_path: Path) -> None:
         tmp_path,
         project_id="PROJECT-EXTRA",
         name="Extra",
-        project_type="fullstack",
+        project_type=ProjectType.FULLSTACK,
         include=frozenset({"frontend_design", "docker"}),
     )
     joined = "\n".join(result.created_paths)
@@ -51,14 +52,14 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
         tmp_path,
         project_id="PROJECT-IDEM",
         name="Idem",
-        project_type="generic",
+        project_type=ProjectType.GENERIC,
         include=frozenset(),
     )
     second = initializer.initialize(
         tmp_path,
         project_id="PROJECT-IDEM",
         name="Idem",
-        project_type="generic",
+        project_type=ProjectType.GENERIC,
         include=frozenset(),
     )
     assert ".codex-os/project.yaml" not in second.created_paths
@@ -71,8 +72,8 @@ def test_fixture_local_policy_reports_ready(tmp_path: Path) -> None:
         tmp_path,
         project_id="PROJECT-LOCAL",
         name="Local",
-        project_type="generic",
-        git_push_policy="fixture_local_only",
+        project_type=ProjectType.GENERIC,
+        git_push_policy=GitPushPolicy.FIXTURE_LOCAL_ONLY,
         include=frozenset(),
     )
     assert result.repository_ready is True

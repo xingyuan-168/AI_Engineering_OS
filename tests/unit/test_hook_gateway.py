@@ -110,7 +110,7 @@ class TestApplyPatchParsing:
         patch = "\n".join(
             [
                 "*** Begin Patch",
-                "*** Rename File: src/old.py",
+                "*** Update File: src/old.py",
                 "*** Move to: src/renamed.py",
                 "*** End Patch",
             ]
@@ -179,7 +179,7 @@ class TestAuthorizeHookPayload:
         import codex_ai_os.application.hook_gateway as gateway
 
         monkeypatch.setattr(
-            gateway, "_formal_boundary", lambda root, github_hosts: _allowed_start()
+            gateway, "_formal_boundary", lambda root, github_hosts, **kwargs: _allowed_start()
         )
         patch = _patch("add", "src/app.py")
         assert authorize_hook_payload(_payload(root, "apply_patch", patch)) == {}
@@ -193,14 +193,14 @@ class TestAuthorizeHookPayload:
         monkeypatch.setattr(
             gateway,
             "_formal_boundary",
-            lambda root, github_hosts: _blocked_start("GITHUB_REMOTE_UNREACHABLE"),
+            lambda root, github_hosts, **kwargs: _blocked_start("GITHUB_REMOTE_UNREACHABLE"),
         )
         output = authorize_hook_payload(_payload(root, "apply_patch", _patch("add", "src/app.py")))
         decision = output["hookSpecificOutput"]
         assert decision["permissionDecision"] == "deny"
         assert "GITHUB_REMOTE_UNREACHABLE" in decision["permissionDecisionReason"]
 
-    def test_declared_write_conflicting_user_dirty_file_asks(
+    def test_dirty_file_ownership_is_left_to_native_context(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         root = _initialized_project(tmp_path)
@@ -212,13 +212,11 @@ class TestAuthorizeHookPayload:
         import codex_ai_os.application.hook_gateway as gateway
 
         monkeypatch.setattr(
-            gateway, "_formal_boundary", lambda root, github_hosts: _allowed_start()
+            gateway, "_formal_boundary", lambda root, github_hosts, **kwargs: _allowed_start()
         )
         patch = _patch("update", "src/auth.py")
         output = authorize_hook_payload(_payload(root, "apply_patch", patch))
-        decision = output["hookSpecificOutput"]
-        assert decision["permissionDecision"] == "ask"
-        assert "USER_DIRTY_CONFLICT" in decision["permissionDecisionReason"]
+        assert output == {}
 
     def test_shell_redirect_into_protected_path_denies(self, tmp_path: Path) -> None:
         root = _initialized_project(tmp_path)

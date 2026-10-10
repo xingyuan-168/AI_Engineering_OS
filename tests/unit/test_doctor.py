@@ -9,13 +9,23 @@ from codex_ai_os.application.doctor import DoctorService
 def test_doctor_core_environment_passes_without_plugin(tmp_path: Path) -> None:
     report = DoctorService(tmp_path).run()
     names = [check.name for check in report.checks]
-    assert {"python", "git", "codex", "sqlite-fts5", "path-encoding", "plugin-hooks"} == set(names)
-    for name in ("python", "git", "sqlite-fts5", "path-encoding"):
+    assert {
+        "python",
+        "git",
+        "codex",
+        "sqlite",
+        "path-encoding",
+        "plugin-hooks",
+        "plugin-installation",
+        "hook-trust",
+        "hook-loaded",
+    } == set(names)
+    for name in ("python", "git", "sqlite", "path-encoding"):
         check = next(item for item in report.checks if item.name == name)
         assert check.ok is True, (name, check.detail)
     hooks = next(item for item in report.checks if item.name == "plugin-hooks")
     assert hooks.required is False
-    assert hooks.ok is True
+    assert hooks.ok is None
     assert report.ok is True
     assert report.path_encoding_corrupt is False
 

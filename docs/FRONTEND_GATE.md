@@ -19,3 +19,5 @@ Requirement → User Flow（可写入 REQUIREMENTS/UI_SPEC）→ 交互式 HTML 
 ## 批准
 
 用户批准通过 `approval_record(gate="frontend", subject="frontend", scope=<范围>, decision="approved", decided_by=...)` 记录：命令同时把 `approval:` 块持久化写入 `docs/design/UI_SPEC.md`（scope 精确匹配，重复批准替换旧块）。随后 `governance_check(stage="frontend", frontend_impact=..., frontend_scope=...)` 读取该文档事实放行——没有可绕过的布尔参数；未批准过该 scope 一律阻塞。禁止推断或代填批准。拒绝则回到原型，不进入实现。
+
+所有调用还须给出 project_root。批准块包含 prototype_sha256 和 spec_sha256（规格正文排除 approval 块、规范化换行），绑定被用户审阅的具体内容。原型/规格变化、scope 不匹配或旧块缺少摘要均需重新批准；不自动补签。`decision="rejected"` 同样改写文档，立即撤销旧批准。SQLite 只是派生记录：写索引失败可返回 warning，但已写入的拒绝事实仍生效。豁免参数为 none、copy_change、css_fix、component_bugfix。

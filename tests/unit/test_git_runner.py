@@ -71,7 +71,7 @@ def test_builds_git_c_root_prefixed_command(
         captured.append(command)
         return subprocess.CompletedProcess(command, 0, b"abc", b"")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("codex_ai_os.adapters.git.owned_run", fake_run)
     GitRunner(repository).run_bytes("status", "--porcelain")
 
     assert captured == [["git", "-C", str(repository), "status", "--porcelain"]]

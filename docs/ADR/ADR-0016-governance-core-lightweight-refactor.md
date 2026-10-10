@@ -2,7 +2,7 @@
 
 <!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"accepted","owner":"architect","requirement_refs":["REPO-001"]} -->
 
-- 状态：Accepted
+- 状态：Accepted，安全细节由 ADR-0017 部分取代——保留轻量三 Gate 架构；旧 cwd 清理放行、自动重建数据库、批准/Finish/Hook 失败语义以 ADR-0017 及当前契约为准。下文保留历史。
 - 日期：2026-09-10
 - 决策版本：重构起点 0.3.0（版本号待 Dogfood 通过后由用户一次性定稿）
 - 来源：`input/AI_Engineering_OS_Governance_Core_轻量化大重构实施规格.md`（用户提供的重构输入，只读）+ 两轮人工评审反馈（共 18 条，已全部并入）

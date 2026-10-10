@@ -11,12 +11,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from codex_ai_os.infrastructure.config import resolve_runtime_root
+
 
 @dataclass(frozen=True, slots=True)
 class DoctorCheck:
     name: str
     required: bool
-    ok: bool
+    ok: bool | None
     detail: str
 
 
@@ -41,7 +43,7 @@ class DoctorService:
     }
 
     def __init__(self, project_root: Path | None = None) -> None:
-        self.project_root = (project_root or Path.cwd()).resolve()
+        self.project_root = resolve_runtime_root(project_root or Path.cwd()).project_root
 
     def run(self) -> DoctorReport:
         return DoctorReport(
@@ -52,23 +54,26 @@ class DoctorService:
                 self._sqlite_check(),
                 self._path_encoding_check(),
                 self._plugin_hooks_check(),
+                DoctorCheck("plugin-installation", False, None, "unknown: managed by Codex host"),
+                DoctorCheck(
+                    "hook-trust", False, None, "unknown: file presence does not prove trust"
+                ),
+                DoctorCheck("hook-loaded", False, None, "unknown: verify in a new Codex task"),
             )
         )
 
     def _plugin_hooks_check(self) -> DoctorCheck:
         """Report whether plugin defense-in-depth hook scripts are present.
 
-        The Codex host owns plugin registration and trust; Runtime policy
-        stays the security boundary regardless of this check (fail closed).
+        File presence proves neither host registration/trust nor loading.
+        AIOS decisions and the host's execution policy are separate layers.
         """
-        manifest = (
-            self.project_root / "plugins" / "ai-engineering-os" / "hooks" / "hooks.json"
-        )
+        manifest = self.project_root / "plugins" / "ai-engineering-os" / "hooks" / "hooks.json"
         if not manifest.is_file():
             return DoctorCheck(
                 "plugin-hooks",
                 False,
-                True,
+                None,
                 "plugin hooks manifest not found; Codex host manages plugin registration",
             )
         try:
@@ -169,10 +174,10 @@ class DoctorService:
     def _sqlite_check() -> DoctorCheck:
         try:
             with sqlite3.connect(":memory:") as connection:
-                connection.execute("CREATE VIRTUAL TABLE memory_probe USING fts5(content)")
-            return DoctorCheck("sqlite-fts5", True, True, sqlite3.sqlite_version)
+                connection.execute("SELECT sqlite_version()")
+            return DoctorCheck("sqlite", True, True, sqlite3.sqlite_version)
         except sqlite3.Error as exc:
-            return DoctorCheck("sqlite-fts5", True, False, str(exc))
+            return DoctorCheck("sqlite", True, False, str(exc))
 
     def _command_check(
         self,

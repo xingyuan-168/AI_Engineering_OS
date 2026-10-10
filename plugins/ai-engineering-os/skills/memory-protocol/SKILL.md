@@ -19,8 +19,12 @@ Statuses: `active` / `superseded` / `invalid`. A superseded entry must name its 
 
 ## Single-writer rule
 
-- Subagents never write `docs/memory/` (the hook enforces this in disposable worktrees). They submit candidates: `memory_record(..., candidate=true)`.
-- The main session merges candidates into the JSONL at task finish, then runs `codex-os memory reindex`.
+- Subagents never write `docs/memory/`; registered worktrees submit candidates through the shared coordinator store:
+
+```python
+memory_record(project_root="<registered-worktree>", record_type="lesson", title="Concise lesson", summary="Reusable finding and its reason", source="src/example.py", candidate=True)
+```
+- The main session accepts/rejects candidates at Finish. Accept errors preserve candidates unless the complete record is already present; retry identical records safely. Short write locks prevent lost records. Searches refresh the index from validated JSONL; invalid facts block instead of returning stale results.
 
 ## Format and timing
 

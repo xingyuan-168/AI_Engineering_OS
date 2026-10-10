@@ -25,7 +25,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from codex_ai_os.infrastructure.config import resolve_runtime_root
 from codex_ai_os.infrastructure.database import Database
+from codex_ai_os.infrastructure.files import file_lock
 
 MEMORY_JSONL = "docs/memory/memory.jsonl"
 CANDIDATE_DIRECTORY = ".codex-os/state/memory-candidates"
@@ -89,9 +91,40 @@ class ReindexResult:
 class MemoryStore:
     def __init__(self, database: Database, project_root: Path) -> None:
         self.database = database
-        self.root = project_root.resolve()
+        resolved = resolve_runtime_root(project_root)
+        self.root = resolved.project_root
+        self.worktree = resolved.worktree
+
+    def _require_main(self) -> None:
+        if self.worktree:
+            raise MemoryStoreError("MEMORY_SINGLE_WRITER", "worktrees may only submit candidates")
 
     def record(
+        self,
+        *,
+        record_type: str,
+        title: str,
+        summary: str,
+        source: str,
+        source_commit: str | None = None,
+        tags: tuple[str, ...] = (),
+        status: str = "active",
+        superseded_by: str | None = None,
+    ) -> MemoryEntry:
+        self._require_main()
+        with file_lock(self.root / ".codex-os/state/memory.lock"):
+            return self._record(
+                record_type=record_type,
+                title=title,
+                summary=summary,
+                source=source,
+                source_commit=source_commit,
+                tags=tags,
+                status=status,
+                superseded_by=superseded_by,
+            )
+
+    def _record(
         self,
         *,
         record_type: str,
@@ -142,7 +175,7 @@ class MemoryStore:
         lines = [item.to_json_line() for item in entries]
         lines.append(line)
         _atomic_write(path, "\n".join(lines) + "\n")
-        self.reindex()
+        self._reindex_locked()
         return entry
 
     def record_candidate(
@@ -172,7 +205,11 @@ class MemoryStore:
         directory = self.root / CANDIDATE_DIRECTORY
         directory.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(_entry_payload(entry), ensure_ascii=False, indent=2)
-        _atomic_write(directory / (entry.id + ".json"), payload + "\n")
+        with file_lock(self.root / ".codex-os/state/memory.lock"):
+            path = directory / (entry.id + ".json")
+            if path.exists() and path.read_text(encoding="utf-8") != payload + "\n":
+                raise MemoryStoreError("MEMORY_DUPLICATE", "candidate collision; preserved")
+            _atomic_write(path, payload + "\n")
         return entry
 
     def candidates(self) -> tuple[MemoryEntry, ...]:
@@ -191,11 +228,16 @@ class MemoryStore:
         return tuple(found)
 
     def accept_candidate(self, candidate_id: str) -> MemoryEntry:
+        self._require_main()
+        with file_lock(self.root / ".codex-os/state/memory.lock"):
+            return self._accept_candidate(candidate_id)
+
+    def _accept_candidate(self, candidate_id: str) -> MemoryEntry:
         """Merge one candidate into the JSONL (main-session writer only).
 
         The merge re-validates the candidate against the JSONL contract; a
-        duplicate (already merged) candidate is cleaned up before the error
-        is re-raised, so retrying stays safe.
+        Only a fully identical, already merged candidate can be removed on
+        retry. Validation or index failures preserve the candidate and facts.
         """
 
         path = self._candidate_path(candidate_id)
@@ -213,7 +255,7 @@ class MemoryStore:
                 f"memory candidate is unreadable: {candidate_id}: {exc}",
             ) from exc
         try:
-            merged = self.record(
+            merged = self._record(
                 record_type=entry.record_type,
                 title=entry.title,
                 summary=entry.summary,
@@ -223,8 +265,15 @@ class MemoryStore:
                 status=entry.status,
                 superseded_by=entry.superseded_by,
             )
-        except MemoryStoreError:
-            path.unlink(missing_ok=True)
+        except MemoryStoreError as exc:
+            entries, invalid = self._parse_jsonl()
+            identical = next(
+                (item for item in entries if item.to_json_line() == entry.to_json_line()), None
+            )
+            if exc.code == "MEMORY_DUPLICATE" and not invalid and identical:
+                self._reindex_locked()
+                path.unlink(missing_ok=True)
+                return identical
             raise
         path.unlink(missing_ok=True)
         return merged
@@ -232,6 +281,7 @@ class MemoryStore:
     def reject_candidate(self, candidate_id: str) -> None:
         """Discard one candidate without touching the JSONL."""
 
+        self._require_main()
         path = self._candidate_path(candidate_id)
         if path is None:
             raise MemoryStoreError(
@@ -258,9 +308,15 @@ class MemoryStore:
         return tuple(entries), tuple(invalid)
 
     def reindex(self) -> ReindexResult:
+        with file_lock(self.root / ".codex-os/state/memory.lock"):
+            return self._reindex_locked()
+
+    def _reindex_locked(self) -> ReindexResult:
         """Rebuild the SQLite search index from the JSONL source of truth."""
 
         entries, invalid = self._parse_jsonl()
+        if invalid:
+            return ReindexResult(0, 0, tuple(invalid))
         now = _utc_now()
         with self.database.connection() as connection:
             before = int(connection.execute("SELECT COUNT(*) FROM memory_index").fetchone()[0])
@@ -312,16 +368,13 @@ class MemoryStore:
             raise MemoryStoreError(
                 "MEMORY_STATUS", "unsupported memory statuses: " + str(sorted(unknown_statuses))
             )
-        with self.database.connection() as connection:
-            count = int(connection.execute("SELECT COUNT(*) FROM memory_index").fetchone()[0])
-        if count == 0 and self._jsonl_path().is_file():
-            self.reindex()
+        refreshed = self.reindex()
+        if refreshed.invalid_lines:
+            raise MemoryStoreError("MEMORY_JSONL_INVALID", "; ".join(refreshed.invalid_lines[:3]))
         clauses = ["status IN (" + ",".join("?" for _ in statuses) + ")"]
         parameters: list[object] = list(statuses)
         if record_types:
-            clauses.append(
-                "record_type IN (" + ",".join("?" for _ in record_types) + ")"
-            )
+            clauses.append("record_type IN (" + ",".join("?" for _ in record_types) + ")")
             parameters.extend(record_types)
         for term in _query_terms(query):
             clauses.append(
@@ -371,8 +424,8 @@ class MemoryStore:
             entries.append(entry)
         return entries, invalid
 
+    @staticmethod
     def _build_entry(
-        self,
         *,
         record_type: str,
         title: str,
@@ -401,13 +454,9 @@ class MemoryStore:
         if not clean_title or len(clean_title) > 200:
             raise MemoryStoreError("MEMORY_TITLE", "memory title must be 1..200 characters")
         if not clean_summary or len(clean_summary) > 2000:
-            raise MemoryStoreError(
-                "MEMORY_SUMMARY", "memory summary must be 1..2000 characters"
-            )
+            raise MemoryStoreError("MEMORY_SUMMARY", "memory summary must be 1..2000 characters")
         if not clean_source or len(clean_source) > 1024:
-            raise MemoryStoreError(
-                "MEMORY_SOURCE", "memory source must be 1..1024 characters"
-            )
+            raise MemoryStoreError("MEMORY_SOURCE", "memory source must be 1..1024 characters")
         if "\n" in clean_title or "\n" in clean_source:
             raise MemoryStoreError("MEMORY_FIELD", "memory fields must be single-line")
         if source_commit is not None:
@@ -420,17 +469,11 @@ class MemoryStore:
         if len(clean_tags) > 12:
             raise MemoryStoreError("MEMORY_TAGS", "memory accepts at most 12 tags")
         if normalized_status == "superseded" and not (superseded_by or "").strip():
-            raise MemoryStoreError(
-                "MEMORY_SUPERSEDED", "superseded memory requires superseded_by"
-            )
-        blob = clean_title + " " + clean_summary
+            raise MemoryStoreError("MEMORY_SUPERSEDED", "superseded memory requires superseded_by")
+        blob = " ".join((clean_title, clean_summary, *clean_tags, superseded_by or ""))
         if _SECRET_PATTERN.search(blob) or _SECRET_PATTERN.search(clean_source):
-            raise MemoryStoreError(
-                "MEMORY_SECRET", "memory content contains a suspected secret"
-            )
-        identity = "|".join(
-            (normalized_type, clean_title.casefold(), clean_summary, clean_source)
-        )
+            raise MemoryStoreError("MEMORY_SECRET", "memory content contains a suspected secret")
+        identity = "|".join((normalized_type, clean_title.casefold(), clean_summary, clean_source))
         entry_id = "MEM-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
         entry = MemoryEntry(
             id=entry_id,
@@ -483,8 +526,7 @@ def _entry_from_payload(raw: object, *, line_number: int | None) -> MemoryEntry:
     source_commit = raw.get("source_commit")
     if source_commit is not None and not str(source_commit).strip():
         source_commit = None
-    return MemoryEntry(
-        id=entry_id,
+    entry, _ = MemoryStore._build_entry(
         record_type=record_type,
         title=title,
         summary=summary,
@@ -493,8 +535,10 @@ def _entry_from_payload(raw: object, *, line_number: int | None) -> MemoryEntry:
         tags=tuple(str(tag) for tag in tags_raw),
         status=status,
         superseded_by=str(superseded_by) if superseded_by else None,
-        line_number=line_number,
     )
+    from dataclasses import replace
+
+    return replace(entry, id=entry_id, line_number=line_number)
 
 
 def _entry_from_row(row: sqlite3.Row) -> MemoryEntry:

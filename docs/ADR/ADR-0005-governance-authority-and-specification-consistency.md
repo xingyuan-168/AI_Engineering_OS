@@ -2,7 +2,7 @@
 
 <!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"approved","owner":"architect","requirement_refs":["REQ-1.6.2","GOV-001","DOC-001","VERSION-001"]} -->
 
-- 状态：Accepted
+- 状态：部分 Superseded（ADR-0016/0017）——治理事实与保护用户资产原则保留；旧 runtime、角色/审批凭证与自修改机器不再有效。当前授权边界与任务纪律以 AGENTS.md、ADR-0017 为准；下文保留历史。
 - 日期：2026-08-31
 - 决策者：项目所有者
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from codex_ai_os.adapters.git import GitRunner
 from codex_ai_os.core.worktree import WorktreeError, WorktreeManager
 from codex_ai_os.infrastructure.database import Database
 
@@ -130,3 +132,72 @@ def test_cleanup_unregisters_so_names_reuse(tmp_path: Path) -> None:
     again = manager.prepare(name="reuse")
     assert again.name == "reuse"
     manager.cleanup(name="reuse")
+
+
+def test_partial_cleanup_retains_record_and_never_forces(governed_repo: Path) -> None:
+    manager = _manager(governed_repo)
+    manager.prepare(name="partial")
+    calls: list[tuple[str, ...]] = []
+
+    class BranchFailure(GitRunner):
+        def run(
+            self, *args: str, timeout: float = 30.0, input_data: str | None = None
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(args)
+            if args[:2] == ("branch", "-d"):
+                return subprocess.CompletedProcess(args, 1, "", "fixture refuses branch deletion")
+            return super().run(*args, timeout=timeout, input_data=input_data)
+
+    manager.git = BranchFailure(governed_repo)
+    with pytest.raises(WorktreeError) as error:
+        manager.cleanup(name="partial")
+    assert error.value.code == "BRANCH_DELETE_FAILED"
+    assert manager.list()[0].name == "partial"
+    assert not (governed_repo / ".worktrees/partial").exists()
+    assert all("-D" not in args and "--force" not in args for args in calls)
+    manager.git = GitRunner(governed_repo)
+    manager.cleanup(name="partial")
+    assert not manager.list()
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+def test_registration_failure_only_recovers_unchanged_new_objects(
+    governed_repo: Path, monkeypatch: pytest.MonkeyPatch, dirty: bool
+) -> None:
+    manager = _manager(governed_repo)
+    path = governed_repo / ".worktrees/unregistered"
+
+    @contextmanager
+    def fail_registration():
+        if dirty:
+            (path / "user-work.txt").write_text("keep", encoding="utf-8")
+        raise OSError("fixture registration unavailable")
+        yield  # pragma: no cover - context manager shape
+
+    monkeypatch.setattr(manager.database, "connection", fail_registration)
+    with pytest.raises(WorktreeError, match="registration failed"):
+        manager.prepare(name="unregistered")
+    assert path.exists() is dirty
+    if dirty:
+        assert (path / "user-work.txt").read_text() == "keep"
+    else:
+        assert (
+            manager.git.run("show-ref", "--verify", "refs/heads/codex/wt-unregistered").returncode
+            != 0
+        )
+
+
+def test_forged_registration_cannot_remove_external_path(
+    governed_repo: Path, tmp_path: Path
+) -> None:
+    manager = _manager(governed_repo)
+    manager.prepare(name="forged")
+    asset = tmp_path / "user-asset"
+    asset.mkdir()
+    with manager.database.connection() as connection:
+        connection.execute("UPDATE worktrees SET path='../user-asset' WHERE name='forged'")
+        connection.commit()
+    with pytest.raises(WorktreeError) as error:
+        manager.cleanup(name="forged")
+    assert error.value.code == "WORKTREE_PATH_UNSAFE"
+    assert asset.is_dir() and (governed_repo / ".worktrees/forged").is_dir()

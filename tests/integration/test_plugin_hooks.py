@@ -1,10 +1,11 @@
-"""Integration tests for the PreToolUse hook script (ADR-0011 / ADR-0016)."""
+"""The stdlib hook bridge obeys the host protocol; runtime checks have one kernel."""
 
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,227 +13,221 @@ from typing import Any
 
 import pytest
 
+from codex_ai_os.application.hook_gateway import authorize_hook_payload
 from codex_ai_os.core.worktree import WorktreeManager
 from codex_ai_os.infrastructure.database import Database
 
-HOOK_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "plugins"
-    / "ai-engineering-os"
-    / "hooks"
-    / "pre_tool_use.py"
-)
-
+HOOK_PATH = Path(__file__).resolve().parents[2] / "plugins/ai-engineering-os/hooks/pre_tool_use.py"
 _spec = importlib.util.spec_from_file_location("pre_tool_use", HOOK_PATH)
 assert _spec is not None and _spec.loader is not None
 hook = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(hook)
 
-REAL_IN_DISPOSABLE_AREA = hook._in_disposable_area
+
+@pytest.fixture(autouse=True)
+def isolate_protocol_from_entry_probe(monkeypatch):
+    from codex_ai_os.runtime_entry import EntryError
+
+    class Selector:
+        @staticmethod
+        def select_runtime(root, timeout):
+            value = shutil.which("codex-os")
+            if not value:
+                raise EntryError("fixture runtime missing", code="AIOS_RUNTIME_UNAVAILABLE")
+            return [value]
+
+        @staticmethod
+        def controlled_run(command, *, plugin_root, timeout, input_data=None):
+            return subprocess.run(
+                command,
+                timeout=timeout,
+                input=input_data,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+    monkeypatch.setattr(hook, "_selector", lambda: (Selector, HOOK_PATH.parents[1]))
 
 
-def _git(root: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
-
-
-def _coordinator_with_worktree(tmp_path: Path, *, remote: bool = False) -> tuple[Path, Path]:
-    """One governed coordinator project with one real registered worktree."""
-
-    root = tmp_path / "repo"
-    root.mkdir()
-    _git(root, "init", "-q", "-b", "main")
-    _git(root, "config", "user.email", "t@e.com")
-    _git(root, "config", "user.name", "T")
-    (root / "README.md").write_text("# t\n", encoding="utf-8")
-    _git(root, "add", "-A")
-    _git(root, "commit", "-q", "-m", "init")
-    if remote:
-        _git(root, "remote", "add", "origin", "https://github.com/org/repo.git")
-    (root / ".codex-os").mkdir()
-    (root / ".codex-os" / "project.yaml").write_text(
-        "schema_version: '1.0'\n"
-        "project_id: PROJECT-HOOK\n"
-        "name: hook-fixture\n"
-        "root: .\n"
-        "code_paths:\n  - src\n",
-        encoding="utf-8",
-    )
-    database = Database(root / ".codex-os" / "state" / "state.db")
-    database.migrate()
-    manager = WorktreeManager(root, database=database)
-    manager.prepare(name="demo")
-    return root, root / ".worktrees" / "demo"
-
-
-def _run_hook(tool: str, command: str, cwd: Path) -> tuple[int, str | None]:
-    payload: dict[str, Any] = {
+def payload(
+    root: Path, tool: str = "apply_patch", command: str = "*** Add File: docs/x.md\n+x"
+) -> dict[str, Any]:
+    return {
+        "cwd": str(root),
         "tool_name": tool,
         "tool_input": {"command": command},
-        "cwd": str(cwd),
+        "hook_event_name": "PreToolUse",
     }
-    original_stdin, original_stdout = sys.stdin, sys.stdout
-    sys.stdin = io.StringIO(json.dumps(payload))
-    sys.stdout = buffer = io.StringIO()
-    try:
-        code = hook.main()
-    finally:
-        sys.stdin, sys.stdout = original_stdin, original_stdout
-    output = buffer.getvalue().strip()
-    if not output:
-        return code, None
-    decision = json.loads(output)
-    return code, decision.get("hookSpecificOutput", {}).get("permissionDecision")
 
 
-def _main_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Isolate tests from the host temp rule: pytest tmp paths live under the
-    system temp directory, which would otherwise mark every fixture cwd as
-    disposable and mask the worktree semantics under test."""
+@pytest.mark.parametrize(
+    "output",
+    [
+        "",
+        "null",
+        "[]",
+        "garbage",
+        '{"garbage": 1}',
+        '{"hookSpecificOutput":{"permissionDecision":"ask"}}',
+        '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}',
+        '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"wrong event"}}',
+    ],
+)
+def test_invalid_runtime_output_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: "codex-os")
+    monkeypatch.setattr(
+        hook.subprocess, "run", lambda *args, **kw: subprocess.CompletedProcess(args, 0, output, "")
+    )
+    result = hook.run_hook(payload(tmp_path))["hookSpecificOutput"]
+    assert result["permissionDecision"] == "deny"
+    assert "AIOS_RUNTIME_INVALID_RESPONSE" in result["permissionDecisionReason"]
 
-    monkeypatch.setattr(hook, "_temp_roots", lambda: [])
-    monkeypatch.setattr(hook.shutil, "which", lambda name: None)
-    monkeypatch.setattr(hook, "_authorize_via_runtime", lambda payload: "")
+
+@pytest.mark.parametrize("failure", ["missing", "timeout", "exit", "oserror"])
+def test_runtime_failure_denies_writes_with_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None if failure == "missing" else "codex-os")
+
+    def run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert 9 < kwargs["timeout"] <= 10
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired("codex-os", 10)
+        if failure == "oserror":
+            raise OSError("fixture unavailable")
+        return subprocess.CompletedProcess(args, 1, "", "")
+
+    monkeypatch.setattr(hook.subprocess, "run", run)
+    result = hook.run_hook(payload(tmp_path))["hookSpecificOutput"]
+    assert result["permissionDecision"] == "deny"
+    assert "AIOS_RUNTIME_" in result["permissionDecisionReason"]
 
 
-def test_temp_directory_is_disposable(tmp_path: Path) -> None:
-    # The system temp directory (pytest tmp_path lives there) is disposable.
-    assert REAL_IN_DISPOSABLE_AREA(str(tmp_path)) is True
-    assert REAL_IN_DISPOSABLE_AREA(str(Path.home())) is False
-
-
-def test_in_disposable_area_worktree_semantics(
+def test_missing_runtime_does_not_claim_read_checks_passed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _main_context(monkeypatch)
-    root, worktree = _coordinator_with_worktree(tmp_path)
-    # A registered, real, git-backed worktree is trusted.
-    assert REAL_IN_DISPOSABLE_AREA(str(worktree)) is True
-    # A fake .worktrees path without registration never gains rights.
-    assert REAL_IN_DISPOSABLE_AREA(str(root / ".worktrees" / "fake")) is False
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    result = hook.run_hook(payload(tmp_path, "Bash", "git status"))["hookSpecificOutput"]
+    assert "permissionDecision" not in result
+    assert "AIOS_RUNTIME_UNAVAILABLE" in result["additionalContext"]
 
 
-def test_registered_worktree_required_before_allowance(
+def test_bridge_returns_valid_runtime_response(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _main_context(monkeypatch)
-    root, worktree = _coordinator_with_worktree(tmp_path)
-    fake = root / ".worktrees" / "fake"
-    fake.mkdir(parents=True)
-    # Real registered worktree: destructive-but-local commands are allowed.
-    _, decision = _run_hook("Bash", "git reset --hard HEAD~1", worktree)
-    assert decision is None
-    _, decision = _run_hook("Bash", "git clean -fd", worktree)
-    assert decision is None
-    # Fake path: fail closed.
-    _, decision = _run_hook("Bash", "git reset --hard HEAD~1", fake)
-    assert decision == "deny"
+    monkeypatch.setattr(shutil, "which", lambda name: "codex-os")
+    for response in (
+        {},
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "rule: reason",
+            }
+        },
+    ):
+        monkeypatch.setattr(
+            hook.subprocess,
+            "run",
+            lambda *args, response=response, **kwargs: subprocess.CompletedProcess(
+                args, 0, json.dumps(response), ""
+            ),
+        )
+        assert hook.run_hook(payload(tmp_path)) == response
 
 
-def test_force_push_is_denied(tmp_path: Path) -> None:
-    code, decision = _run_hook("Bash", "git push --force origin main", tmp_path)
-    assert decision == "deny"
-    assert code == 0
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --force origin main",
+        "git push origin :refs/heads/feature",
+        "git update-ref -d refs/heads/main",
+        "git reset --hard",
+        "git clean -fd",
+        "git branch -D feature",
+    ],
+)
+def test_shared_main_git_guards(governed_repo: Path, command: str) -> None:
+    result = authorize_hook_payload(payload(governed_repo, "Bash", command))
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_remote_ref_deletion_and_update_ref_denied(tmp_path: Path) -> None:
-    _, decision = _run_hook("Bash", "git push origin :refs/heads/feature", tmp_path)
-    assert decision == "deny"
-    _, decision = _run_hook("Bash", "git update-ref -d refs/heads/main", tmp_path)
-    assert decision == "deny"
-
-
-def test_destructive_git_denied_in_main(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _main_context(monkeypatch)
-    root, _ = _coordinator_with_worktree(tmp_path)
-    _, decision = _run_hook("Bash", "git reset --hard HEAD~1", root)
-    assert decision == "deny"
-
-
-def test_engineering_commands_are_never_blocked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Offline mode: the runtime CLI is treated as unreachable so the test
-    # exercises the hook's own rules instead of spawning the real gateway.
-    monkeypatch.setattr(hook.shutil, "which", lambda name: None)
-    monkeypatch.setattr(hook, "_authorize_via_runtime", lambda payload: "")
-    root, _ = _coordinator_with_worktree(tmp_path)
-    for command in (
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git branch -d feature",
         "pip install requests",
         "npm install",
-        "pnpm add vite",
-        "yarn add react",
         "cargo build",
-        "pytest tests/unit/test_gates.py",
+        "pytest tests",
         "ruff check src",
-        "sed -i s/a/b/ file.txt",
+    ],
+)
+def test_native_engineering_commands_remain_native(governed_repo: Path, command: str) -> None:
+    assert authorize_hook_payload(payload(governed_repo, "Bash", command)) == {}
+
+
+def test_registered_worktree_and_single_writer(governed_repo: Path) -> None:
+    database = Database(governed_repo / ".codex-os/state/state.db")
+    database.migrate()
+    manager = WorktreeManager(governed_repo, database=database)
+    manager.prepare(name="hook-check")
+    worktree = governed_repo / ".worktrees/hook-check"
+    assert authorize_hook_payload(payload(worktree, "Bash", "git reset --hard")) == {}
+    for command in ("git push --force origin main", f'git -C "{governed_repo}" reset --hard'):
+        assert (
+            authorize_hook_payload(payload(worktree, "Bash", command))["hookSpecificOutput"][
+                "permissionDecision"
+            ]
+            == "deny"
+        )
+    for tool, command in (
+        ("apply_patch", "*** Update File: docs/memory/memory.jsonl\n+x"),
+        ("Bash", "echo x > docs/memory/memory.jsonl"),
     ):
-        _, decision = _run_hook("Bash", command, root)
-        assert decision is None, command
+        assert (
+            authorize_hook_payload(payload(worktree, tool, command))["hookSpecificOutput"][
+                "permissionDecision"
+            ]
+            == "deny"
+        )
+    manager.cleanup(name="hook-check")
 
 
-def test_offline_no_github_blocks_formal_source_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "event,tool,command,decision",
+    [
+        ("PreToolUse", "Bash", "git push --force origin main", "deny"),
+        ("PreToolUse", "apply_patch", "*** Add File: input/asset.txt\n+x", "deny"),
+        ("PreToolUse", "apply_patch", "*** Add File: docs/note.md\n+x", None),
+        ("SessionStart", "", "", None),
+    ],
+)
+def test_real_bridge_and_source_cli_protocol(
+    governed_repo: Path, event: str, tool: str, command: str, decision: str | None
 ) -> None:
-    _main_context(monkeypatch)
-    root, _ = _coordinator_with_worktree(tmp_path, remote=False)
-    code, decision = _run_hook("apply_patch", "*** Add File: src/app.py\n+x", root)
-    assert code == 0
-    assert decision == "deny"
-    # Documentation writes stay allowed without GitHub.
-    _, decision = _run_hook("apply_patch", "*** Add File: docs/notes.md\n+x", root)
-    assert decision is None
-
-
-def test_offline_github_remote_allows_formal_source_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _main_context(monkeypatch)
-    root, _ = _coordinator_with_worktree(tmp_path, remote=True)
-    _, decision = _run_hook("apply_patch", "*** Add File: src/app.py\n+x", root)
-    assert decision is None
-
-
-def test_recursive_deletion_denied_in_main(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _main_context(monkeypatch)
-    root, _ = _coordinator_with_worktree(tmp_path)
-    _, decision = _run_hook("Bash", "cmd /c rd /s /q D:/unsafe", root)
-    assert decision == "deny"
-    _, decision = _run_hook(
-        "Bash", "powershell -NoProfile Remove-Item D:/x -Recurse -Force", root
+    environment = {
+        **os.environ,
+        "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
+    }
+    data = payload(governed_repo, tool, command)
+    data["hook_event_name"] = event
+    script = HOOK_PATH if event == "PreToolUse" else HOOK_PATH.with_name("session_start.py")
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        input=json.dumps(data),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=15,
     )
-    assert decision == "deny"
-
-
-def test_apply_patch_into_input_is_denied(tmp_path: Path) -> None:
-    patch = "*** Add File: input/notes.txt\n+data"
-    _, decision = _run_hook("apply_patch", patch, tmp_path)
-    assert decision == "deny"
-
-
-def test_memory_single_writer_rule(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _main_context(monkeypatch)
-    root, worktree = _coordinator_with_worktree(tmp_path)
-    patch = "*** Update File: docs/memory/memory.jsonl\n+memory line"
-    _, decision = _run_hook("apply_patch", patch, worktree)
-    assert decision == "deny"
-    _, decision = _run_hook(
-        "Bash", "codex-os memory record --title t --summary s --source docs/a.md", worktree
-    )
-    assert decision == "deny"
-    _, decision = _run_hook(
-        "Bash",
-        "codex-os memory record --candidate --title t --summary s --source docs/a.md",
-        worktree,
-    )
-    assert decision is None
-    _, decision = _run_hook("Bash", "echo x > docs/memory/memory.jsonl", worktree)
-    assert decision == "deny"
-    # The main session (coordinator root) may write the JSONL directly.
-    _, decision = _run_hook("Bash", "echo x > docs/memory/memory.jsonl", root)
-    assert decision is None
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout).get("hookSpecificOutput", {})
+    assert output.get("permissionDecision") == decision
+    if event == "SessionStart":
+        assert output["hookEventName"] == event
+        assert "starting Git ref" in output["additionalContext"]

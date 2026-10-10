@@ -62,12 +62,15 @@ def test_check_blocks_without_git(tmp_path: Path) -> None:
     assert details["documents"]["ok"] is True
 
 
-def test_check_passes_when_github_is_ready(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_check_passes_when_github_is_ready(tmp_path: Path, monkeypatch: Any) -> None:
     import codex_ai_os.application.repository as repository_module
+    from codex_ai_os.core.github_remote import RemoteCheck
 
-    monkeypatch.setattr(repository_module, "_github_findings", lambda git, hosts: [])
+    monkeypatch.setattr(
+        repository_module,
+        "check_remote",
+        lambda *args, **kwargs: RemoteCheck("origin", (), "github.com", ()),
+    )
     runner.invoke(app, ["init", str(tmp_path), "--project-id", "PROJECT-OK", "--json"])
     _git_repo(tmp_path)
     result = runner.invoke(app, ["check", str(tmp_path), "--json"])
@@ -85,6 +88,7 @@ def test_finish_gate_blocks_then_passes(tmp_path: Path) -> None:
     payload = _json_output(blocked.output)
     codes = {finding["code"] for finding in payload["error"]["details"]["findings"]}
     assert "MEMORY_MISSING" in codes
+    assert "FINISH_BASE_REQUIRED" in codes
     failing = runner.invoke(
         app,
         [
@@ -93,6 +97,8 @@ def test_finish_gate_blocks_then_passes(tmp_path: Path) -> None:
             "--test-command",
             'python -c "import sys; sys.exit(3)"',
             "--memory-not-needed",
+            "--base-ref",
+            "HEAD",
             "--json",
         ],
     )
@@ -109,6 +115,8 @@ def test_finish_gate_blocks_then_passes(tmp_path: Path) -> None:
             "--test-command",
             'python -c "pass"',
             "--memory-not-needed",
+            "--base-ref",
+            "HEAD",
             "--json",
         ],
     )
@@ -119,7 +127,7 @@ def test_finish_gate_blocks_then_passes(tmp_path: Path) -> None:
     (tmp_path / "src" / "new.py").write_text("x = 1\n", encoding="utf-8")
     unverified = runner.invoke(
         app,
-        ["finish", str(tmp_path), "--memory-not-needed", "--json"],
+        ["finish", str(tmp_path), "--base-ref", "HEAD", "--memory-not-needed", "--json"],
     )
     assert unverified.exit_code == 40, unverified.output
     unverified_codes = {
@@ -242,9 +250,7 @@ def test_worktree_lifecycle_via_cli(tmp_path: Path) -> None:
         app, ["worktree", "cleanup", "demo", "--project-root", str(tmp_path), "--json"]
     )
     assert cleaned.exit_code == 0, cleaned.output
-    listing = runner.invoke(
-        app, ["worktree", "list", "--project-root", str(tmp_path), "--json"]
-    )
+    listing = runner.invoke(app, ["worktree", "list", "--project-root", str(tmp_path), "--json"])
     assert _json_output(listing.output)["data"]["results"] == []
 
 
@@ -275,7 +281,5 @@ def test_memory_cli_round_trip(tmp_path: Path) -> None:
     assert searched.exit_code == 0, searched.output
     results = _json_output(searched.output)["data"]["results"]
     assert any(item["title"] == "Prefer narrow gates" for item in results)
-    reindexed = runner.invoke(
-        app, ["memory", "reindex", "--project-root", str(tmp_path), "--json"]
-    )
+    reindexed = runner.invoke(app, ["memory", "reindex", "--project-root", str(tmp_path), "--json"])
     assert reindexed.exit_code == 0, reindexed.output

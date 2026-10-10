@@ -37,6 +37,7 @@ include = [
   "tests",
   "docs",
   "plugins",
+  "scripts",
   "pyproject.toml",
   "uv.lock",
   "README.md",

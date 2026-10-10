@@ -71,6 +71,8 @@ class WorktreeManager:
 
         slug = _slug(name) or _generated_name()
         path = self.root / WORKTREE_ROOT / slug
+        if (self.root / WORKTREE_ROOT).is_symlink() or (self.root / WORKTREE_ROOT).is_junction():
+            raise WorktreeError("WORKTREE_PATH_UNSAFE", "worktree root is a reparse point")
         if path.exists():
             raise WorktreeError(
                 "WORKTREE_EXISTS", f"worktree path already exists: {WORKTREE_ROOT}/{slug}"
@@ -82,37 +84,60 @@ class WorktreeManager:
         record_id = new_id("WORKTREE")
         now = _utc_now()
         resolved_task_id = task_id or new_id("TASK")
-        with self.database.connection() as connection:
-            try:
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    "INSERT OR IGNORE INTO tasks("
-                    "id, title, branch, status, created_at, updated_at) "
-                    "VALUES (?, ?, ?, 'in_progress', ?, ?)",
-                    (resolved_task_id, "worktree " + slug, branch, now, now),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO worktrees(
-                        id, task_id, name, path, branch, target_branch,
-                        disposable, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)
-                    """,
-                    (
-                        record_id,
-                        resolved_task_id,
-                        slug,
-                        f"{WORKTREE_ROOT}/{slug}",
-                        branch,
-                        target_branch,
-                        now,
-                        now,
-                    ),
-                )
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
+        created_tip: str | None = None
+        try:
+            created = self.git.run("rev-parse", "--verify", branch + "^{commit}")
+            if created.returncode != 0 or not created.stdout.strip():
+                raise WorktreeError("WORKTREE_TIP_UNKNOWN", "new branch tip cannot be verified")
+            created_tip = created.stdout.strip()
+            with self.database.connection() as connection:
+                try:
+                    connection.execute("BEGIN IMMEDIATE")
+                    connection.execute(
+                        "INSERT OR IGNORE INTO tasks("
+                        "id, title, branch, status, created_at, updated_at) "
+                        "VALUES (?, ?, ?, 'in_progress', ?, ?)",
+                        (resolved_task_id, "worktree " + slug, branch, now, now),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO worktrees(
+                            id, task_id, name, path, branch, target_branch,
+                            disposable, status, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)
+                        """,
+                        (
+                            record_id,
+                            resolved_task_id,
+                            slug,
+                            f"{WORKTREE_ROOT}/{slug}",
+                            branch,
+                            target_branch,
+                            now,
+                            now,
+                        ),
+                    )
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+        except Exception as exc:
+            status = GitRunner(path).run("status", "--porcelain")
+            tip = self.git.run("rev-parse", branch)
+            if (
+                created_tip
+                and status.returncode == 0
+                and not status.stdout
+                and tip.returncode == 0
+                and tip.stdout.strip() == created_tip
+            ):
+                removed = self.git.run("worktree", "remove", str(path))
+                if removed.returncode == 0:
+                    self.git.run("branch", "-d", branch)
+            raise WorktreeError(
+                "WORKTREE_REGISTRATION_FAILED",
+                "registration failed; inspect Git worktrees/branches for recoverable remnants",
+            ) from exc
         return WorktreeRecord(
             id=record_id,
             name=slug,
@@ -129,7 +154,7 @@ class WorktreeManager:
         """Report registration, existence, and cleanliness for one worktree."""
 
         record = self._record(name)
-        absolute = self.root / record.path
+        absolute = self._validated_path(record)
         if not absolute.is_dir():
             return WorktreeRecord(**{**_fields(record), "clean": None})
         status = GitRunner(absolute).run("status", "--porcelain")
@@ -144,11 +169,9 @@ class WorktreeManager:
         """
 
         record = self._record(name)
-        absolute = self.root / record.path
+        absolute = self._validated_path(record)
         if not absolute.is_dir():
-            raise WorktreeError(
-                "WORKTREE_MISSING", "worktree directory is missing: " + record.path
-            )
+            raise WorktreeError("WORKTREE_MISSING", "worktree directory is missing: " + record.path)
         status = GitRunner(absolute).run("status", "--porcelain")
         if status.returncode != 0 or status.stdout.strip():
             raise WorktreeError(
@@ -167,7 +190,7 @@ class WorktreeManager:
         """
 
         record = self._record(name)
-        absolute = self.root / record.path
+        absolute = self._validated_path(record)
         target = record.target_branch or "main"
         path_exists = absolute.is_dir()
         tip = self.git.run("rev-parse", "--verify", record.branch + "^{commit}")
@@ -186,14 +209,15 @@ class WorktreeManager:
                     "explicitly before cleanup",
                 )
         if tip.returncode == 0:
-            ancestor = self.git.run(
-                "merge-base", "--is-ancestor", tip.stdout.strip(), target
-            )
+            ancestor = self.git.run("merge-base", "--is-ancestor", tip.stdout.strip(), target)
             if ancestor.returncode != 0:
                 raise WorktreeError(
                     "WORKTREE_NOT_MERGED",
-                    "branch '" + record.branch + "' is not contained in '"
-                    + target + "'; merge it before cleanup",
+                    "branch '"
+                    + record.branch
+                    + "' is not contained in '"
+                    + target
+                    + "'; merge it before cleanup",
                 )
         # The worktree must be detached from the branch before the branch can
         # be deleted, so removal happens strictly before the branch delete.
@@ -205,11 +229,11 @@ class WorktreeManager:
                     _git_failure("git worktree remove", result),
                 )
         if tip.returncode == 0:
-            branch_delete = self.git.run("branch", "-D", record.branch)
+            branch_delete = self.git.run("branch", "-d", record.branch)
             if branch_delete.returncode != 0 and not _branch_gone(branch_delete):
                 raise WorktreeError(
                     "BRANCH_DELETE_FAILED",
-                    _git_failure("git branch -D", branch_delete),
+                    _git_failure("git branch -d", branch_delete),
                 )
         with self.database.connection() as connection:
             connection.execute("DELETE FROM worktrees WHERE name = ?", (record.name,))
@@ -221,11 +245,45 @@ class WorktreeManager:
             rows = connection.execute("SELECT * FROM worktrees ORDER BY created_at").fetchall()
         return tuple(_record_from_row(row) for row in rows)
 
+    def _validated_path(self, record: WorktreeRecord) -> Path:
+        path = self.root / record.path
+        if (
+            not record.disposable
+            or not record.branch.startswith(BRANCH_PREFIX)
+            or Path(record.path).is_absolute()
+            or ".." in Path(record.path).parts
+            or not record.path.replace("\\", "/").startswith(WORKTREE_ROOT + "/")
+            or path.is_symlink()
+            or path.is_junction()
+            or any(
+                parent.is_symlink() or parent.is_junction()
+                for parent in path.parents
+                if parent.is_relative_to(self.root)
+            )
+            or not path.resolve().is_relative_to((self.root / WORKTREE_ROOT).resolve())
+        ):
+            raise WorktreeError("WORKTREE_PATH_UNSAFE", "invalid disposable worktree registration")
+        if path.exists():
+            listing = self.git.run("worktree", "list", "--porcelain")
+            matches = [
+                block
+                for block in listing.stdout.split("\n\n")
+                if any(
+                    line.startswith("worktree ") and Path(line[9:]).resolve() == path.resolve()
+                    for line in block.splitlines()
+                )
+            ]
+            if listing.returncode != 0 or not any(
+                f"branch refs/heads/{record.branch}" in block.splitlines() for block in matches
+            ):
+                raise WorktreeError(
+                    "WORKTREE_NOT_REGISTERED", "Git and database registration differ"
+                )
+        return path.resolve()
+
     def _record(self, name: str) -> WorktreeRecord:
         with self.database.connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM worktrees WHERE name = ?", (name,)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM worktrees WHERE name = ?", (name,)).fetchone()
         if row is None:
             raise WorktreeError("WORKTREE_UNKNOWN", "worktree is not registered: " + name)
         return _record_from_row(row)

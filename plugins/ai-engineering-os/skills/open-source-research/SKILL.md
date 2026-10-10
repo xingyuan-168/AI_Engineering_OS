@@ -20,11 +20,14 @@ Keep the research in `docs/OPEN_SOURCE_RESEARCH.md` using exactly this shape:
 # Open Source Research
 
 ## Requirement
-What this requirement is.
+requirement_id: REQ-EXAMPLE
+summary: Evaluate an existing approach for this requirement.
+scope: example-module
+updated_at: 2026-09-24
 
 ## Candidates
 ### Project A
-- URL:
+- URL: https://github.com/example/project
 - License:
 - 解决什么：
 - 可直接复用：
@@ -33,13 +36,17 @@ What this requirement is.
 - 风险：
 
 ## Decision
-- use / fork / extract / build
-- reason:
+decision: build
+reason: Explain why the inspected candidates do not meet the scoped requirement.
 ```
 
 ## Rules
 
-- One Decision section per requirement; the Code Start gate checks for it.
+- Replace the illustrative candidate URL and metadata with verified facts (or an explicit no-suitable-candidate statement). Pass the same requirement id:
+
+```python
+governance_check(project_root="<project-root>", stage="start", change_class="major_feature", requirement_id="REQ-EXAMPLE")
+```
 - No supply-chain audits, SBOMs, or fixed field matrices for candidates you rejected.
 - Never introduce a new agent runtime (LangGraph, CrewAI, MetaGPT, OpenHands) as a dependency; Codex already provides agent capability.
 - Cite URLs so the decision stays auditable.

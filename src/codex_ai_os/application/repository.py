@@ -1,6 +1,6 @@
 """Formal GitHub readiness and repository hygiene (governance-core, ADR-0016).
 
-input/ is protected user material: it is never scanned and never flagged.
+The checkout's root input/ contains protected user material and is not scanned.
 output/ must stay a pure deliverable area (no caches, temp files, backups,
 or source copies). Legacy document trees such as docs/archive must not
 exist because Git history is the only archive. Copy-style version
@@ -11,13 +11,11 @@ always agree.
 
 from __future__ import annotations
 
-import os
-import re
 from pathlib import Path
-from urllib.parse import urlsplit
 
-from codex_ai_os.adapters.git import GitRunner
-from codex_ai_os.core.gates import GateFinding, hygiene_findings
+from codex_ai_os.adapters.git import GitRunner, ignored_untracked_paths
+from codex_ai_os.core.gates import GateFinding, hygiene_findings, output_purity_findings
+from codex_ai_os.core.github_remote import check_remote
 from codex_ai_os.domain.config import GitPushPolicy, ProjectConfig
 from codex_ai_os.domain.governance import RepositoryCheckReport, RepositoryFinding
 from codex_ai_os.infrastructure.config import load_project_config
@@ -25,18 +23,15 @@ from codex_ai_os.infrastructure.config import load_project_config
 # Legacy archive trees must not exist in the worktree; Git history is the
 # only archive. input/ is deliberately absent: it is protected user input.
 _FORBIDDEN_LEGACY_DOC_TREES = ("docs/archive",)
-_OUTPUT_IMPURE = re.compile(
-    r"(?:\.(?:tmp|temp|log|bak|pyc|pyo|orig|rej)$"
-    r"|^(?:tmp|temp|debug|scratch|oneoff|one_off)[\w.-]*$)",
-    re.IGNORECASE,
-)
-_OUTPUT_FORBIDDEN_NAMES = frozenset(
-    {"backup", "copy", "old", "final", "temp", "tmp", "debug", "cache", "__pycache__"}
-)
 _HYGIENE_CODES = frozenset(
     {
         "COPY_STYLE_DIRECTORY",
         "COPY_STYLE_FILE",
+        "PROJECT_SOURCE_COPY",
+        "PROVENANCE_CHECK_FAILED",
+        "TRACKED_CHECK_FAILED",
+        "CONFLICT_CHECK_FAILED",
+        "UNRESOLVED_CONFLICT",
         "TRACKED_POLLUTION",
         "GITIGNORE_INCOMPLETE",
         "OUTPUT_IMPURE",
@@ -45,9 +40,8 @@ _HYGIENE_CODES = frozenset(
     }
 )
 # The fifteen runtime artifact families that must never reach Git. The
-# .gitignore check is a semantic checklist, not a full gitignore parser:
-# equivalent spellings (parent directories, character-class globs, anchored
-# forms) satisfy an entry (P1-6).
+# check delegates to Git, including negations and nested rules; no files are
+# created for the representative paths. Finish also checks its actual UUID paths.
 _GITIGNORE_BASENAMES = (
     "__pycache__",
     ".pytest_cache",
@@ -59,7 +53,6 @@ _GITIGNORE_BASENAMES = (
     ".worktrees",
 )
 _GITIGNORE_GLOBS = ("*.pyc", "*.log")
-_GITIGNORE_GLOB_EQUIVALENTS = {"*.pyc": ("*.py[cod]", "*.py[co]", "*.py?")}
 _GITIGNORE_PATHS = (
     ".codex-os/state",
     ".codex-os/logs",
@@ -82,10 +75,13 @@ class RepositoryGovernanceService:
         *,
         runner: GitRunner | None = None,
         config: ProjectConfig | None = None,
+        remote: str | None = None,
     ) -> None:
         self.root = project_root.resolve()
         self.config = config or load_project_config(self.root)
         self.runner = runner or GitRunner(self.root)
+        self.remote = remote
+        self.remote_check = None
 
     def check(self) -> RepositoryCheckReport:
         """Evaluate GitHub readiness, hygiene, and output purity."""
@@ -99,9 +95,7 @@ class RepositoryGovernanceService:
 
         top = git.run("rev-parse", "--show-toplevel")
         if top.returncode != 0:
-            findings.append(
-                GateFinding("NOT_GIT_REPOSITORY", "project is not a Git repository")
-            )
+            findings.append(GateFinding("NOT_GIT_REPOSITORY", "project is not a Git repository"))
         else:
             reported = Path(top.stdout.strip()).resolve()
             if reported != self.root:
@@ -120,10 +114,12 @@ class RepositoryGovernanceService:
             findings.extend(hygiene_findings(self.root, git))
             findings.extend(_gitignore_findings(self.root))
             findings.extend(_legacy_tree_findings(self.root))
-            findings.extend(_output_purity_findings(self.root))
             if not fixture:
-                findings.extend(_github_findings(git, self.config.github_hosts))
-                remote_host = _configured_remote_host(git)
+                self.remote_check = check_remote(git, self.config.github_hosts, remote=self.remote)
+                findings.extend(
+                    GateFinding(code, message) for code, message in self.remote_check.errors
+                )
+                remote_host = self.remote_check.host
 
         ordered = _convert(findings)
         report = RepositoryCheckReport(
@@ -132,7 +128,7 @@ class RepositoryGovernanceService:
             root=self.root.as_posix(),
             head_commit=head,
             remote_host=remote_host,
-            hygiene_ok=not any(item.code in _HYGIENE_CODES for item in ordered),
+            hygiene_ok=not any(item.blocking and item.code in _HYGIENE_CODES for item in ordered),
             findings=ordered,
         )
         return report
@@ -146,44 +142,11 @@ class RepositoryGovernanceService:
 
 
 def _github_findings(git: GitRunner, github_hosts: frozenset[str]) -> list[GateFinding]:
-    findings: list[GateFinding] = []
-    remote = git.run("remote", "get-url", "origin")
-    if remote.returncode != 0:
-        findings.append(
-            GateFinding(
-                "GITHUB_REMOTE_REQUIRED",
-                "origin remote is required before formal implementation",
-            )
-        )
-        return findings
-    url = remote.stdout.strip()
-    host = _remote_host(url)
-    if host is None or host not in {value.casefold() for value in github_hosts}:
-        findings.append(
-            GateFinding(
-                "GITHUB_REMOTE_REQUIRED",
-                "remote must use an allowed GitHub HTTPS or SSH host: " + repr(url),
-            )
-        )
-        return findings
-    reachable = git.run("ls-remote", "origin")
-    if reachable.returncode != 0:
-        detail = (reachable.stderr or reachable.stdout).strip().splitlines()
-        findings.append(
-            GateFinding(
-                "REMOTE_UNREACHABLE",
-                "GitHub remote is unreachable: "
-                + (detail[-1] if detail else "git ls-remote exit " + str(reachable.returncode)),
-            )
-        )
-    return findings
+    return [GateFinding(code, message) for code, message in check_remote(git, github_hosts).errors]
 
 
 def _configured_remote_host(git: GitRunner) -> str | None:
-    remote = git.run("remote", "get-url", "origin")
-    if remote.returncode != 0:
-        return None
-    return _remote_host(remote.stdout.strip())
+    return check_remote(git, {"github.com"}).host
 
 
 def _gitignore_findings(root: Path) -> list[GateFinding]:
@@ -199,28 +162,22 @@ def _gitignore_findings(root: Path) -> list[GateFinding]:
             )
         ]
     try:
-        raw_lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as exc:
+        probes = {
+            name: name + "/.aios-ignore-probe"
+            for name in (*_GITIGNORE_BASENAMES, *_GITIGNORE_PATHS)
+        }
+        probes.update({name: name.replace("*", ".aios-ignore-probe") for name in _GITIGNORE_GLOBS})
+        ignored = ignored_untracked_paths(GitRunner(root), list(probes.values()))
+    except (OSError, ValueError) as exc:
         return [
             GateFinding(
                 "GITIGNORE_INCOMPLETE",
-                ".gitignore is unreadable: " + str(exc),
+                "cannot verify runtime ignore rules: " + str(exc),
                 path=".gitignore",
+                details=getattr(exc, "details", None),
             )
         ]
-    patterns = tuple(
-        normalized for line in raw_lines for normalized in (_normalize_ignore(line),) if normalized
-    )
-    missing: list[str] = []
-    for basename in _GITIGNORE_BASENAMES:
-        if not any(_covers_basename(pattern, basename) for pattern in patterns):
-            missing.append(basename)
-    for glob_pattern in _GITIGNORE_GLOBS:
-        if not any(_covers_glob(pattern, glob_pattern) for pattern in patterns):
-            missing.append(glob_pattern)
-    for required in _GITIGNORE_PATHS:
-        if not any(_covers_path(pattern, required) for pattern in patterns):
-            missing.append(required)
+    missing = [name for name, probe in probes.items() if probe not in ignored]
     if not missing:
         return []
     return [
@@ -230,38 +187,6 @@ def _gitignore_findings(root: Path) -> list[GateFinding]:
             path=".gitignore",
         )
     ]
-
-
-def _normalize_ignore(raw: str) -> str:
-    line = raw.strip()
-    if not line or line.startswith("#") or line.startswith("!"):
-        return ""
-    line = line.replace("\\", "/").lstrip("/").rstrip("/")
-    if line.endswith("/**"):
-        line = line[:-3]
-    return line
-
-
-def _covers_basename(pattern: str, basename: str) -> bool:
-    return pattern.split("/")[-1] == basename or pattern == "**/" + basename
-
-
-def _covers_glob(pattern: str, glob_pattern: str) -> bool:
-    if pattern == glob_pattern or pattern == "**/" + glob_pattern:
-        return True
-    return pattern in _GITIGNORE_GLOB_EQUIVALENTS.get(glob_pattern, ())
-
-
-def _covers_path(pattern: str, required: str) -> bool:
-    parent = required.rsplit("/", 1)[0]
-    return pattern in {
-        required,
-        required + "/**",
-        required + "/*",
-        parent,
-        parent + "/**",
-        "**/" + required,
-    }
 
 
 def _legacy_tree_findings(root: Path) -> list[GateFinding]:
@@ -279,38 +204,7 @@ def _legacy_tree_findings(root: Path) -> list[GateFinding]:
 
 
 def _output_purity_findings(root: Path) -> list[GateFinding]:
-    output_root = root / "output"
-    if not output_root.is_dir():
-        return []
-    findings: list[GateFinding] = []
-    for current, directories, files in os.walk(output_root, topdown=True, followlinks=False):
-        current_path = Path(current)
-        relative = current_path.relative_to(root)
-        kept: list[str] = []
-        for name in directories:
-            if name.casefold() in _OUTPUT_FORBIDDEN_NAMES:
-                findings.append(
-                    GateFinding(
-                        "OUTPUT_IMPURE",
-                        "output/ only holds final deliverables; remove caches and scratch",
-                        path=(relative / name).as_posix(),
-                    )
-                )
-                continue
-            kept.append(name)
-        directories[:] = kept
-        for name in files:
-            if name == ".gitkeep":
-                continue
-            if _OUTPUT_IMPURE.search(name) or name.casefold() in _OUTPUT_FORBIDDEN_NAMES:
-                findings.append(
-                    GateFinding(
-                        "OUTPUT_IMPURE",
-                        "output/ only holds final deliverables; remove temp and debug files",
-                        path=(relative / name).as_posix(),
-                    )
-                )
-    return findings
+    return output_purity_findings(root)
 
 
 def _convert(findings: list[GateFinding]) -> tuple[RepositoryFinding, ...]:
@@ -322,21 +216,10 @@ def _convert(findings: list[GateFinding]) -> tuple[RepositoryFinding, ...]:
             message=item.message,
             path=item.path,
             blocking=item.blocking,
+            details=item.details,
         )
         for item in ordered
     )
-
-
-def _remote_host(remote_url: str) -> str | None:
-    value = remote_url.strip()
-    if re.fullmatch(r"git@[^:]+:[^/]+/[^/]+(?:\.git)?", value):
-        return value.split("@", 1)[1].split(":", 1)[0].casefold()
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"https", "ssh"} or parsed.username not in {None, "git"}:
-        return None
-    if parsed.password is not None or not parsed.hostname:
-        return None
-    return parsed.hostname.casefold()
 
 
 __all__ = [

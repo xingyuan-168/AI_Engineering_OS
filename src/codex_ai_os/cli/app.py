@@ -16,22 +16,26 @@ from typing import Annotated, Any
 import typer
 
 from codex_ai_os.application.doctor import DoctorService
-from codex_ai_os.application.hook_gateway import authorize_hook_payload
+from codex_ai_os.application.finish_execution import query_execution, run_finish
+from codex_ai_os.application.hook_gateway import authorize_hook_payload, explain_hook_payload
+from codex_ai_os.application.preflight import preflight
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.application.repository import RepositoryGovernanceService
 from codex_ai_os.cli.output import emit, error_envelope, success_envelope
-from codex_ai_os.core.gates import GateError, evaluate_code_start, evaluate_finish
+from codex_ai_os.core.gates import GateError, evaluate_code_start
 from codex_ai_os.core.worktree import WorktreeError, WorktreeManager, WorktreeRecord
 from codex_ai_os.domain.config import ProjectType
-from codex_ai_os.infrastructure.config import ConfigError, load_project_config
+from codex_ai_os.infrastructure.config import ConfigError, load_project_config, resolve_runtime_root
 from codex_ai_os.infrastructure.database import Database, MigrationError
 from codex_ai_os.infrastructure.documents import DocumentManager
+from codex_ai_os.infrastructure.errors import DiagnosticError, error_details
 from codex_ai_os.infrastructure.memory import (
     MemoryEntry,
     MemoryStore,
     MemoryStoreError,
 )
 from codex_ai_os.infrastructure.path_codec import configure_utf8_stdio
+from codex_ai_os.runtime_identity import runtime_identity
 from codex_ai_os.templates.project_docs import INCLUDE_CHOICES
 
 app = typer.Typer(
@@ -50,9 +54,9 @@ worktree_app = typer.Typer(help="Disposable worktrees under .worktrees/.", no_ar
 app.add_typer(worktree_app, name="worktree")
 
 
-def _fail(code: str, message: str, exit_code: int, json_output: bool) -> None:
+def _fail(code: str, message: str, exit_code: int, json_output: bool, details=None) -> None:
     emit(
-        error_envelope(code, message),
+        error_envelope(code, message, details),
         json_output=json_output,
         human=f"{code}: {message}",
     )
@@ -60,7 +64,7 @@ def _fail(code: str, message: str, exit_code: int, json_output: bool) -> None:
 
 
 def _project_database(project_root: Path) -> tuple[Any, Database]:
-    config = load_project_config(project_root.resolve())
+    config = preflight(project_root).config
     database = Database(config.root / ".codex-os" / "state" / "state.db")
     database.migrate()
     return config, database
@@ -73,21 +77,40 @@ def init_command(
     name: Annotated[str, typer.Option("--name")] = "AI Engineering Project",
     project_type: Annotated[ProjectType, typer.Option("--project-type")] = ProjectType.GENERIC,
     with_extra: Annotated[list[str] | None, typer.Option("--with")] = None,
+    migrate_runtime: Annotated[bool, typer.Option("--migrate-runtime")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON only.")] = False,
 ) -> None:
     """Create the project skeleton: config, minimal documents, runtime database."""
 
     include = _include_keys(with_extra or [])
     try:
+        if migrate_runtime:
+            config = load_project_config(resolve_runtime_root(project_root).project_root)
+            result_migration = Database(config.root / ".codex-os/state/state.db").migrate(
+                allow_legacy=True
+            )
+            emit(
+                success_envelope(
+                    {
+                        "migration": result_migration.current_version,
+                        "backup": str(result_migration.legacy_backup_path or ""),
+                    }
+                ),
+                json_output=json_output,
+                human="Explicit runtime migration completed.",
+            )
+            return
         result = ProjectInitializer().initialize(
             project_root,
             project_id=project_id,
             name=name,
             project_type=project_type,
-                include=include,
+            include=include,
         )
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        _fail(
+            getattr(exc, "code", "OPERATION_FAILED"), str(exc), 2, json_output, error_details(exc)
+        )
         return
     data: dict[str, Any] = {
         "project_id": result.config.project_id,
@@ -124,29 +147,39 @@ def check_command(
         typer.Option("--requirement-id", help="Current requirement id for research scoping."),
     ] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
+    remote: Annotated[str | None, typer.Option("--remote")] = None,
 ) -> None:
     """Check GitHub readiness, repository hygiene, the docs/ tree, and
     optionally the Code Start gate (with --change-class)."""
 
     gate_decision = None
     try:
-        config = load_project_config(project_root.resolve())
-        repository = RepositoryGovernanceService(config.root).check()
-        documents = DocumentManager(config.root).check()
+        ready = preflight(project_root)
+        resolved, config = ready.resolved, ready.config
+        service = RepositoryGovernanceService(resolved.checkout_root, config=config, remote=remote)
+        repository = service.check()
+        documents = DocumentManager(resolved.checkout_root).check()
         if change_class is not None:
             gate_decision = evaluate_code_start(
-                config.root,
+                resolved.checkout_root,
                 change_class=change_class,
                 requirement_id=requirement_id,
                 github_hosts=config.github_hosts,
+                remote=remote,
+                remote_check=service.remote_check,
             )
     except GateError as exc:
         _fail("GATE_INPUT_INVALID", str(exc), 2, json_output)
         return
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        _fail(getattr(exc, "code", "CHECK_FAILED"), str(exc), 2, json_output, error_details(exc))
         return
     data: dict[str, Any] = {
+        "preflight": ready.report(),
+        "runtime": runtime_identity(),
+        "remote": None
+        if service.remote_check is None
+        else {"selected": service.remote_check.selected, "upstream": service.remote_check.upstream},
         "repository": {
             "repository_ready": repository.repository_ready,
             "hygiene_ok": repository.hygiene_ok,
@@ -201,6 +234,7 @@ def finish_command(
     test_command: Annotated[
         str | None, typer.Option("--test-command", help="Verifiable test command to run.")
     ] = None,
+    base_ref: Annotated[str | None, typer.Option("--base-ref")] = None,
     change_class: Annotated[
         str | None,
         typer.Option("--change-class", help="Re-verify Code Start when formal code changed."),
@@ -212,40 +246,69 @@ def finish_command(
     memory_written: Annotated[bool, typer.Option("--memory-written")] = False,
     memory_not_needed: Annotated[bool, typer.Option("--memory-not-needed")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
+    remote: Annotated[str | None, typer.Option("--remote")] = None,
+    run_id: Annotated[str | None, typer.Option("--run-id")] = None,
+    status: Annotated[bool, typer.Option("--status")] = False,
 ) -> None:
     """Run the Finish gate over task facts and observable repository state."""
 
     try:
-        decision = evaluate_finish(
+        if status:
+            if not run_id or any(
+                (
+                    test_command,
+                    base_ref,
+                    remote,
+                    change_class,
+                    requirement_id,
+                    memory_written,
+                    memory_not_needed,
+                )
+            ):
+                raise DiagnosticError(
+                    "status requires run_id and no execution parameters", code="RUN_QUERY_INVALID"
+                )
+            data = query_execution(resolve_runtime_root(project_root).checkout_root, run_id)
+            emit(
+                success_envelope(data),
+                json_output=json_output,
+                human="Finish execution: " + data["execution_status"],
+            )
+            return
+        data = run_finish(
             project_root,
+            base_ref=base_ref,
             test_command=test_command,
             change_class=change_class,
             requirement_id=requirement_id,
             memory_written=memory_written,
             memory_not_needed=memory_not_needed,
+            remote=remote,
+            run_id=run_id,
         )
     except (ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        _fail(
+            getattr(exc, "code", "FINISH_EXECUTION_FAILED"),
+            str(exc),
+            2,
+            json_output,
+            error_details(exc),
+        )
         return
-    data = {
-        "allowed": decision.allowed,
-        "blocked_by": list(decision.blocked_by),
-        "findings": [
-            {"code": f.code, "message": f.message, "path": f.path, "blocking": f.blocking}
-            for f in decision.findings
-        ],
-    }
-    if decision.allowed:
+    if data["execution_status"] != "completed":
+        error = data["error"]
+        _fail(error["code"], error["message"], 2, json_output, data)
+    if data["allowed"]:
         emit(success_envelope(data), json_output=json_output, human="Finish gate passed.")
         return
     emit(
         error_envelope(
-            decision.blocked_by[0] if decision.blocked_by else "FINISH_BLOCKED",
+            data["blocked_by"][0] if data["blocked_by"] else "FINISH_BLOCKED",
             "Finish gate blocked the task.",
             data,
         ),
         json_output=json_output,
-        human="Finish gate blocked: " + ", ".join(decision.blocked_by),
+        human="Finish gate blocked: " + ", ".join(data["blocked_by"]),
     )
     raise typer.Exit(code=40)
 
@@ -254,9 +317,17 @@ def finish_command(
 def doctor_command(
     project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
+    runtime_only: Annotated[bool, typer.Option("--runtime-only")] = False,
 ) -> None:
     """Report runtime diagnostics (Python, Git, SQLite, hooks)."""
 
+    if runtime_only:
+        emit(
+            success_envelope({"runtime": runtime_identity()}),
+            json_output=json_output,
+            human=json.dumps(runtime_identity()),
+        )
+        return
     report = DoctorService(project_root).run()
     checks = [
         {
@@ -269,7 +340,7 @@ def doctor_command(
     ]
     if report.ok:
         emit(
-            success_envelope({"checks": checks}),
+            success_envelope({"checks": checks, "runtime": runtime_identity()}),
             json_output=json_output,
             human="Environment checks passed.",
         )
@@ -278,7 +349,7 @@ def doctor_command(
         error_envelope(
             "PATH_ENCODING_CORRUPT" if report.path_encoding_corrupt else "CONFIG_INVALID",
             "Required environment checks failed.",
-            {"checks": checks},
+            {"checks": checks, "runtime": runtime_identity()},
         ),
         json_output=json_output,
         human="Required environment checks failed.",
@@ -287,7 +358,9 @@ def doctor_command(
 
 
 @app.command("authorize-hook")
-def authorize_hook_command() -> None:
+def authorize_hook_command(
+    explain: Annotated[bool, typer.Option("--explain")] = False,
+) -> None:
     """Adjudicate one Codex PreToolUse hook payload from stdin (ADR-0011).
 
     Reads the hook JSON payload from stdin and prints the hook JSON decision
@@ -304,12 +377,15 @@ def authorize_hook_command() -> None:
     if not isinstance(payload, dict):
         raise typer.Exit(code=1)
     try:
-        output = authorize_hook_payload(payload)
+        output = (
+            success_envelope(explain_hook_payload(payload))
+            if explain
+            else authorize_hook_payload(payload)
+        )
     except Exception:
         # Fail-closed signalling: the hook script applies its degraded rules.
         raise typer.Exit(code=1) from None
-    if output:
-        typer.echo(json.dumps(output, ensure_ascii=False))
+    typer.echo(json.dumps(output, ensure_ascii=False))
 
 
 @app.command("mcp")
@@ -338,7 +414,9 @@ def memory_search_command(
         types = (record_type,) if record_type else ()
         records = store.search(query, record_types=types, statuses=(status,), limit=limit)
     except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        _fail(
+            getattr(exc, "code", "OPERATION_FAILED"), str(exc), 2, json_output, error_details(exc)
+        )
         return
     data = {"results": [_memory_payload(record) for record in records]}
     emit(
@@ -380,7 +458,9 @@ def memory_record_command(
             superseded_by=superseded_by,
         )
     except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        _fail(
+            getattr(exc, "code", "OPERATION_FAILED"), str(exc), 2, json_output, error_details(exc)
+        )
         return
     emit(
         success_envelope({"entry": _memory_payload(entry), "candidate": candidate}),
@@ -401,7 +481,9 @@ def memory_reindex_command(
         store = MemoryStore(database, project_root.resolve())
         result = store.reindex()
     except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        _fail(
+            getattr(exc, "code", "OPERATION_FAILED"), str(exc), 2, json_output, error_details(exc)
+        )
         return
     data = {
         "indexed": result.indexed,
@@ -439,7 +521,9 @@ def memory_candidates_command(
         store = MemoryStore(database, project_root.resolve())
         records = store.candidates()
     except (ConfigError, MemoryStoreError, MigrationError, ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        _fail(
+            getattr(exc, "code", "OPERATION_FAILED"), str(exc), 2, json_output, error_details(exc)
+        )
         return
     data = {"results": [_memory_payload(record) for record in records]}
     emit(
@@ -455,9 +539,7 @@ def memory_candidate_command(
     accept: Annotated[
         bool, typer.Option("--accept", help="Merge the candidate into the JSONL.")
     ] = False,
-    reject: Annotated[
-        bool, typer.Option("--reject", help="Discard the candidate.")
-    ] = False,
+    reject: Annotated[bool, typer.Option("--reject", help="Discard the candidate.")] = False,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
@@ -483,7 +565,9 @@ def memory_candidate_command(
         _fail(code, str(exc), 2, json_output)
         return
     except (ConfigError, MigrationError, ValueError, OSError) as exc:
-        _fail("CONFIG_INVALID", str(exc), 2, json_output)
+        _fail(
+            getattr(exc, "code", "OPERATION_FAILED"), str(exc), 2, json_output, error_details(exc)
+        )
         return
     data = {
         "accepted": accept,
@@ -521,7 +605,9 @@ def worktree_prepare_command(
 
     try:
         config, database = _project_database(project_root)
-        manager = WorktreeManager(project_root.resolve(), database=database)
+        manager = WorktreeManager(
+            resolve_runtime_root(project_root).project_root, database=database
+        )
         record = manager.prepare(
             name=name,
             task_id=task_id,
@@ -529,7 +615,7 @@ def worktree_prepare_command(
             target_branch=config.target_branch,
         )
     except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
-        _fail("WORKTREE_FAILED", str(exc), 2, json_output)
+        _fail(getattr(exc, "code", "WORKTREE_FAILED"), str(exc), 2, json_output, error_details(exc))
         return
     emit(
         success_envelope(_worktree_payload(record)),
@@ -548,10 +634,12 @@ def worktree_check_command(
 
     try:
         _, database = _project_database(project_root)
-        manager = WorktreeManager(project_root.resolve(), database=database)
+        manager = WorktreeManager(
+            resolve_runtime_root(project_root).project_root, database=database
+        )
         record = manager.check(name=name)
     except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
-        _fail("WORKTREE_FAILED", str(exc), 2, json_output)
+        _fail(getattr(exc, "code", "WORKTREE_FAILED"), str(exc), 2, json_output, error_details(exc))
         return
     emit(
         success_envelope(_worktree_payload(record)),
@@ -570,10 +658,12 @@ def worktree_finish_command(
 
     try:
         _, database = _project_database(project_root)
-        manager = WorktreeManager(project_root.resolve(), database=database)
+        manager = WorktreeManager(
+            resolve_runtime_root(project_root).project_root, database=database
+        )
         record = manager.finish(name=name)
     except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
-        _fail("WORKTREE_FAILED", str(exc), 2, json_output)
+        _fail(getattr(exc, "code", "WORKTREE_FAILED"), str(exc), 2, json_output, error_details(exc))
         return
     emit(
         success_envelope(_worktree_payload(record)),
@@ -592,10 +682,12 @@ def worktree_cleanup_command(
 
     try:
         _, database = _project_database(project_root)
-        manager = WorktreeManager(project_root.resolve(), database=database)
+        manager = WorktreeManager(
+            resolve_runtime_root(project_root).project_root, database=database
+        )
         record = manager.cleanup(name=name)
     except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
-        _fail("WORKTREE_FAILED", str(exc), 2, json_output)
+        _fail(getattr(exc, "code", "WORKTREE_FAILED"), str(exc), 2, json_output, error_details(exc))
         return
     emit(
         success_envelope(_worktree_payload(record)),
@@ -613,10 +705,12 @@ def worktree_list_command(
 
     try:
         _, database = _project_database(project_root)
-        manager = WorktreeManager(project_root.resolve(), database=database)
+        manager = WorktreeManager(
+            resolve_runtime_root(project_root).project_root, database=database
+        )
         records = manager.list()
     except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
-        _fail("WORKTREE_FAILED", str(exc), 2, json_output)
+        _fail(getattr(exc, "code", "WORKTREE_FAILED"), str(exc), 2, json_output, error_details(exc))
         return
     data = {"results": [_worktree_payload(record) for record in records]}
     emit(

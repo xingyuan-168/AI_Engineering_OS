@@ -2,7 +2,7 @@
 
 <!-- codex-os-document: {"schema_version":"1.2","document_version":"0.3.0","status":"review-ready","owner":"architect","requirement_refs":["VERSION-001","REPO-001"]} -->
 
-- 状态：部分 Superseded（2026-09，ADR-0016）——push 实核（ls-remote）与 remote_required 策略仍有效；checkpoint 策略与 G0-G4 审批/Gate 证据/push_status 检查点引用已失效，当前节奏为"每逻辑变更验证后立即推送"
+- 状态：部分 Superseded（ADR-0016/0017）——remote_required 与推送前远端检查原则保留；旧 checkpoint/G0-G4/push_status 状态机制已失效。当前节奏以 AGENTS.md 的“完整逻辑任务提交、handoff 前 commit、里程碑 push”为准；历史正文不作额外强制要求。
 - 日期：2026-09-08
 - 决策版本：0.3.0 / API 1.2 / SQLite 0008
 - 来源：`docs/proposals/AI-OS_v0.3_Governance_Consolidation_改进方案.md` P1-04（经 0.3.0 源码核对修正：push 配置实际位于 `domain/config.py` 的 `GitPushPolicy` 与 `.codex-os/project.yaml`，不在 execution-policy）

@@ -9,8 +9,8 @@ it does not define a second set of path rules.
 The kernel handles exactly five concerns: dangerous shared-Git commands,
 destructive commands in the user's main worktree, the user's "input/" assets,
 a small set of governance rule files, and the reasonable allowance for trusted
-disposable worktrees (which the hook applies by skipping this kernel outside
-the main worktree).
+disposable worktrees. All checkouts use this same kernel; file cleanup
+checks the actual targets, not just the caller's working directory.
 
 The kernel never raises for policy outcomes: any failure to prove an
 operation safe resolves to DENY (fail-closed), with a stable rule id and
@@ -20,9 +20,17 @@ reason for audit trails.
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 
+from codex_ai_os.application.cleanup_policy import check_cleanup, literal_tokens
+from codex_ai_os.application.command_syntax import (
+    CommandSyntaxError,
+    executable_name,
+    shell_commands,
+)
 from codex_ai_os.application.governance_policy import (
     EffectiveGovernancePolicy,
     policy_pattern_matches,
@@ -50,6 +58,9 @@ class AuthorizationRequest:
     source: str = "internal"
     paths: tuple[str, ...] = ()
     command: str | None = None
+    cwd: Path | None = None
+    checkout: Path | None = None
+    disposable: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +77,8 @@ class AuthorizationOutcome:
 
 # Host-side dangerous command rules (ADR-0011, narrowed by ADR-0016): the
 # single authoritative source for host command screening of MAIN-worktree
-# operations. Normal engineering commands (pip/npm/yarn/poetry/cargo
-# installs, builds, sed -i) are never screened; destructive-but-local
-# operations stay listed here and the hook only consults the kernel outside
-# disposable areas, which restores the worktree allowance.
+# operations. Normal engineering work stays native. Registered disposable
+# checkouts get only narrow local Git allowances, never a kernel bypass.
 HOST_COMMAND_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (
         re.compile(r"\bgit\s+push\b[^\r\n]*(?:--force(?:-with-lease)?|(?:^|\s)-f(?:\s|$))", re.I),
@@ -121,7 +130,7 @@ HOST_COMMAND_RULES: tuple[tuple[re.Pattern[str], str, str], ...] = (
         "Deleting a remote ref with git push is forbidden.",
     ),
     (
-        re.compile(r"\bgit\s+branch\b[^\r\n]*(?:^|\s)-D(?:\s|$)", re.I),
+        re.compile(r"\b(?i:git)\s+branch\b[^\r\n]*(?:^|\s)-D(?:\s|$)"),
         "HOST_GIT_BRANCH_FORCE_DELETE",
         "Forced local branch deletion is forbidden.",
     ),
@@ -196,18 +205,124 @@ class GovernanceAuthorizationKernel:
         self,
         request: AuthorizationRequest,
     ) -> AuthorizationOutcome:
-        command = request.command or ""
-        for pattern, rule_id, reason in HOST_COMMAND_RULES:
-            if pattern.search(command):
-                return AuthorizationOutcome(
-                    AuthorizationDecision.DENY,
-                    rule_id,
-                    reason,
-                )
+        try:
+            commands = shell_commands(request.command or "").commands
+        except CommandSyntaxError as exc:
+            return AuthorizationOutcome(AuthorizationDecision.DENY, "COMMAND_UNRESOLVED", str(exc))
+        for command in commands:
+            outcome = self._authorize_invocation(command, request)
+            if not outcome.allowed or (
+                len(commands) == 1 and outcome.rule_id == "CLEANUP_TARGET_CHECKED"
+            ):
+                return outcome
         return AuthorizationOutcome(
             AuthorizationDecision.ALLOW,
             "HOST_COMMAND_ALLOWED",
             "command passed host screening",
+        )
+
+    def _authorize_invocation(self, words, request):
+        program = executable_name(words[0])
+        args = list(words[1:])
+        if program in {"remove-item", "rm", "rmdir", "rd", "del", "erase"} and request.cwd:
+            rule, reason, targets = check_cleanup(
+                shlex.join([program, *args]), request.cwd, request.checkout or request.cwd
+            )
+            return AuthorizationOutcome(
+                AuthorizationDecision.ALLOW
+                if rule == "CLEANUP_TARGET_CHECKED"
+                else AuthorizationDecision.DENY,
+                rule,
+                reason,
+                targets,
+            )
+        rule = None
+        local = request.disposable
+        if program == "git":
+            cwd = request.cwd or Path.cwd()
+            try:
+                while args and args[0].startswith("-"):
+                    option = args.pop(0)
+                    if option == "-C" and args:
+                        target = args.pop(0)
+                        literal_tokens(target)
+                        cwd = (cwd / target).resolve()
+                        local = local and cwd == request.checkout
+                    elif option in {
+                        "--no-pager",
+                        "--no-optional-locks",
+                        "--literal-pathspecs",
+                        "--no-replace-objects",
+                    }:
+                        continue
+                    elif option in {"--version", "--help"} and not args:
+                        break
+                    else:
+                        raise ValueError("Git context/options cannot be verified: " + option)
+                if any(re.search(r"[$`%]|^@", value) for value in args):
+                    raise ValueError("Git arguments require shell expansion")
+            except ValueError as exc:
+                return AuthorizationOutcome(
+                    AuthorizationDecision.DENY, "GIT_TARGET_UNRESOLVED", str(exc)
+                )
+            verb = args.pop(0) if args else ""
+            flags = args[: args.index("--")] if "--" in args else args
+
+            def short(flag):
+                return any(
+                    a.startswith("-") and not a.startswith("--") and flag in a[1:] for a in flags
+                )
+
+            if verb == "push":
+                if (
+                    short("f")
+                    or any(
+                        a.split("=", 1)[0]
+                        in {"--force", "--force-with-lease", "--force-if-includes"}
+                        for a in flags
+                    )
+                    or any(a.startswith("+") for a in args)
+                ):
+                    rule = "HOST_GIT_FORCE_PUSH"
+                elif "--delete" in flags or short("d") or any(a.startswith(":") for a in args):
+                    rule = "HOST_GIT_PUSH_DELETE_REF"
+            elif verb == "reset" and "--hard" in flags:
+                rule = "HOST_GIT_RESET_HARD"
+            elif verb == "checkout" and "--" in args:
+                rule = "HOST_GIT_CHECKOUT_DISCARD"
+            elif verb == "clean" and (short("f") or "--force" in flags):
+                rule = "HOST_GIT_CLEAN_FORCE"
+            elif verb == "branch" and short("D"):
+                rule = "HOST_GIT_BRANCH_FORCE_DELETE"
+            elif verb == "update-ref" and ("-d" in flags or "--delete" in flags):
+                rule = "HOST_GIT_UPDATE_REF_DELETE"
+            if local and rule in {
+                "HOST_GIT_RESET_HARD",
+                "HOST_GIT_CHECKOUT_DISCARD",
+                "HOST_GIT_CLEAN_FORCE",
+                "HOST_GIT_BRANCH_FORCE_DELETE",
+            }:
+                rule = None
+        elif program in {"docker", "podman", "docker-compose", "podman-compose"}:
+            if program.endswith("-compose"):
+                args.insert(0, "compose")
+            if args[:2] == ["compose", "down"] and any(a in {"-v", "--volumes"} for a in args[2:]):
+                rule = "HOST_COMPOSE_VOLUME_DELETE"
+            elif args[:1] == ["volume"] and args[1:2] in (["rm"], ["prune"]):
+                rule = "HOST_VOLUME_DELETE"
+            elif (
+                args[:1] in (["system"], ["container"])
+                and args[1:2] == ["prune"]
+                and any(a in {"-a", "--all", "--volumes"} for a in args[2:])
+            ):
+                rule = "HOST_BROAD_PRUNE"
+        if rule:
+            reason = next(
+                reason for _, identifier, reason in HOST_COMMAND_RULES if identifier == rule
+            )
+            return AuthorizationOutcome(AuthorizationDecision.DENY, rule, reason)
+        return AuthorizationOutcome(
+            AuthorizationDecision.ALLOW, "HOST_COMMAND_ALLOWED", "command passed host screening"
         )
 
     def _authorize_write(
@@ -229,9 +344,7 @@ class GovernanceAuthorizationKernel:
             ):
                 denied.append(path)
                 continue
-            if task_allowed_paths and not governed_path_allowed(
-                normalized, task_allowed_paths
-            ):
+            if task_allowed_paths and not governed_path_allowed(normalized, task_allowed_paths):
                 denied.append(path)
                 continue
         if denied:

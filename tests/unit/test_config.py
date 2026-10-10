@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from codex_ai_os.application.project import ProjectInitializer
+from codex_ai_os.domain.config import ProjectType
 from codex_ai_os.infrastructure.config import (
     ConfigError,
     ProjectRootError,
@@ -17,7 +18,7 @@ def _initialize(root: Path) -> None:
         root,
         project_id="PROJECT-CFG",
         name="Config",
-        project_type="backend",
+        project_type=ProjectType.BACKEND,
         include=frozenset(),
     )
 

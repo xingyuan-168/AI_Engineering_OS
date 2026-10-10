@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+from codex_ai_os.adapters.git import GitRunner
 from codex_ai_os.core.gates import (
     evaluate_code_start,
     evaluate_finish,
@@ -9,6 +11,7 @@ from codex_ai_os.core.gates import (
     formal_write_blockers,
     write_frontend_approval,
 )
+from codex_ai_os.domain.config import ProjectType
 
 REQUIREMENT = "REQ-TEST"
 
@@ -22,27 +25,36 @@ RESEARCH_COMPLETE = (
 )
 
 
-class FakeGitRunner:
+class FakeGitRunner(GitRunner):
     def __init__(self, status: str = "") -> None:
-        self.status = status
+        super().__init__(Path("/repo"))
+        object.__setattr__(self, "status", status)
 
-    def run(self, *args: str, timeout: float = 30.0):
-        from types import SimpleNamespace
+    status: str
+
+    def run(
+        self, *args: str, timeout: float = 30.0, input_data: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
 
         if args[:2] == ("rev-parse", "--show-toplevel"):
-            return SimpleNamespace(returncode=0, stdout="/repo\n", stderr="")
+            return subprocess.CompletedProcess(args, returncode=0, stdout="/repo\n", stderr="")
         if args[:1] == ("remote",):
             url = "https://github.com/org/repo.git"
-            return SimpleNamespace(returncode=0, stdout=url + "\n", stderr="")
+            return subprocess.CompletedProcess(args, returncode=0, stdout=url + "\n", stderr="")
         if args[:1] == ("ls-remote",):
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
         if args[:1] == ("ls-files",):
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
         if args[:2] == ("diff", "--name-only"):
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "--diff-filter=U" in args:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            paths = "\0".join(line[3:] for line in self.status.splitlines())
+            return subprocess.CompletedProcess(args, returncode=0, stdout=paths, stderr="")
         if args[:1] == ("status",):
-            return SimpleNamespace(returncode=0, stdout=self.status, stderr="")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                args, returncode=0, stdout=self.status.replace("\n", "\0"), stderr=""
+            )
+        return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
 
 
 def _research(root: Path, text: str = RESEARCH_COMPLETE) -> Path:
@@ -85,8 +97,7 @@ def test_research_gated_class_requires_requirement_id(tmp_path: Path) -> None:
     decision = _start(tmp_path, "major_feature", requirement_id=None)
     assert decision.allowed is False
     missing = [
-        f for f in decision.findings
-        if f.code == "OPEN_SOURCE_RESEARCH_MISSING" and f.blocking
+        f for f in decision.findings if f.code == "OPEN_SOURCE_RESEARCH_MISSING" and f.blocking
     ]
     assert missing
 
@@ -115,9 +126,7 @@ def test_decision_heading_without_metadata_does_not_pass(tmp_path: Path) -> None
 def test_decision_without_reason_does_not_pass(tmp_path: Path) -> None:
     _research(
         tmp_path,
-        RESEARCH_COMPLETE.replace(
-            "reason: none of the candidates fit the boundary.\n", ""
-        ),
+        RESEARCH_COMPLETE.replace("reason: none of the candidates fit the boundary.\n", ""),
     )
     decision = _start(tmp_path, "major_feature")
     assert decision.allowed is False
@@ -161,10 +170,7 @@ def test_stale_requirement_does_not_unlock_new_work(tmp_path: Path) -> None:
     _research(tmp_path, RESEARCH_COMPLETE.replace("REQ-TEST", "REQ-OLD"))
     decision = _start(tmp_path, "major_feature")
     assert decision.allowed is False
-    stale = [
-        f for f in decision.findings
-        if f.code == "OPEN_SOURCE_RESEARCH_STALE" and f.blocking
-    ]
+    stale = [f for f in decision.findings if f.code == "OPEN_SOURCE_RESEARCH_STALE" and f.blocking]
     assert stale
 
 
@@ -193,13 +199,16 @@ def test_formal_write_blockers_allow_ready_repo(tmp_path: Path) -> None:
 
 def test_formal_write_blockers_fail_without_git(tmp_path: Path) -> None:
     decision = formal_write_blockers(tmp_path, runner=FakeGitRunner())
-    class NotGit(FakeGitRunner):
-        def run(self, *args: str, timeout: float = 30.0):
-            if args[:2] == ("rev-parse", "--show-toplevel"):
-                from types import SimpleNamespace
 
-                return SimpleNamespace(returncode=1, stdout="", stderr="not a repo")
-            return super().run(*args, timeout=timeout)
+    class NotGit(FakeGitRunner):
+        def run(
+            self, *args: str, timeout: float = 30.0, input_data: str | None = None
+        ) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ("rev-parse", "--show-toplevel"):
+                return subprocess.CompletedProcess(
+                    args, returncode=1, stdout="", stderr="not a repo"
+                )
+            return super().run(*args, timeout=timeout, input_data=input_data)
 
     decision = formal_write_blockers(tmp_path, runner=NotGit())
     assert decision.allowed is False
@@ -216,8 +225,10 @@ def test_user_uncommitted_work_does_not_block_start(tmp_path: Path) -> None:
 
 
 def test_user_uncommitted_work_warns_but_does_not_block_finish(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        base_ref="HEAD",
         test_command=None,
         memory_not_needed=True,
         runner=FakeGitRunner(status="?? notes.txt\n"),
@@ -250,13 +261,16 @@ def test_root_version_directory_blocks_but_nested_is_fine(tmp_path: Path) -> Non
 
 def test_unreachable_remote_blocks_start(tmp_path: Path) -> None:
     _research(tmp_path)
-    from types import SimpleNamespace
 
     class Unreachable(FakeGitRunner):
-        def run(self, *args: str, timeout: float = 30.0):
+        def run(
+            self, *args: str, timeout: float = 30.0, input_data: str | None = None
+        ) -> subprocess.CompletedProcess[str]:
             if args[:1] == ("ls-remote",):
-                return SimpleNamespace(returncode=128, stdout="", stderr="could not read")
-            return super().run(*args, timeout=timeout)
+                return subprocess.CompletedProcess(
+                    args, returncode=128, stdout="", stderr="could not read"
+                )
+            return super().run(*args, timeout=timeout, input_data=input_data)
 
     decision = evaluate_code_start(
         tmp_path,
@@ -299,9 +313,7 @@ def test_frontend_gate_layering(tmp_path: Path) -> None:
         ui_spec_path="docs/design/UI_SPEC.md",
     )
     assert still_blocked.allowed is False
-    assert any(
-        f.code == "FRONTEND_APPROVAL_MISSING" for f in still_blocked.findings
-    )
+    assert any(f.code == "FRONTEND_APPROVAL_MISSING" for f in still_blocked.findings)
 
 
 def test_frontend_approval_comes_from_ui_spec_fact_not_arguments(tmp_path: Path) -> None:
@@ -309,6 +321,8 @@ def test_frontend_approval_comes_from_ui_spec_fact_not_arguments(tmp_path: Path)
     ui_spec.parent.mkdir(parents=True, exist_ok=True)
     ui_spec.write_text("# UI\n", encoding="utf-8")
     _prototype(tmp_path)
+    if not ui_spec.exists():
+        ui_spec.write_text("# UI\n", encoding="utf-8")
     write_frontend_approval(
         ui_spec,
         scope="admin-dashboard",
@@ -318,39 +332,37 @@ def test_frontend_approval_comes_from_ui_spec_fact_not_arguments(tmp_path: Path)
     approved = evaluate_frontend(tmp_path, impact="new_page", scope="admin-dashboard")
     assert approved.allowed is True
     text = ui_spec.read_text(encoding="utf-8")
-    assert "scope: admin-dashboard" in text
+    assert 'scope: "admin-dashboard"' in text
     assert "status: approved" in text
-    assert "approved_by: user" in text
+    assert 'approved_by: "user"' in text
 
 
 def test_frontend_approval_does_not_inherit_across_scopes(tmp_path: Path) -> None:
     ui_spec = tmp_path / "docs" / "design" / "UI_SPEC.md"
     ui_spec.parent.mkdir(parents=True, exist_ok=True)
     _prototype(tmp_path)
+    if not ui_spec.exists():
+        ui_spec.write_text("# UI\n", encoding="utf-8")
     write_frontend_approval(
         ui_spec, scope="dashboard-v1", approved_by="user", approved_on="2026-09-10"
     )
     other_scope = evaluate_frontend(tmp_path, impact="new_page", scope="settings-page")
     assert other_scope.allowed is False
-    assert any(
-        f.code == "FRONTEND_APPROVAL_MISSING" for f in other_scope.findings
-    )
+    assert any(f.code == "FRONTEND_APPROVAL_MISSING" for f in other_scope.findings)
 
 
 def test_frontend_approval_replacement_rewrites_block(tmp_path: Path) -> None:
     ui_spec = tmp_path / "docs" / "design" / "UI_SPEC.md"
     ui_spec.parent.mkdir(parents=True, exist_ok=True)
     _prototype(tmp_path)
-    write_frontend_approval(
-        ui_spec, scope="v1", approved_by="user-a", approved_on="2026-09-01"
-    )
-    write_frontend_approval(
-        ui_spec, scope="v1", approved_by="user-b", approved_on="2026-09-10"
-    )
+    if not ui_spec.exists():
+        ui_spec.write_text("# UI\n", encoding="utf-8")
+    write_frontend_approval(ui_spec, scope="v1", approved_by="user-a", approved_on="2026-09-01")
+    write_frontend_approval(ui_spec, scope="v1", approved_by="user-b", approved_on="2026-09-10")
     text = ui_spec.read_text(encoding="utf-8")
     assert text.count("status: approved") == 1
     assert text.count("approved_by: ") == 1
-    assert "approved_by: user-b" in text
+    assert 'approved_by: "user-b"' in text
     assert "approved_at: 2026-09-10" in text
     assert evaluate_frontend(tmp_path, impact="new_page", scope="v1").allowed is True
 
@@ -362,8 +374,10 @@ def _prototype(root: Path) -> None:
 
 
 def test_finish_runs_the_declared_test_command(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
     blocked = evaluate_finish(
         tmp_path,
+        base_ref="HEAD",
         test_command='python -c "import sys; sys.exit(3)"',
         memory_not_needed=True,
         runner=FakeGitRunner(),
@@ -374,8 +388,10 @@ def test_finish_runs_the_declared_test_command(tmp_path: Path) -> None:
     # Attested-but-unverifiable facts are gone (ADR-0016).
     assert "TESTS_NOT_PASSED" not in codes
     assert "DOCS_NOT_SYNCED" not in codes
+    _initialized_finish_project(tmp_path)
     allowed = evaluate_finish(
         tmp_path,
+        base_ref="HEAD",
         test_command='python -c "pass"',
         memory_written=False,
         memory_not_needed=True,
@@ -385,8 +401,10 @@ def test_finish_runs_the_declared_test_command(tmp_path: Path) -> None:
 
 
 def test_finish_without_test_command_still_checks_the_rest(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
     allowed = evaluate_finish(
         tmp_path,
+        base_ref="HEAD",
         test_command=None,
         memory_not_needed=True,
         runner=FakeGitRunner(),
@@ -401,15 +419,17 @@ def _initialized_finish_project(tmp_path: Path) -> None:
         tmp_path,
         project_id="PROJECT-FIN2",
         name="Fin",
-        project_type="generic",
+        project_type=ProjectType.GENERIC,
         include=frozenset(),
     )
 
 
 def test_finish_unverified_formal_change_blocks(tmp_path: Path) -> None:
     _initialized_finish_project(tmp_path)
+    _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        base_ref="HEAD",
         test_command=None,
         memory_not_needed=True,
         runner=FakeGitRunner(status=" M src/app.py\n"),
@@ -421,8 +441,10 @@ def test_finish_unverified_formal_change_blocks(tmp_path: Path) -> None:
 
 def test_finish_formal_change_with_exempt_class_passes(tmp_path: Path) -> None:
     _initialized_finish_project(tmp_path)
+    _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        base_ref="HEAD",
         test_command=None,
         change_class="bugfix",
         memory_not_needed=True,
@@ -434,8 +456,10 @@ def test_finish_formal_change_with_exempt_class_passes(tmp_path: Path) -> None:
 def test_finish_formal_change_with_stale_research_blocks(tmp_path: Path) -> None:
     _initialized_finish_project(tmp_path)
     _research(tmp_path, RESEARCH_COMPLETE.replace("REQ-TEST", "REQ-OLD"))
+    _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        base_ref="HEAD",
         test_command=None,
         change_class="major_feature",
         requirement_id="REQ-TEST",
@@ -448,8 +472,10 @@ def test_finish_formal_change_with_stale_research_blocks(tmp_path: Path) -> None
 
 def test_finish_docs_only_change_needs_no_code_start(tmp_path: Path) -> None:
     _initialized_finish_project(tmp_path)
+    _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        base_ref="HEAD",
         test_command=None,
         memory_not_needed=True,
         runner=FakeGitRunner(status=" M docs/notes.md\n"),
@@ -458,8 +484,10 @@ def test_finish_docs_only_change_needs_no_code_start(tmp_path: Path) -> None:
 
 
 def test_finish_without_memory_fact_blocks(tmp_path: Path) -> None:
+    _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        base_ref="HEAD",
         test_command=None,
         memory_written=False,
         memory_not_needed=False,

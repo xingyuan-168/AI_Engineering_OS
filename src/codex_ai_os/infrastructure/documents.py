@@ -103,6 +103,8 @@ class DocumentManager:
 
         created: list[str] = []
         for relative, template in documents_for(project_type, include=include).items():
+            if relative == "input/.gitkeep" and self.resolve("input").exists():
+                continue
             content = template.replace("{{ project_name }}", project_name)
             if self.write_atomic(relative, content, overwrite=False):
                 created.append(relative)
@@ -141,7 +143,15 @@ class DocumentManager:
 
         expected = documents_for("generic", include=include)
         missing = tuple(
-            sorted(path for path in expected if not self.resolve(path).is_file())
+            sorted(
+                path
+                for path in expected
+                if not (
+                    self.resolve("input").is_dir()
+                    if path == "input/.gitkeep"
+                    else self.resolve(path).is_file()
+                )
+            )
         )
         broken: list[str] = []
         checked = 0
@@ -151,9 +161,7 @@ class DocumentManager:
             try:
                 text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeError):
-                broken.append(
-                    path.relative_to(self.project_root).as_posix() + " -> unreadable"
-                )
+                broken.append(path.relative_to(self.project_root).as_posix() + " -> unreadable")
                 continue
             broken.extend(self._broken_links(path, text))
         return DocumentCheckReport(

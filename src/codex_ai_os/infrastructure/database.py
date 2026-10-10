@@ -1,15 +1,15 @@
 """SQLite connection, single lightweight migration, and integrity (ADR-0016).
 
-The governance-core runtime keeps at most one numbered migration. A database
-written by the pre-refactor runtime (schema 0001~0008) is exported to a
-timestamped backup file and rebuilt from scratch; no data migration is
-performed because the old runtime tables are superseded.
+The runtime keeps one numbered migration. Ordinary access never rebuilds
+existing state. Only an explicitly requested, fingerprinted predecessor
+can be backed up consistently and replaced transactionally; unknown or
+damaged databases are preserved for inspection.
 """
 
 from __future__ import annotations
 
 import hashlib
-import shutil
+import json
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
+
+from codex_ai_os.adapters.git import GitRunner
 
 _EXPECTED_TABLES: Final[frozenset[str]] = frozenset(
     {"schema_migrations", "tasks", "approvals", "worktrees", "memory_index"}
@@ -66,10 +68,10 @@ class Database:
         finally:
             connection.close()
 
-    def migrate(self) -> MigrationResult:
-        """Apply pending migrations, exporting a legacy database first."""
+    def migrate(self, *, allow_legacy: bool = False) -> MigrationResult:
+        """Create/validate current state; rebuilding a known predecessor is explicit."""
 
-        legacy_backup = self._export_and_reset_if_legacy()
+        legacy_backup = self._export_and_reset_if_legacy(allow_legacy=allow_legacy)
         migrations = self._discover_migrations()
         applied_now: list[str] = []
         with self.connection() as connection:
@@ -114,8 +116,7 @@ class Database:
         connection.row_factory = sqlite3.Row
         try:
             table = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-                "AND name = 'schema_migrations'"
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
             ).fetchone()
             if table is None:
                 return None
@@ -132,69 +133,141 @@ class Database:
         with self.connection() as connection:
             self._integrity_check_connection(connection)
 
-    def _export_and_reset_if_legacy(self) -> Path | None:
-        """Export a pre-refactor database to a backup file and reset it.
-
-        Legacy detection is observational: any unexpected table, an
-        incompatible schema_migrations layout, or a checksum mismatch marks
-        the database as pre-refactor. The export is a plain file copy plus a
-        SHA-256 sidecar; the runtime database is then rebuilt empty.
-        """
-
-        if not self.path.exists() or self.path.stat().st_size == 0:
+    def _export_and_reset_if_legacy(self, *, allow_legacy: bool) -> Path | None:
+        if not self.path.exists() or self.path.stat().st_size == 0 or not self._is_legacy():
             return None
-        if not self._is_legacy():
-            return None
+        if not allow_legacy:
+            raise MigrationError(
+                "MIGRATION_REQUIRED: run init --migrate-runtime explicitly, offline"
+            )
         backup_dir = self.path.parent / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        backup_path = backup_dir / f"{self.path.stem}-legacy-{stamp}.db"
-        shutil.copy2(self.path, backup_path)
-        digest = hashlib.sha256(backup_path.read_bytes()).hexdigest()
-        backup_path.with_suffix(".db.sha256").write_text(
-            f"{digest}  {backup_path.name}\n", encoding="utf-8"
-        )
-        for suffix in ("", "-wal", "-shm"):
-            Path(f"{self.path}{suffix}").unlink(missing_ok=True)
-        return backup_path
+        backup = backup_dir / f"{self.path.stem}-legacy-{stamp}.db"
+        guard = sqlite3.connect(self.path, timeout=0.2)
+        try:
+            # Reserve the writer before taking a consistent backup through a read connection.
+            # Do not unlink a live database or WAL: schema replacement is one SQL transaction.
+            guard.execute("BEGIN IMMEDIATE")
+            if not self._is_legacy():
+                raise MigrationError("MIGRATION_CHANGED: schema changed; retry inspection")
+            project_root = self.path.parent.parent.parent
+            if (
+                self.path.parent.name == "state"
+                and self.path.parent.parent.name == ".codex-os"
+                and (project_root / ".git").exists()
+            ):
+                listing = GitRunner(project_root).run("worktree", "list", "--porcelain", timeout=5)
+                if (
+                    listing.returncode != 0
+                    or sum(line.startswith("worktree ") for line in listing.stdout.splitlines())
+                    != 1
+                ):
+                    raise MigrationError(
+                        "MIGRATION_ACTIVE_WORKTREES: Git worktree list is not isolated"
+                    )
+            if guard.execute("SELECT count(*) FROM worktrees WHERE status != 'cleaned'").fetchone()[
+                0
+            ]:
+                raise MigrationError("MIGRATION_ACTIVE_WORKTREES: finish/clean worktrees first")
+            source = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)
+            destination = sqlite3.connect(backup)
+            try:
+                source.backup(destination)
+                self._integrity_check_connection(destination)
+            finally:
+                destination.close()
+                source.close()
+            digest = hashlib.sha256(backup.read_bytes()).hexdigest()
+            backup.with_suffix(".db.sha256").write_text(
+                f"{digest}  {backup.name}\n", encoding="utf-8"
+            )
+            for table in ("worktrees", "approvals", "memory_index", "tasks"):
+                guard.execute(f'DROP TABLE "{table}"')
+            guard.execute("DELETE FROM schema_migrations")
+            for migration in self._discover_migrations():
+                for statement in _split_sql(migration.sql):
+                    guard.execute(statement)
+                guard.execute(
+                    "INSERT INTO schema_migrations VALUES (?, ?, ?, ?)",
+                    (migration.version, migration.name, migration.checksum, _utc_now()),
+                )
+            self._integrity_check_connection(guard)
+            guard.commit()
+        except (sqlite3.Error, OSError) as exc:
+            guard.rollback()
+            raise MigrationError(f"MIGRATION_FAILED: original database preserved: {exc}") from exc
+        finally:
+            guard.close()
+        return backup
 
     def _is_legacy(self) -> bool:
-        try:
-            connection = sqlite3.connect(
-                f"{self.path.as_uri()}?mode=ro", uri=True, timeout=5.0
-            )
-            connection.row_factory = sqlite3.Row
-        except sqlite3.Error:
-            return True
+        """Recognize only the audited lightweight predecessor, never guess from an error."""
+        connection = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=0.2)
         try:
             tables = {
                 str(row[0])
                 for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                ).fetchall()
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
             }
             if not tables:
                 return False
-            if not tables <= _EXPECTED_TABLES:
-                return True
-            if "schema_migrations" not in tables:
-                return True
+            if tables != _EXPECTED_TABLES:
+                raise MigrationError(
+                    "MIGRATION_UNKNOWN_SCHEMA: unexpected tables; database preserved"
+                )
             columns = {
-                str(row[1])
-                for row in connection.execute("PRAGMA table_info(schema_migrations)").fetchall()
+                str(row[1]) for row in connection.execute("PRAGMA table_info(schema_migrations)")
             }
             if columns != _EXPECTED_MIGRATION_COLUMNS:
+                raise MigrationError("MIGRATION_UNKNOWN_SCHEMA: migration metadata differs")
+            rows = dict(connection.execute("SELECT version, checksum FROM schema_migrations"))
+            current = {item.version: item.checksum for item in self._discover_migrations()}
+            self._integrity_check_connection(connection)
+            if rows == current:
+                reference = sqlite3.connect(":memory:")
+                try:
+                    self._bootstrap_migration_table(reference)
+                    for migration in self._discover_migrations():
+                        reference.executescript(migration.sql)
+                    if _schema_fingerprint(reference) == _schema_fingerprint(connection):
+                        return False
+                finally:
+                    reference.close()
+                raise MigrationError("MIGRATION_UNKNOWN_SCHEMA: structure changed; preserved")
+            # Git 12b723b: the known predecessor lacks target_branch and uses 'merged', not 'ready'.
+            # Public migration checksum, not a credential.
+            # pragma: allowlist nextline secret
+            legacy = {"0001": "cf572399e7509516fc51e74bbe5ccfbae2a9c59026b613d15264bd5806c09482"}
+            worktree_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(worktrees)")
+            }
+            if (
+                rows == legacy
+                and worktree_columns
+                == {
+                    "id",
+                    "task_id",
+                    "name",
+                    "path",
+                    "branch",
+                    "disposable",
+                    "status",
+                    "created_at",
+                    "updated_at",
+                }
+                and _schema_fingerprint(connection)
+                # Public schema fingerprint, not a credential.
+                # pragma: allowlist nextline secret
+                == ("207e5cc52a4b3f5fde0fe32521ad802eebf5915c076cca4dd314c487bbb75845")
+            ):
                 return True
-            migrations = {migration.version: migration for migration in self._discover_migrations()}
-            for row in connection.execute(
-                "SELECT version, checksum FROM schema_migrations"
-            ).fetchall():
-                migration = migrations.get(str(row["version"]))
-                if migration is None or migration.checksum != str(row["checksum"]):
-                    return True
-            return False
-        except (sqlite3.Error, MigrationError):
-            return True
+            raise MigrationError(
+                "MIGRATION_UNKNOWN_SCHEMA: unrecognized checksum/structure; preserved"
+            )
+        except sqlite3.Error as exc:
+            raise MigrationError(f"MIGRATION_INVALID_DATABASE: preserved: {exc}") from exc
         finally:
             connection.close()
 
@@ -239,9 +312,7 @@ class Database:
         return {str(row["version"]): str(row["checksum"]) for row in rows}
 
     @staticmethod
-    def _validate_applied_checksums(
-        applied: dict[str, str], migrations: list[Migration]
-    ) -> None:
+    def _validate_applied_checksums(applied: dict[str, str], migrations: list[Migration]) -> None:
         available = {migration.version: migration for migration in migrations}
         for version, checksum in applied.items():
             migration = available.get(version)
@@ -258,6 +329,16 @@ class Database:
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise MigrationError(f"SQLite foreign-key violations: {len(violations)}")
+
+
+def _schema_fingerprint(connection: sqlite3.Connection) -> str:
+    rows = [
+        (kind, name, " ".join(sql.split()))
+        for kind, name, sql in connection.execute(
+            "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name"
+        )
+    ]
+    return hashlib.sha256(json.dumps(rows, ensure_ascii=True).encode()).hexdigest()
 
 
 def _split_sql(script: str) -> list[str]:

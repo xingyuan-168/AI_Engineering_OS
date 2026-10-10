@@ -8,6 +8,7 @@ report and the shared lexical path rules remain.
 from __future__ import annotations
 
 from pathlib import PurePosixPath, PureWindowsPath
+from typing import Any
 
 from codex_ai_os.domain.config import StrictModel
 
@@ -18,6 +19,7 @@ class RepositoryFinding(StrictModel):
     message: str
     path: str | None = None
     blocking: bool = True
+    details: dict[str, Any] | None = None
 
 
 class RepositoryCheckReport(StrictModel):

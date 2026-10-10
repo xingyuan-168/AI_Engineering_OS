@@ -25,15 +25,20 @@ gates only judge observable facts.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from codex_ai_os.adapters.git import GitRunner
+from codex_ai_os.adapters.process import ExecutionStopped, raise_if_cancelled
+from codex_ai_os.core.github_remote import RemoteCheck, check_remote
+from codex_ai_os.infrastructure.files import atomic_text
 
 RESEARCH_DOCUMENT = "docs/OPEN_SOURCE_RESEARCH.md"
 PROTOTYPE_PATH = "docs/design/PROTOTYPE.html"
@@ -49,14 +54,10 @@ RESEARCH_REQUIRED_CHANGE_CLASSES = frozenset(
         "mature_wheel_candidate",
     }
 )
-RESEARCH_EXEMPT_CHANGE_CLASSES = frozenset(
-    {"bugfix", "typo", "tests_only", "small_change"}
-)
+RESEARCH_EXEMPT_CHANGE_CLASSES = frozenset({"bugfix", "typo", "tests_only", "small_change"})
 
-FRONTEND_GATED_IMPACTS = frozenset(
-    {"new_page", "new_interaction_flow", "major_ui_refactor"}
-)
-FRONTEND_EXEMPT_IMPACTS = frozenset({"none", "copy_change", "component_bugfix"})
+FRONTEND_GATED_IMPACTS = frozenset({"new_page", "new_interaction_flow", "major_ui_refactor"})
+FRONTEND_EXEMPT_IMPACTS = frozenset({"none", "copy_change", "css_fix", "component_bugfix"})
 
 VALID_DECISIONS = frozenset({"use", "fork", "extract", "build"})
 _REQUIREMENT_ID_FIELD = re.compile(r"(?m)^\s*requirement_id\s*:\s*(.+?)\s*$")
@@ -91,9 +92,6 @@ _EXCLUDED_TREE_NAMES = frozenset(
         "node_modules",
         "site-packages",
         "htmlcov",
-        "dist",
-        "build",
-        "input",
     }
 )
 _COPY_DIRECTORY_NAMES = frozenset(
@@ -138,6 +136,7 @@ class GateFinding:
     message: str
     path: str | None = None
     blocking: bool = True
+    details: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +160,8 @@ def evaluate_code_start(
     research_path: str = RESEARCH_DOCUMENT,
     github_hosts: frozenset[str] | tuple[str, ...] = ("github.com",),
     runner: GitRunner | None = None,
+    remote: str | None = None,
+    remote_check: RemoteCheck | None = None,
 ) -> GateDecision:
     """Evaluate whether formal source implementation may start.
 
@@ -180,11 +181,18 @@ def evaluate_code_start(
     git = runner or GitRunner(root)
     findings: list[GateFinding] = []
 
-    findings.extend(_github_findings(git, github_hosts))
+    checked = remote_check or check_remote(git, github_hosts, remote=remote)
+    findings.extend(_github_findings(git, github_hosts, remote=remote, result=checked))
+    if not checked.errors and not checked.upstream:
+        findings.append(
+            GateFinding(
+                "UPSTREAM_NOT_CONFIGURED",
+                "branch has no upstream; remote reachability does not prove push permission",
+                blocking=False,
+            )
+        )
     findings.extend(hygiene_findings(root, git))
-    findings.extend(
-        _research_findings(root, normalized_class, requirement_id, research_path)
-    )
+    findings.extend(_research_findings(root, normalized_class, requirement_id, research_path))
     return _decide(GateName.CODE_START, findings)
 
 
@@ -193,6 +201,7 @@ def formal_write_blockers(
     *,
     github_hosts: frozenset[str] | tuple[str, ...] = ("github.com",),
     runner: GitRunner | None = None,
+    network_timeout: float = 5,
 ) -> GateDecision:
     """Objective Code Start subset enforced at the write boundary.
 
@@ -206,7 +215,7 @@ def formal_write_blockers(
     root = root.resolve()
     git = runner or GitRunner(root)
     findings: list[GateFinding] = []
-    findings.extend(_github_findings(git, github_hosts))
+    findings.extend(_github_findings(git, github_hosts, timeout=network_timeout))
     findings.extend(hygiene_findings(root, git))
     return _decide(GateName.CODE_START, findings)
 
@@ -250,12 +259,14 @@ def evaluate_frontend(
                     path=ui_spec_path,
                 )
             )
-        if not _frontend_approval_fact(root / ui_spec_path, scope):
+        if not _frontend_approval_fact(root / ui_spec_path, scope, root / prototype_path):
             findings.append(
                 GateFinding(
                     "FRONTEND_APPROVAL_MISSING",
-                    "no approved frontend approval for scope '" + scope.strip()
-                    + "' in " + ui_spec_path
+                    "no approved frontend approval for scope '"
+                    + scope.strip()
+                    + "' in "
+                    + ui_spec_path
                     + " (record it with approval_record); approvals are read from "
                     "the Git-tracked UI spec, never from call arguments",
                     path=ui_spec_path,
@@ -266,11 +277,12 @@ def evaluate_frontend(
 
 _APPROVAL_BLOCK = re.compile(r"(?ms)^approval:\s*$\n((?:[ \t]+[^\n]*\n?)+)")
 _APPROVAL_FIELD = re.compile(
-    r"(?m)^[ \t]+(type|scope|status|approved_by):\s*(\S[^\n]*)$"
+    r"(?m)^[ \t]+(type|scope|status|approved_by|approved_at|prototype_sha256|spec_sha256):"
+    r"[ \t]*(\S[^\n]*)$"
 )
 
 
-def _frontend_approval_fact(ui_spec_path: Path, scope: str) -> bool:
+def _frontend_approval_fact(ui_spec_path: Path, scope: str, prototype: Path) -> bool:
     """True when the UI spec records an approved frontend fact for the scope.
 
     The approval lives in the Git-tracked UI spec metadata so it survives
@@ -284,18 +296,37 @@ def _frontend_approval_fact(ui_spec_path: Path, scope: str) -> bool:
         text = ui_spec_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return False
-    block = _APPROVAL_BLOCK.search(text)
-    if block is None:
+    blocks = list(_APPROVAL_BLOCK.finditer(text))
+    if len(blocks) != 1 or not prototype.is_file():
         return False
-    fields = {
-        match.group(1): match.group(2).strip().strip("'").strip('"')
-        for match in _APPROVAL_FIELD.finditer(block.group(1))
-    }
+    block = blocks[0]
+    try:
+        fields = {
+            match.group(1): json.loads(match.group(2))
+            if match.group(2).startswith('"')
+            else match.group(2).strip()
+            for match in _APPROVAL_FIELD.finditer(block.group(1))
+        }
+        prototype_digest = _digest(prototype.read_text(encoding="utf-8"))
+    except (ValueError, OSError, UnicodeError):
+        return False
     return (
         fields.get("type", "").casefold() == "frontend"
-        and fields.get("scope", "").casefold() == scope.strip().casefold()
+        and fields.get("scope", "") == scope.strip()
         and fields.get("status", "").casefold() == "approved"
+        and bool(fields.get("approved_by"))
+        and bool(fields.get("approved_at"))
+        and fields.get("spec_sha256") == _spec_digest(text)
+        and fields.get("prototype_sha256") == prototype_digest
     )
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+def _spec_digest(text: str) -> str:
+    return _digest(_APPROVAL_BLOCK.sub("", text).strip() + "\n")
 
 
 def write_frontend_approval(
@@ -304,6 +335,7 @@ def write_frontend_approval(
     scope: str,
     approved_by: str,
     approved_on: str,
+    decision: str = "approved",
 ) -> None:
     """Record (or replace) the frontend approval fact in the UI spec.
 
@@ -314,22 +346,31 @@ def write_frontend_approval(
     path = Path(ui_spec_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.is_file() else "# UI Spec\n"
+    if decision not in {"approved", "rejected"}:
+        raise GateError("unsupported frontend decision")
+    prototype = path.with_name("PROTOTYPE.html")
+    if decision == "approved" and (not path.is_file() or not prototype.is_file()):
+        raise GateError("approval requires the reviewed prototype and UI spec")
     if not text.endswith("\n"):
         text += "\n"
     block = (
         "approval:\n"
         "  type: frontend\n"
-        "  scope: " + scope.strip() + "\n"
-        "  status: approved\n"
-        "  approved_by: " + approved_by.strip() + "\n"
+        "  scope: " + json.dumps(scope.strip(), ensure_ascii=False) + "\n"
+        "  status: " + decision + "\n"
+        "  approved_by: " + json.dumps(approved_by.strip(), ensure_ascii=False) + "\n"
         "  approved_at: " + approved_on + "\n"
+        "  spec_sha256: " + _spec_digest(text) + "\n"
+        "  prototype_sha256: "
+        + (_digest(prototype.read_text(encoding="utf-8")) if prototype.is_file() else "missing")
+        + "\n"
     )
     match = _APPROVAL_BLOCK.search(text)
     if match is not None:
         text = text[: match.start()] + block + text[match.end() :]
     else:
         text = text.rstrip("\n") + "\n\n" + block
-    path.write_text(text, encoding="utf-8")
+    atomic_text(path, text)
 
 
 def evaluate_finish(
@@ -340,7 +381,10 @@ def evaluate_finish(
     memory_not_needed: bool = False,
     change_class: str | None = None,
     requirement_id: str | None = None,
+    base_ref: str | None = None,
     runner: GitRunner | None = None,
+    remote: str | None = None,
+    observer=None,
 ) -> GateDecision:
     """Evaluate whether a task may finish.
 
@@ -359,7 +403,10 @@ def evaluate_finish(
         test_command=test_command,
         change_class=change_class,
         requirement_id=requirement_id,
+        base_ref=base_ref,
         runner=runner,
+        remote=remote,
+        observer=observer,
     )
     if not (memory_written or memory_not_needed):
         findings.append(
@@ -390,48 +437,15 @@ def _normalize_choice(value: str, allowed: frozenset[str], label: str) -> str:
 
 
 def _github_findings(
-    git: GitRunner, github_hosts: frozenset[str] | tuple[str, ...]
+    git: GitRunner,
+    github_hosts: frozenset[str] | tuple[str, ...],
+    *,
+    timeout: float = 5,
+    remote: str | None = None,
+    result: RemoteCheck | None = None,
 ) -> list[GateFinding]:
-    findings: list[GateFinding] = []
-    top = git.run("rev-parse", "--show-toplevel")
-    if top.returncode != 0:
-        findings.append(
-            GateFinding("NOT_GIT_REPOSITORY", "project is not a Git repository")
-        )
-        return findings
-    remote = git.run("remote", "get-url", "origin")
-    if remote.returncode != 0:
-        findings.append(
-            GateFinding(
-                "GITHUB_REMOTE_MISSING",
-                "no origin remote: formal src/ implementation is blocked; reading input/, "
-                "analysis, research, planning, and documentation stay allowed until a "
-                "GitHub repository is provided",
-            )
-        )
-        return findings
-    url = remote.stdout.strip()
-    host = _remote_host(url)
-    allowed_hosts = {value.casefold() for value in github_hosts}
-    if host is None or host not in allowed_hosts:
-        findings.append(
-            GateFinding(
-                "GITHUB_REMOTE_NOT_ALLOWED",
-                "origin must use an allowed GitHub host "
-                + str(sorted(allowed_hosts))
-                + ": "
-                + repr(url),
-            )
-        )
-        return findings
-    reachable = git.run("ls-remote", "origin")
-    if reachable.returncode != 0:
-        detail = (reachable.stderr or reachable.stdout).strip().splitlines()
-        reason = detail[-1] if detail else "git ls-remote exit " + str(reachable.returncode)
-        findings.append(
-            GateFinding("GITHUB_REMOTE_UNREACHABLE", "origin is not reachable: " + reason)
-        )
-    return findings
+    checked = result or check_remote(git, github_hosts, remote=remote, timeout=timeout)
+    return [GateFinding(code, message) for code, message in checked.errors]
 
 
 def hygiene_findings(root: Path, git: GitRunner) -> list[GateFinding]:
@@ -442,11 +456,14 @@ def hygiene_findings(root: Path, git: GitRunner) -> list[GateFinding]:
     """
 
     findings: list[GateFinding] = []
-    findings.extend(_copy_style_findings(root))
     tracked = git.run("ls-files", "-z")
+    tracked_paths = (
+        {p for p in tracked.stdout.split("\0") if p} if tracked.returncode == 0 else set()
+    )
+    findings.extend(_copy_style_findings(root, git=git, tracked=tracked_paths))
     if tracked.returncode == 0:
         for entry in tracked.stdout.split("\0"):
-            normalized = entry.replace("\\", "/").strip()
+            normalized = entry
             if normalized and _TRACKED_POLLUTION.search(normalized):
                 findings.append(
                     GateFinding(
@@ -455,34 +472,95 @@ def hygiene_findings(root: Path, git: GitRunner) -> list[GateFinding]:
                         path=normalized,
                     )
                 )
-    conflicts = git.run("diff", "--name-only", "--diff-filter=U")
+    else:
+        findings.append(GateFinding("TRACKED_CHECK_FAILED", "cannot inspect Git tracked paths"))
+    conflicts = git.run("diff", "--name-only", "-z", "--diff-filter=U")
     if conflicts.returncode != 0:
         findings.append(
             GateFinding("CONFLICT_CHECK_FAILED", "unresolved-conflict check failed to run")
         )
     else:
-        for entry in conflicts.stdout.splitlines():
-            if entry.strip():
+        for entry in conflicts.stdout.split("\0"):
+            if entry:
                 findings.append(
                     GateFinding(
                         "UNRESOLVED_CONFLICT",
                         "repository contains unresolved merge conflicts",
-                        path=entry.strip(),
+                        path=entry,
                     )
                 )
+    findings.extend(output_purity_findings(root))
     return findings
 
 
-def _copy_style_findings(root: Path) -> list[GateFinding]:
+def output_purity_findings(root: Path) -> list[GateFinding]:
+    """Deliverables cannot contain caches or scratch, regardless of task ownership."""
+    output = root / "output"
+    forbidden = {"backup", "copy", "old", "final", "temp", "tmp", "debug", "cache", "__pycache__"}
+    impure = re.compile(
+        r"(?:\.(?:tmp|temp|log|bak|pyc|pyo|orig|rej)$|"
+        r"^(?:tmp|temp|debug|scratch|oneoff|one_off)[\w.-]*$)",
+        re.I,
+    )
+    findings = []
+    for current, directories, files in os.walk(output, followlinks=False):
+        for name in (*directories, *files):
+            if name != ".gitkeep" and (name.casefold() in forbidden or impure.search(name)):
+                findings.append(
+                    GateFinding(
+                        "OUTPUT_IMPURE",
+                        "output/ only holds final deliverables",
+                        path=(Path(current) / name).relative_to(root).as_posix(),
+                    )
+                )
+        directories[:] = [name for name in directories if name.casefold() not in forbidden]
+    return findings
+
+
+def _copy_style_findings(root: Path, *, git=None, tracked=None) -> list[GateFinding]:
+    from codex_ai_os.core.source_evidence import SourceEvidence
+
     findings: list[GateFinding] = []
     if not root.is_dir():
         return findings
+    evidence = SourceEvidence(root, git or GitRunner(root), tracked or set())
+
+    def finding(path, code):
+        try:
+            proof = evidence.classify(root / path)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            if isinstance(exc, ExecutionStopped):
+                raise
+            findings.append(GateFinding("PROVENANCE_CHECK_FAILED", str(exc), path=path))
+            return
+        findings.append(
+            GateFinding(
+                code,
+                "verified source/generated path"
+                if proof
+                else "copy-style candidate lacks verified source/generated provenance; "
+                "review the evidence and preserve user assets",
+                path=path,
+                blocking=proof is None,
+                details=proof
+                or {
+                    "missing_evidence": [
+                        "CMake source/build identity, exact generated probe and ignored Git state",
+                        "or pinned submodule/FETCH_HEAD origin plus unchanged upstream content",
+                    ]
+                },
+            )
+        )
+
     for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+        raise_if_cancelled()
         current_path = Path(current)
         relative = current_path.relative_to(root)
         depth = len(relative.parts)
         kept: list[str] = []
         for name in directories:
+            if depth == 0 and name.casefold() == "input":
+                continue
             if name.casefold() in _EXCLUDED_TREE_NAMES:
                 continue
             kept.append(name)
@@ -491,13 +569,7 @@ def _copy_style_findings(root: Path) -> list[GateFinding]:
                 _COPY_SUFFIX_DIRECTORY.fullmatch(name) is not None
             )
             if is_copy_directory:
-                findings.append(
-                    GateFinding(
-                        "COPY_STYLE_DIRECTORY",
-                        "copy-style version directory: keep history in Git, delete copies",
-                        path=copy_path,
-                    )
-                )
+                finding(copy_path, "COPY_STYLE_DIRECTORY")
             elif depth == 0 and _ROOT_VERSION_DIRECTORY.fullmatch(name):
                 findings.append(
                     GateFinding(
@@ -510,24 +582,39 @@ def _copy_style_findings(root: Path) -> list[GateFinding]:
         directories[:] = kept
         for name in files:
             if _COPY_FILE.search(name):
-                findings.append(
-                    GateFinding(
-                        "COPY_STYLE_FILE",
-                        "copy-style version file: keep history in Git, delete copies",
-                        path=(relative / name).as_posix(),
+                finding((relative / name).as_posix(), "COPY_STYLE_FILE")
+            else:
+                try:
+                    if evidence.first_party_copy(current_path / name):
+                        findings.append(
+                            GateFinding(
+                                "PROJECT_SOURCE_COPY",
+                                "project source duplicated in build/vendor tree",
+                                path=(relative / name).as_posix(),
+                            )
+                        )
+                except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                    if isinstance(exc, ExecutionStopped):
+                        raise
+                    findings.append(
+                        GateFinding(
+                            "PROVENANCE_CHECK_FAILED", str(exc), path=(relative / name).as_posix()
+                        )
                     )
-                )
     return findings
 
 
 def disposable_findings(git: GitRunner) -> list[GateFinding]:
-    status = git.run("status", "--porcelain", "--untracked-files=normal")
+    status = git.run("status", "--porcelain", "-z", "--untracked-files=normal")
     findings: list[GateFinding] = []
     if status.returncode != 0:
         findings.append(GateFinding("STATUS_CHECK_FAILED", "git status check failed to run"))
         return findings
-    for line in status.stdout.splitlines():
-        entry = line[3:].strip().strip('"').replace("\\", "/")
+    entries = iter(status.stdout.split("\0"))
+    for line in entries:
+        entry = line[3:]
+        if "R" in line[:2] or "C" in line[:2]:
+            next(entries, None)  # porcelain -z emits destination, then source
         if not entry:
             continue
         name = entry.rstrip("/").rsplit("/", 1)[-1]
@@ -535,9 +622,9 @@ def disposable_findings(git: GitRunner) -> list[GateFinding]:
             findings.append(
                 GateFinding(
                     "DISPOSABLE_FILE_PRESENT",
-                    "disposable file or directory must be deleted before finish "
-                    "(promote to scripts/ only if it is truly reusable)",
+                    "possible disposable artifact; native review must establish task ownership",
                     path=entry,
+                    blocking=False,
                 )
             )
         else:
@@ -557,10 +644,7 @@ def _scope_entries(requirement: str) -> list[str]:
 
     block = _SCOPE_LIST_FIELD.search(requirement)
     if block is not None:
-        entries = [
-            line.strip().lstrip("-").strip()
-            for line in block.group(0).splitlines()[1:]
-        ]
+        entries = [line.strip().lstrip("-").strip() for line in block.group(0).splitlines()[1:]]
         return [entry for entry in entries if entry]
     inline = _SCOPE_INLINE_FIELD.search(requirement)
     if inline is None:
@@ -631,8 +715,7 @@ def _research_findings(
         return [
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_INCOMPLETE",
-                research_path
-                + " must contain a '## Requirement' section with requirement_id, "
+                research_path + " must contain a '## Requirement' section with requirement_id, "
                 "summary, scope, and updated_at metadata",
                 path=research_path,
             )
@@ -680,8 +763,7 @@ def _research_findings(
         findings.append(
             GateFinding(
                 "OPEN_SOURCE_RESEARCH_INCOMPLETE",
-                "the '## Requirement' section needs 'updated_at:' as a valid "
-                "YYYY-MM-DD date",
+                "the '## Requirement' section needs 'updated_at:' as a valid YYYY-MM-DD date",
                 path=research_path,
             )
         )
@@ -699,16 +781,8 @@ def _research_findings(
             )
         )
     decision_section = _markdown_section(text, "Decision")
-    decision = (
-        _DECISION_FIELD.search(decision_section)
-        if decision_section is not None
-        else None
-    )
-    reason = (
-        _REASON_FIELD.search(decision_section)
-        if decision_section is not None
-        else None
-    )
+    decision = _DECISION_FIELD.search(decision_section) if decision_section is not None else None
+    reason = _REASON_FIELD.search(decision_section) if decision_section is not None else None
     if decision is None or decision.group(1).casefold() not in VALID_DECISIONS:
         findings.append(
             GateFinding(
@@ -735,18 +809,6 @@ def _markdown_section(text: str, heading: str) -> str | None:
     pattern = re.compile(r"(?ms)^##\s+" + re.escape(heading) + r"\s*$\n(.*?)(?=^##\s|\Z)")
     match = pattern.search(text)
     return match.group(1) if match is not None else None
-
-
-def _remote_host(remote_url: str) -> str | None:
-    value = remote_url.strip()
-    if re.fullmatch(r"git@[^:]+:[^/]+/[^/]+(?:\.git)?", value):
-        return value.split("@", 1)[1].split(":", 1)[0].casefold()
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"https", "ssh"} or parsed.username not in {None, "git"}:
-        return None
-    if parsed.password is not None or not parsed.hostname:
-        return None
-    return parsed.hostname.casefold()
 
 
 __all__ = [
