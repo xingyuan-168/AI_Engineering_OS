@@ -111,7 +111,14 @@ def test_registered_mcp_schema_and_cli_reject_old_attestations():
     properties = tool.input_schema["properties"]
     assert properties["change_class"]["default"] is None
     assert {"type": "null"} in properties["change_class"]["anyOf"]
-    assert {"test_command", "base_ref", "remote", "run_id", "action"} <= properties.keys()
+    assert {
+        "test_command",
+        "base_ref",
+        "remote",
+        "remote_ref",
+        "run_id",
+        "action",
+    } <= properties.keys()
     assert not {"tests_passed", "docs_synced", "ctx"} & properties.keys()
     assert tool.input_schema["additionalProperties"] is False
     import pytest
@@ -128,6 +135,7 @@ def test_registered_mcp_schema_and_cli_reject_old_attestations():
         "test_command": None,
         "base_ref": None,
         "remote": None,
+        "remote_ref": None,
         "change_class": "small_change",
         "frontend_impact": "none",
         "frontend_scope": "default",

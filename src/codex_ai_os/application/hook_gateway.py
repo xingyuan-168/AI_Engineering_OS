@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import re
 import shlex
-import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from codex_ai_os.adapters.git import GitRunner
 from codex_ai_os.application.authorization import (
     AuthorizationRequest,
     GovernanceAuthorizationKernel,
@@ -21,6 +21,7 @@ from codex_ai_os.application.cleanup_policy import (
 from codex_ai_os.application.command_syntax import executable_name, shell_commands
 from codex_ai_os.application.governance_policy import GovernancePolicyCompiler
 from codex_ai_os.core.gates import GateDecision, formal_write_blockers
+from codex_ai_os.core.github_remote import prepare_remote, probe_remotes
 from codex_ai_os.infrastructure.config import load_project_config, resolve_runtime_root
 
 _PATH_HEADER = re.compile(
@@ -124,8 +125,7 @@ def _evaluate(payload: dict[str, Any]) -> dict[str, Any]:
         if outcome.rule_id == "CLEANUP_TARGET_CHECKED":
             return _result("allow", outcome.rule_id, outcome.reason, outcome.denied_paths)
     paths = _write_targets(tool, command, data)
-    boundaries: dict[Path, GateDecision] = {}
-    network_deadline = time.monotonic() + 5
+    formal_roots = {}
     if tool in {"apply_patch", "Write", "Edit"} and not paths and initialized:
         return _result(
             "deny", "PATCH_TARGET_UNRESOLVED", "patch contains no supported file headers"
@@ -169,23 +169,27 @@ def _evaluate(payload: dict[str, Any]) -> dict[str, Any]:
             return _result("deny", outcome.rule_id, outcome.reason, (target.as_posix(),))
         config = load_project_config(owner.project_root)
         if _formal_write_targets((relative,), config.code_paths):
-            if owner.checkout_root not in boundaries:
-                remaining = network_deadline - time.monotonic()
-                if remaining <= 0:
-                    raise HookGatewayError(
-                        "NETWORK_BUDGET_EXHAUSTED", "remote check budget exhausted"
-                    )
-                boundaries[owner.checkout_root] = _formal_boundary(
-                    owner.checkout_root, config.github_hosts, timeout=remaining
-                )
-            boundary = boundaries[owner.checkout_root]
-            if not boundary.allowed:
-                return _result(
-                    "deny",
-                    "CODE_START_BLOCKED",
-                    ", ".join(boundary.blocked_by),
-                    (target.as_posix(),),
-                )
+            formal_roots.setdefault(owner.checkout_root, (config.github_hosts, target))
+    requests = []
+    for root, (hosts, _) in formal_roots.items():
+        git = GitRunner(root)
+        requests.append((git, prepare_remote(git, hosts)))
+    checked = probe_remotes(requests)
+    for (root, (hosts, target)), remote_check in zip(formal_roots.items(), checked, strict=True):
+        boundary = _formal_boundary(root, hosts, remote_check=remote_check)
+        if not boundary.allowed:
+            result = _result(
+                "deny",
+                "CODE_START_BLOCKED",
+                ", ".join(boundary.blocked_by),
+                (target.as_posix(),),
+            )
+            result["details"] = [
+                {"code": finding.code, "message": finding.message, "details": finding.details}
+                for finding in boundary.findings
+                if finding.blocking
+            ]
+            return result
     return _result("allow", "AIOS_CHECKS_PASSED", "no objective AIOS blocker", paths)
 
 
@@ -219,9 +223,15 @@ def parse_apply_patch_paths(patch_text: str) -> tuple[str, ...]:
 
 
 def _formal_boundary(
-    root: Path, github_hosts: frozenset[str] | tuple[str, ...], *, timeout: float = 5
+    root: Path,
+    github_hosts: frozenset[str] | tuple[str, ...],
+    *,
+    timeout: float = 5,
+    remote_check=None,
 ) -> GateDecision:
-    return formal_write_blockers(root, github_hosts=github_hosts, network_timeout=timeout)
+    return formal_write_blockers(
+        root, github_hosts=github_hosts, network_timeout=timeout, remote_check=remote_check
+    )
 
 
 def _write_targets(tool: str, command: str, data: dict[str, Any]) -> tuple[str, ...]:

@@ -1,5 +1,9 @@
 # Worktree 协议
 
+## 候选接口增量（2026-10-26，尚未部署）
+
+prepare 可显式提供 target_branch / --target-branch，默认沿用项目配置，并在结果中返回登记目标。Codex 先选择持久的任务合入分支，再创建开发 Worktree；review 后以原生 Git 合入该分支，最后正常 cleanup。不能选择 Worktree 自身作为合入目标，也不能在 cleanup 时换目标。仅推送分支不构成合并证明；未知目标、脏树或无祖先关系继续保留恢复现场。
+
 AIOS 不创建、调度或管理 Agent；Codex 主会话负责规划与拆分，必要时调用原生子 Agent。AIOS 只负责把并行写隔离在登记的 disposable worktree 里。
 
 ## 四能力（core/worktree.py）

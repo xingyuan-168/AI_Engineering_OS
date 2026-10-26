@@ -21,7 +21,10 @@ from pathlib import Path
 
 from codex_ai_os.adapters.git import GitRunner
 from codex_ai_os.adapters.process import ExecutionStopped, owned_run
+from codex_ai_os.core.delivery import capture_delivery, check_delivery, target_findings
 from codex_ai_os.core.gates import GateFinding, disposable_findings, hygiene_findings
+from codex_ai_os.core.github_remote import check_remote
+from codex_ai_os.infrastructure.config import load_project_config, resolve_runtime_root
 from codex_ai_os.infrastructure.errors import DiagnosticError
 from codex_ai_os.infrastructure.memory import CANDIDATE_DIRECTORY
 
@@ -38,6 +41,7 @@ def run_thin_checks(
     base_ref: str | None = None,
     runner: GitRunner | None = None,
     remote: str | None = None,
+    remote_ref: str | None = None,
     observer=None,
 ) -> list[GateFinding]:
     """Run only the finish checks that can be verified in place."""
@@ -51,16 +55,21 @@ def run_thin_checks(
 
     def task_diff():
         base = _resolve_base(git, base_ref)
-        return base, _formal_dirty_paths(root, git, base)
+        config = load_project_config(resolve_runtime_root(root).project_root)
+        snapshot = capture_delivery(git, config.code_paths)
+        return base, _formal_dirty_paths(root, git, base), config, snapshot
 
     try:
-        base, formal = step("task_diff", task_diff)
+        base, formal, config, snapshot = step("task_diff", task_diff)
     except DiagnosticError as exc:
         if isinstance(exc, ExecutionStopped) or exc.code == "RUN_WRITE_FAILED":
             raise
         return [GateFinding(exc.code, str(exc), path=exc.path)]
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         return [GateFinding("FINISH_DIFF_FAILED", str(exc))]
+    invalid_target = target_findings(git, remote_ref, config.git_push_policy)
+    if invalid_target:
+        return invalid_target
     command_runner = observer.command if observer else owned_run
     findings.extend(
         step(
@@ -73,19 +82,35 @@ def run_thin_checks(
     findings.extend(step("hygiene", lambda: hygiene_findings(root, git)))
     findings.extend(step("disposables", lambda: disposable_findings(git)))
     findings.extend(step("memory_candidates", lambda: _memory_candidate_findings(root)))
-    findings.extend(
-        step(
-            "code_start",
-            lambda: _code_start_recheck_findings(
-                root,
-                git,
-                change_class=change_class,
-                requirement_id=requirement_id,
-                formal=formal,
-                remote=remote,
-            ),
+    checked = None
+
+    def recheck():
+        nonlocal checked
+        checked = check_remote(git, config.github_hosts, remote=remote)
+        return _code_start_recheck_findings(
+            root,
+            git,
+            change_class=change_class,
+            requirement_id=requirement_id,
+            formal=formal,
+            remote=remote,
+            remote_check=checked,
         )
-    )
+
+    findings.extend(step("code_start", recheck))
+    def delivery_operation():
+        assert checked is not None
+        return check_delivery(
+            git,
+            snapshot,
+            checked,
+            remote_ref=remote_ref,
+            policy=config.git_push_policy,
+            code_paths=config.code_paths,
+        )
+
+    delivery = step("delivery", delivery_operation)
+    findings.extend(delivery.findings)
     return findings
 
 
@@ -152,6 +177,7 @@ def _code_start_recheck_findings(
     requirement_id: str | None,
     formal: list[str],
     remote: str | None = None,
+    remote_check=None,
 ) -> list[GateFinding]:
     """Second Code Start layer: formal code changed, so prove the basis.
 
@@ -188,6 +214,7 @@ def _code_start_recheck_findings(
             runner=git,
             github_hosts=config.github_hosts,
             remote=remote,
+            remote_check=remote_check,
         )
     except ExecutionStopped:
         raise

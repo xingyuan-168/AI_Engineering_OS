@@ -96,6 +96,8 @@ def test_finish_gate_blocks_then_passes(tmp_path: Path) -> None:
             str(tmp_path),
             "--test-command",
             'python -c "import sys; sys.exit(3)"',
+            "--remote-ref",
+            "refs/heads/main",
             "--memory-not-needed",
             "--base-ref",
             "HEAD",
@@ -120,14 +122,25 @@ def test_finish_gate_blocks_then_passes(tmp_path: Path) -> None:
             "--json",
         ],
     )
-    assert passing.exit_code == 0, passing.output
-    assert _json_output(passing.output)["data"]["allowed"] is True
+    assert passing.exit_code == 40, passing.output
+    assert "PUSH_TARGET_REQUIRED" in {
+        f["code"] for f in _json_output(passing.output)["error"]["details"]["findings"]
+    }
     # Second layer: uncommitted formal code without a change class blocks.
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "new.py").write_text("x = 1\n", encoding="utf-8")
     unverified = runner.invoke(
         app,
-        ["finish", str(tmp_path), "--base-ref", "HEAD", "--memory-not-needed", "--json"],
+        [
+            "finish",
+            str(tmp_path),
+            "--base-ref",
+            "HEAD",
+            "--memory-not-needed",
+            "--remote-ref",
+            "refs/heads/main",
+            "--json",
+        ],
     )
     assert unverified.exit_code == 40, unverified.output
     unverified_codes = {

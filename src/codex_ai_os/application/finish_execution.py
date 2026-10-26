@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 from codex_ai_os.adapters.git import GitRunner, ignored_untracked_paths
 from codex_ai_os.adapters.process import COMMAND_CANCEL, ExecutionStopped, owned_run
+from codex_ai_os.core.delivery import DeliveryCheck
 from codex_ai_os.infrastructure.errors import DiagnosticError
 from codex_ai_os.infrastructure.files import (
     ExecutionLock,
@@ -32,6 +33,7 @@ STEPS = (
     "disposables",
     "memory_candidates",
     "code_start",
+    "delivery",
 )
 
 
@@ -129,6 +131,7 @@ class FinishExecution:
             "owner": {"pid": os.getpid(), "identity": process_identity(os.getpid())},
             "execution_status": "running",
             "decision": None,
+            "delivery": {"verified": False, "reason": "not_run"},
             "steps": {name: {"status": "not_run"} for name in STEPS},
         }
         try:
@@ -184,19 +187,26 @@ class FinishExecution:
             raise
         with self.lock:
             step = self.record["steps"][name]
+            checked_findings = (
+                list(result.findings) if isinstance(result, DeliveryCheck) else result
+            )
             step.update(
                 status="failed"
-                if isinstance(result, list) and any(f.blocking for f in result)
+                if isinstance(checked_findings, list) and any(f.blocking for f in checked_findings)
                 else "passed",
                 ended_at=_now(),
             )
-            if isinstance(result, list):
-                step["findings"] = [asdict(f) for f in result]
-                if any(f.code.endswith("SKIPPED") for f in result):
+            if isinstance(checked_findings, list):
+                step["findings"] = [asdict(f) for f in checked_findings]
+                if any(f.code.endswith("SKIPPED") for f in checked_findings):
                     step["status"] = "skipped"
-            if name == "task_diff":
+            if name == "task_diff" and isinstance(result, tuple):
                 self.record["resolved_base"] = result[0]
                 self.record["formal_paths"] = result[1]
+                if len(result) > 3:
+                    self.record["delivery"]["commit"] = result[3].commit
+            if isinstance(result, DeliveryCheck):
+                self.record["delivery"] = json.loads(json.dumps(asdict(result)))
             if name == "code_start" and not result and not self.record.get("formal_paths"):
                 step["status"] = "skipped"
             self.save()
@@ -362,6 +372,9 @@ def query_execution(root: Path, run_id: str) -> dict:
             for step in record.get("steps", {}).values():
                 if step.get("status") == "running":
                     step["status"] = "interrupted"
+    record.setdefault(
+        "delivery", {"verified": None, "reason": "legacy result; delivery unverified"}
+    )
     return record  # query never writes or terminates any PID
 
 
@@ -375,6 +388,7 @@ def run_finish(
     memory_written=False,
     memory_not_needed=False,
     remote=None,
+    remote_ref=None,
     run_id=None,
     cancel=None,
     on_progress=None,
@@ -391,6 +405,7 @@ def run_finish(
         cancel=cancel,
         on_progress=on_progress,
     )
+    execution.record.update(remote=remote, remote_ref=remote_ref)
     token = COMMAND_CANCEL.set(execution.cancel)
     try:
         decision = evaluate_finish(
@@ -402,6 +417,7 @@ def run_finish(
             memory_written=memory_written,
             memory_not_needed=memory_not_needed,
             remote=remote,
+            remote_ref=remote_ref,
             observer=execution,
         )
         record = execution.end(decision=decision)

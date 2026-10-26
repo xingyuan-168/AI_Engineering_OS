@@ -1,5 +1,12 @@
 # 架构
 
+## 2026-10-26 候选增量
+
+- core/github_remote.py 将只读远程配置解析与实际网络探测分离；请求内批量探测最多 3 个，全部受同一 5 秒截止时间控制。线程继承调用的 ContextVar 取消信号，退出时等待所属命令回收，不成为后台任务或跨请求缓存。
+- core/delivery.py 是只读内容与 Git 引用观察。Git 的机器格式、内建换行转换与无写入 hash-object 证明实际文件内容；不依赖 assume-unchanged/skip-worktree，不执行外部内容 filter。远端对象不足时明确不可核验，不自动 fetch。
+- Finish 调用记录追加 delivery，核心决策仍来自本次观察。历史查询只派生“交付未验证”，不恢复任务、不修改原记录。Worktree 的任务合入目标使用原有 target_branch 字段，无数据库迁移。
+- 已部署插件仍处于旧构建。受保护插件源码的维护补丁与源码候选分别审阅；未经宿主真实安装、信任、重连，不能宣称部署完成。
+
 Windows 本地、可审计的 Codex 工程治理层。Python 3.12，自研自持（Gate、审批、SQLite），无第二模型客户端；LangGraph 等仅作设计参考，禁止作为依赖引入。
 
 ## 分层

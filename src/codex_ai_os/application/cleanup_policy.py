@@ -63,7 +63,14 @@ def literal_cleanup_target(command: str) -> str:
     }:
         raise ValueError("destructive command is wrapped or cannot be resolved")
     targets = []
-    for token in tokens[1:]:
+    arguments = iter(tokens[1:])
+    for token in arguments:
+        if token.casefold() == "-erroraction":
+            if next(arguments, "").casefold() != "stop":
+                raise ValueError("cleanup diagnostics only support -ErrorAction Stop")
+            continue
+        if token.casefold() == "-erroraction:stop":
+            continue
         if token.casefold() in _FLAGS:
             continue
         if token.startswith("-"):

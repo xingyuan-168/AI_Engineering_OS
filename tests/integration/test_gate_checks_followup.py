@@ -23,7 +23,13 @@ def test_mcp_does_not_invent_change_class(governed_repo, monkeypatch):
     source.parent.mkdir()
     source.write_text("value = 1\n", encoding="utf-8")
     result = asyncio.run(
-        governance_check(str(governed_repo), "finish", base_ref="HEAD", memory_not_needed=True)
+        governance_check(
+            str(governed_repo),
+            "finish",
+            base_ref="HEAD",
+            memory_not_needed=True,
+            remote_ref="refs/heads/main",
+        )
     )
     assert result["data"]["allowed"] is False
     assert "CODE_START_UNVERIFIED" in result["data"]["blocked_by"]
@@ -61,7 +67,8 @@ def test_cli_and_mcp_missing_type_agree(governed_repo, formal):
     )
     payload = json.loads(cli.output)
     cli_data = payload.get("data") or payload["error"]["details"]
-    assert cli_data["allowed"] == mcp["data"]["allowed"] == (not formal)
+    assert cli_data["allowed"] == mcp["data"]["allowed"] is False
+    assert "PUSH_TARGET_REQUIRED" in cli_data["blocked_by"]
     assert cli_data["blocked_by"] == mcp["data"]["blocked_by"]
 
 

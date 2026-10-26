@@ -12,6 +12,59 @@ class CommandSyntaxError(ValueError):
     pass
 
 
+class ShellWord(str):
+    """Retain expansion evidence without changing the existing string interface."""
+
+    requires_expansion: bool
+
+    def __new__(cls, value: str, requires_expansion: bool = False):
+        word = super().__new__(cls, value)
+        word.requires_expansion = requires_expansion
+        return word
+
+
+def requires_expansion(value: str) -> bool:
+    return getattr(value, "requires_expansion", bool(re.search(r"[$`%]|^@", value)))
+
+
+def git_config_argument(value: str) -> None:
+    """The literal Git -c subset needed for read-only SSH diagnostics."""
+    if requires_expansion(value):
+        raise CommandSyntaxError("Git configuration requires shell expansion")
+    key, separator, setting = value.partition("=")
+    if not separator:
+        raise CommandSyntaxError("Git -c requires a literal name=value")
+    if key.casefold() == "core.quotepath" and setting.casefold() in {"true", "false"}:
+        return
+    if key.casefold() != "core.sshcommand":
+        raise CommandSyntaxError("unsupported Git configuration context: " + key)
+    parsed = shell_commands(setting)
+    if len(parsed.commands) != 1 or parsed.redirects:
+        raise CommandSyntaxError("SSH configuration requires one literal SSH invocation")
+    words = list(parsed.commands[0])
+    if executable_name(words.pop(0)) != "ssh" or any(requires_expansion(w) for w in words):
+        raise CommandSyntaxError("SSH configuration requires a literal ssh executable")
+    while words:
+        option = words.pop(0)
+        if option in {"-4", "-6"}:
+            continue
+        if option == "-p" and words:
+            port = words.pop(0)
+            if port.isdecimal() and 1 <= int(port) <= 65535:
+                continue
+        if option == "-o" and words:
+            setting = words.pop(0).casefold()
+            if setting in {
+                "hostname=ssh.github.com",
+                "hostname=github.com",
+                "batchmode=yes",
+                "preferredauthentications=publickey",
+                "identitiesonly=yes",
+            }:
+                continue
+        raise CommandSyntaxError("unsupported SSH connection option: " + option)
+
+
 @dataclass(frozen=True)
 class ShellCommands:
     commands: tuple[tuple[str, ...], ...]
@@ -26,18 +79,19 @@ def shell_commands(text: str, *, depth: int = 0) -> ShellCommands:
     if depth > 4:
         raise CommandSyntaxError("shell wrapper nesting exceeds the supported literal grammar")
     statements, redirects, words = [], [], []
-    word, index, redirect, started = "", 0, False, False
+    word, index, redirect, started, expansion = "", 0, False, False, False
 
     def flush_word():
-        nonlocal word, redirect, started
+        nonlocal word, redirect, started, expansion
         if started or word:
             if redirect:
-                redirects.append(word)
+                redirects.append(ShellWord(word, expansion))
                 redirect = False
             else:
-                words.append(word)
+                words.append(ShellWord(word, expansion))
             word = ""
             started = False
+            expansion = False
 
     def flush_statement():
         flush_word()
@@ -97,6 +151,8 @@ def shell_commands(text: str, *, depth: int = 0) -> ShellCommands:
                     break
                 if quote == '"' and text[index : index + 2] == "$(":
                     raise CommandSyntaxError("quoted command interpolation is unresolved")
+                if quote == '"' and char == "$" and re.match(r"[\w{]", text[index + 1 : index + 2]):
+                    expansion = True
                 if (
                     quote == '"'
                     and char in {"`", "\\"}
@@ -142,6 +198,8 @@ def shell_commands(text: str, *, depth: int = 0) -> ShellCommands:
                 "shell grouping or substitution is outside the literal grammar"
             )
         else:
+            if char in {"$", "%"}:
+                expansion = True
             word += char
         index += 1
     flush_statement()
@@ -152,9 +210,24 @@ def shell_commands(text: str, *, depth: int = 0) -> ShellCommands:
             # A literal data assignment stays data; an explicit command on the RHS
             # must receive the same screening as a standalone invocation.
             if len(statement) > 2 and executable_name(statement[2]) in {
-                "git", "cmd", "powershell", "pwsh", "bash", "sh", "iex", "invoke-expression",
-                "remove-item", "rm", "rmdir", "rd", "del", "erase", "docker", "podman",
-                "docker-compose", "podman-compose",
+                "git",
+                "cmd",
+                "powershell",
+                "pwsh",
+                "bash",
+                "sh",
+                "iex",
+                "invoke-expression",
+                "remove-item",
+                "rm",
+                "rmdir",
+                "rd",
+                "del",
+                "erase",
+                "docker",
+                "podman",
+                "docker-compose",
+                "podman-compose",
             }:
                 statement = statement[2:]
                 program = executable_name(statement[0])
@@ -178,6 +251,8 @@ def shell_commands(text: str, *, depth: int = 0) -> ShellCommands:
             nested = shell_commands(
                 parts[0] if len(parts) == 1 else shlex.join(parts), depth=depth + 1
             )
+            if program == "cmd" and any("%" in value for cmd in nested.commands for value in cmd):
+                raise CommandSyntaxError("cmd variable expansion has no literal target")
             commands.extend(nested.commands)
             redirects.extend(nested.redirects)
         elif program in {"iex", "invoke-expression"}:

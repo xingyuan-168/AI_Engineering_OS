@@ -43,6 +43,13 @@ BASE_DOCUMENTS: dict[str, str] = {
 8. 一次性文件（临时脚本、缓存、调试产物）任务结束删除，不进入 Git。
 9. 有价值的决策、Bug 根因与可复用经验写入 docs/memory/memory.jsonl。
 10. 危险 Git/删除操作必须保护用户资产：主工作区禁 force push、禁删远端 ref、禁递归强删。
+
+## Git 交付
+
+完整逻辑变更使用 Conventional Commit；中间提交可以暂留本地。
+正式任务完成前必须普通推送至任务选定分支，并通过 Finish 实时核验远端包含交付提交。
+Finish 显式传入任务起点 base_ref、remote 和完整 remote_ref（refs/heads/...）。
+推送失败保留本地提交并报告尚未交付；只读任务不制造提交。用户既有资料和修改不得混入推送。
 """,
     "input/.gitkeep": _GITKEEP,
     "output/.gitkeep": _GITKEEP,

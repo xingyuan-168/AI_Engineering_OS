@@ -202,6 +202,7 @@ def formal_write_blockers(
     github_hosts: frozenset[str] | tuple[str, ...] = ("github.com",),
     runner: GitRunner | None = None,
     network_timeout: float = 5,
+    remote_check: RemoteCheck | None = None,
 ) -> GateDecision:
     """Objective Code Start subset enforced at the write boundary.
 
@@ -215,7 +216,9 @@ def formal_write_blockers(
     root = root.resolve()
     git = runner or GitRunner(root)
     findings: list[GateFinding] = []
-    findings.extend(_github_findings(git, github_hosts, timeout=network_timeout))
+    findings.extend(
+        _github_findings(git, github_hosts, timeout=network_timeout, result=remote_check)
+    )
     findings.extend(hygiene_findings(root, git))
     return _decide(GateName.CODE_START, findings)
 
@@ -384,6 +387,7 @@ def evaluate_finish(
     base_ref: str | None = None,
     runner: GitRunner | None = None,
     remote: str | None = None,
+    remote_ref: str | None = None,
     observer=None,
 ) -> GateDecision:
     """Evaluate whether a task may finish.
@@ -406,6 +410,7 @@ def evaluate_finish(
         base_ref=base_ref,
         runner=runner,
         remote=remote,
+        remote_ref=remote_ref,
         observer=observer,
     )
     if not (memory_written or memory_not_needed):
@@ -445,7 +450,7 @@ def _github_findings(
     result: RemoteCheck | None = None,
 ) -> list[GateFinding]:
     checked = result or check_remote(git, github_hosts, remote=remote, timeout=timeout)
-    return [GateFinding(code, message) for code, message in checked.errors]
+    return [GateFinding(code, message, details=checked.details) for code, message in checked.errors]
 
 
 def hygiene_findings(root: Path, git: GitRunner) -> list[GateFinding]:

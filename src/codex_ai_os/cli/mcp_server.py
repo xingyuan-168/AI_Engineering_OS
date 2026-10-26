@@ -25,7 +25,7 @@ from mcp.server.mcpserver import Context
 from pydantic import create_model, model_validator
 
 from codex_ai_os.adapters.process import ExecutionStopped
-from codex_ai_os.application.finish_execution import query_execution, run_finish
+from codex_ai_os.application.finish_execution import STEPS, query_execution, run_finish
 from codex_ai_os.application.preflight import preflight
 from codex_ai_os.application.project import ProjectInitializer
 from codex_ai_os.core.gates import (
@@ -121,6 +121,7 @@ async def governance_check(
     memory_written: bool = False,
     memory_not_needed: bool = False,
     remote: str | None = None,
+    remote_ref: str | None = None,
     run_id: str | None = None,
     action: str = "run",
     ctx: Context = _NO_CONTEXT,
@@ -146,7 +147,7 @@ async def governance_check(
                 continue
             if ctx:
                 try:
-                    await ctx.report_progress(value, 8, f"run_id={run_id} {message}")
+                    await ctx.report_progress(value, len(STEPS), f"run_id={run_id} {message}")
                 except (anyio.BrokenResourceError, anyio.ClosedResourceError):
                     cancel.set()
                     return
@@ -159,6 +160,8 @@ async def governance_check(
             cancel.set()
 
     def operation() -> dict[str, Any]:
+        if stage != "finish" and remote_ref is not None:
+            raise DiagnosticError("remote_ref is Finish-only", code="GATE_INPUT_INVALID")
         if action not in {"run", "status"} or (stage != "finish" and (action != "run" or run_id)):
             raise DiagnosticError(
                 "execution/status parameters are Finish-only", code="RUN_QUERY_INVALID"
@@ -171,6 +174,7 @@ async def governance_check(
                         test_command,
                         base_ref,
                         remote,
+                        remote_ref,
                         requirement_id,
                         memory_written,
                         memory_not_needed,
@@ -221,6 +225,7 @@ async def governance_check(
                 memory_not_needed=memory_not_needed,
                 remote=remote,
                 run_id=run_id,
+                remote_ref=remote_ref,
                 cancel=cancel,
                 on_progress=progress,
             )
@@ -400,6 +405,7 @@ def worktree_manage(
     name: str | None = None,
     task_id: str | None = None,
     base_ref: str = "HEAD",
+    target_branch: str | None = None,
 ) -> dict[str, Any]:
     """Manage disposable worktrees (action=prepare|check|finish|cleanup|list)."""
 
@@ -409,12 +415,14 @@ def worktree_manage(
         database = Database(root / ".codex-os" / "state" / "state.db")
         database.migrate()
         manager = WorktreeManager(root, database=database)
+        if action != "prepare" and target_branch is not None:
+            raise ValueError("target_branch may only be supplied when preparing a worktree")
         if action == "prepare":
             record = manager.prepare(
                 name=name,
                 task_id=task_id,
                 base_ref=base_ref,
-                target_branch=config.target_branch,
+                target_branch=target_branch or config.target_branch,
             )
             return _success(**_worktree_data(record))
         if action == "check":
@@ -445,6 +453,7 @@ def _worktree_data(record: WorktreeRecord) -> dict[str, Any]:
         "task_id": record.task_id,
         "status": record.status,
         "clean": record.clean,
+        "target_branch": record.target_branch,
     }
 
 

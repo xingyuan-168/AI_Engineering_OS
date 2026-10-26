@@ -230,6 +230,7 @@ def check_command(
 
 @app.command("finish")
 def finish_command(
+    ctx: typer.Context,
     project_root: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
     test_command: Annotated[
         str | None, typer.Option("--test-command", help="Verifiable test command to run.")
@@ -247,6 +248,7 @@ def finish_command(
     memory_not_needed: Annotated[bool, typer.Option("--memory-not-needed")] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     remote: Annotated[str | None, typer.Option("--remote")] = None,
+    remote_ref: Annotated[str | None, typer.Option("--remote-ref")] = None,
     run_id: Annotated[str | None, typer.Option("--run-id")] = None,
     status: Annotated[bool, typer.Option("--status")] = False,
 ) -> None:
@@ -254,15 +256,33 @@ def finish_command(
 
     try:
         if status:
-            if not run_id or any(
-                (
-                    test_command,
-                    base_ref,
-                    remote,
-                    change_class,
-                    requirement_id,
-                    memory_written,
-                    memory_not_needed,
+            explicit_execution = any(
+                getattr(ctx.get_parameter_source(name), "name", "") == "COMMANDLINE"
+                for name in (
+                    "test_command",
+                    "base_ref",
+                    "remote",
+                    "remote_ref",
+                    "change_class",
+                    "requirement_id",
+                    "memory_written",
+                    "memory_not_needed",
+                )
+            )
+            if (
+                not run_id
+                or explicit_execution
+                or any(
+                    (
+                        test_command,
+                        base_ref,
+                        remote,
+                        remote_ref,
+                        change_class,
+                        requirement_id,
+                        memory_written,
+                        memory_not_needed,
+                    )
                 )
             ):
                 raise DiagnosticError(
@@ -285,6 +305,7 @@ def finish_command(
             memory_not_needed=memory_not_needed,
             remote=remote,
             run_id=run_id,
+            remote_ref=remote_ref,
         )
     except (ValueError, OSError) as exc:
         _fail(
@@ -598,6 +619,7 @@ def worktree_prepare_command(
     name: Annotated[str | None, typer.Argument(help="Worktree name (slug).")] = None,
     base_ref: Annotated[str, typer.Option("--base-ref")] = "HEAD",
     task_id: Annotated[str | None, typer.Option("--task-id")] = None,
+    target_branch: Annotated[str | None, typer.Option("--target-branch")] = None,
     project_root: Annotated[Path, typer.Option("--project-root")] = Path("."),
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
@@ -612,7 +634,7 @@ def worktree_prepare_command(
             name=name,
             task_id=task_id,
             base_ref=base_ref,
-            target_branch=config.target_branch,
+            target_branch=target_branch or config.target_branch,
         )
     except (ConfigError, MigrationError, WorktreeError, ValueError, OSError) as exc:
         _fail(getattr(exc, "code", "WORKTREE_FAILED"), str(exc), 2, json_output, error_details(exc))
@@ -729,6 +751,7 @@ def _worktree_payload(record: WorktreeRecord) -> dict[str, object]:
         "task_id": record.task_id,
         "status": record.status,
         "clean": record.clean,
+        "target_branch": record.target_branch,
     }
 
 

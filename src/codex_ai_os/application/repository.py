@@ -117,7 +117,8 @@ class RepositoryGovernanceService:
             if not fixture:
                 self.remote_check = check_remote(git, self.config.github_hosts, remote=self.remote)
                 findings.extend(
-                    GateFinding(code, message) for code, message in self.remote_check.errors
+                    GateFinding(code, message, details=self.remote_check.details)
+                    for code, message in self.remote_check.errors
                 )
                 remote_host = self.remote_check.host
 

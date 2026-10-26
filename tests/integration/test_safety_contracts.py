@@ -103,11 +103,12 @@ def test_registered_worktree_cli_mcp_and_memory_context(governed_repo: Path) -> 
             project_root=str(nested), stage="finish", base_ref="HEAD", memory_not_needed=True
         )
     )
-    assert result["ok"] and result["data"]["allowed"], result
+    assert result["ok"] and not result["data"]["allowed"], result
+    assert "PUSH_TARGET_REQUIRED" in result["data"]["blocked_by"]
     cli = CliRunner().invoke(
         app, ["finish", str(nested), "--base-ref", "HEAD", "--memory-not-needed", "--json"]
     )
-    assert cli.exit_code == 0, cli.output
+    assert cli.exit_code == 40, cli.output
     manager.cleanup(name="context")
 
 

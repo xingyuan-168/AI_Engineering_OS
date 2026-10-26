@@ -59,7 +59,11 @@ def test_timeout_stops_owned_descendants_and_preserves_unrelated_process(tmp_pat
 def test_completed_failure_remains_queryable_after_configuration_disappears(governed_repo):
     command = f'"{sys.executable}" -c "import sys; print(\'failed fixture\'); sys.exit(3)"'
     record = run_finish(
-        governed_repo, base_ref="HEAD", test_command=command, memory_not_needed=True
+        governed_repo,
+        remote_ref="refs/heads/main",
+        base_ref="HEAD",
+        test_command=command,
+        memory_not_needed=True,
     )
     assert record["execution_status"] == "completed" and not record["allowed"]
     assert record["steps"]["test_command"]["exit_code"] == 3
@@ -79,6 +83,7 @@ def test_cancel_preserves_partial_result(governed_repo):
         target=lambda: result.append(
             run_finish(
                 governed_repo,
+                remote_ref="refs/heads/main",
                 base_ref="HEAD",
                 test_command=public_command,
                 memory_not_needed=True,
@@ -120,10 +125,14 @@ def test_persistence_failure_never_starts_user_command(governed_repo, monkeypatc
     )
     if fail_after == 0:
         with pytest.raises(DiagnosticError) as error:
-            run_finish(governed_repo, base_ref="HEAD", test_command=command)
+            run_finish(
+                governed_repo, remote_ref="refs/heads/main", base_ref="HEAD", test_command=command
+            )
         assert error.value.code == "RUN_WRITE_FAILED"
     else:
-        record = run_finish(governed_repo, base_ref="HEAD", test_command=command)
+        record = run_finish(
+            governed_repo, remote_ref="refs/heads/main", base_ref="HEAD", test_command=command
+        )
         assert record["execution_status"] == "failed" and record["decision"] is None
         assert record["error"]["code"] == "RUN_WRITE_FAILED"
         process = record["steps"]["test_command"].get("process")
@@ -143,7 +152,9 @@ def test_final_write_failure_cannot_return_completed(governed_repo, monkeypatch)
         original(path, content)
 
     monkeypatch.setattr(execution, "atomic_text", fail)
-    record = run_finish(governed_repo, base_ref="HEAD", test_command=None)
+    record = run_finish(
+        governed_repo, remote_ref="refs/heads/main", base_ref="HEAD", test_command=None
+    )
     assert record["execution_status"] == "failed" and record["decision"] is None
     assert record["error"]["code"] == "RUN_WRITE_FAILED"
 
@@ -157,7 +168,9 @@ def test_finish_timeout_and_start_failure_are_incomplete(governed_repo, monkeypa
     public_command = (
         subprocess.list2cmdline(command) if os.name == "nt" else __import__("shlex").join(command)
     )
-    record = run_finish(governed_repo, base_ref="HEAD", test_command=public_command)
+    record = run_finish(
+        governed_repo, remote_ref="refs/heads/main", base_ref="HEAD", test_command=public_command
+    )
     assert record["execution_status"] == "timed_out" and record["decision"] is None
     assert record["steps"]["ruff"]["status"] == "not_run"
 
@@ -165,7 +178,9 @@ def test_finish_timeout_and_start_failure_are_incomplete(governed_repo, monkeypa
         raise OSError("synthetic command launch failure")
 
     monkeypatch.setattr(execution, "owned_run", unavailable)
-    record = run_finish(governed_repo, base_ref="HEAD", test_command="unused")
+    record = run_finish(
+        governed_repo, remote_ref="refs/heads/main", base_ref="HEAD", test_command="unused"
+    )
     assert record["execution_status"] == "unavailable" and record["decision"] is None
 
 
@@ -278,6 +293,7 @@ def test_real_mcp_cancellation_and_disconnect(governed_repo, disconnect):
                     "arguments": {
                         "project_root": str(governed_repo),
                         "stage": "finish",
+                        "remote_ref": "refs/heads/main",
                         "base_ref": "HEAD",
                         "memory_not_needed": True,
                         "run_id": run_id,

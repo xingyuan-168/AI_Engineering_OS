@@ -184,10 +184,16 @@ def test_finish_requires_base_and_includes_committed_unicode_paths(governed_repo
     source.write_text("x = 1\n", encoding="utf-8")
     git.run("add", "src")
     git.run("commit", "-qm", "new source")
-    missing = evaluate_finish(governed_repo, test_command=None, memory_not_needed=True)
+    missing = evaluate_finish(
+        governed_repo, remote_ref="refs/heads/main", test_command=None, memory_not_needed=True
+    )
     assert "FINISH_BASE_REQUIRED" in missing.blocked_by
     result = evaluate_finish(
-        governed_repo, test_command=None, memory_not_needed=True, base_ref=base
+        governed_repo,
+        remote_ref="refs/heads/main",
+        test_command=None,
+        memory_not_needed=True,
+        base_ref=base,
     )
     assert "CODE_START_UNVERIFIED" in result.blocked_by
     assert any(f.path == "src/中文.py" for f in result.findings)
@@ -200,7 +206,11 @@ def test_finish_checks_staged_whitespace(governed_repo: Path) -> None:
     git.run("add", "note.md")
     target.write_text("working copy clean\n", encoding="utf-8")
     result = evaluate_finish(
-        governed_repo, test_command=None, memory_not_needed=True, base_ref="HEAD"
+        governed_repo,
+        remote_ref="refs/heads/main",
+        test_command=None,
+        memory_not_needed=True,
+        base_ref="HEAD",
     )
     assert any(f.code.startswith("GIT_DIFF_CHECK") and f.blocking for f in result.findings)
 
@@ -213,6 +223,11 @@ def test_finish_empty_tree_for_unborn_repo(tmp_path: Path) -> None:
         "project_id: PROJECT-EMPTY\nname: Empty\nroot: .\n", encoding="utf-8"
     )
     result = evaluate_finish(
-        tmp_path, test_command=None, memory_not_needed=True, base_ref="EMPTY_TREE"
+        tmp_path,
+        remote_ref="refs/heads/main",
+        test_command=None,
+        memory_not_needed=True,
+        base_ref="EMPTY_TREE",
     )
-    assert result.allowed, result.findings
+    assert not result.allowed
+    assert "PUSH_COMMIT_REQUIRED" in result.blocked_by

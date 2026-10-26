@@ -38,17 +38,23 @@ class FakeGitRunner(GitRunner):
 
         if args[:2] == ("rev-parse", "--show-toplevel"):
             return subprocess.CompletedProcess(args, returncode=0, stdout="/repo\n", stderr="")
+        if args[:2] == ("rev-parse", "--verify"):
+            return subprocess.CompletedProcess(args, 0, "a" * 40 + "\n", "")
         if args[:1] == ("remote",):
             url = "https://github.com/org/repo.git"
             return subprocess.CompletedProcess(args, returncode=0, stdout=url + "\n", stderr="")
         if args[:1] == ("ls-remote",):
-            return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 0, "a" * 40 + "\trefs/heads/main\n", "")
         if args[:1] == ("ls-files",):
             return subprocess.CompletedProcess(args, returncode=0, stdout="", stderr="")
         if args[:2] == ("diff", "--name-only"):
             if "--diff-filter=U" in args:
                 return subprocess.CompletedProcess(args, 0, "", "")
-            paths = "\0".join(line[3:] for line in self.status.splitlines())
+            paths = "\0".join(
+                line[3:]
+                for line in self.status.splitlines()
+                if not (args[-2:] == ("HEAD", "--") and line.startswith("??"))
+            )
             return subprocess.CompletedProcess(args, returncode=0, stdout=paths, stderr="")
         if args[:1] == ("status",):
             return subprocess.CompletedProcess(
@@ -228,6 +234,7 @@ def test_user_uncommitted_work_warns_but_does_not_block_finish(tmp_path: Path) -
     _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        remote_ref="refs/heads/main",
         base_ref="HEAD",
         test_command=None,
         memory_not_needed=True,
@@ -377,6 +384,7 @@ def test_finish_runs_the_declared_test_command(tmp_path: Path) -> None:
     _initialized_finish_project(tmp_path)
     blocked = evaluate_finish(
         tmp_path,
+        remote_ref="refs/heads/main",
         base_ref="HEAD",
         test_command='python -c "import sys; sys.exit(3)"',
         memory_not_needed=True,
@@ -391,6 +399,7 @@ def test_finish_runs_the_declared_test_command(tmp_path: Path) -> None:
     _initialized_finish_project(tmp_path)
     allowed = evaluate_finish(
         tmp_path,
+        remote_ref="refs/heads/main",
         base_ref="HEAD",
         test_command='python -c "pass"',
         memory_written=False,
@@ -404,6 +413,7 @@ def test_finish_without_test_command_still_checks_the_rest(tmp_path: Path) -> No
     _initialized_finish_project(tmp_path)
     allowed = evaluate_finish(
         tmp_path,
+        remote_ref="refs/heads/main",
         base_ref="HEAD",
         test_command=None,
         memory_not_needed=True,
@@ -429,6 +439,7 @@ def test_finish_unverified_formal_change_blocks(tmp_path: Path) -> None:
     _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        remote_ref="refs/heads/main",
         base_ref="HEAD",
         test_command=None,
         memory_not_needed=True,
@@ -439,18 +450,20 @@ def test_finish_unverified_formal_change_blocks(tmp_path: Path) -> None:
     assert unverified and unverified[0].blocking
 
 
-def test_finish_formal_change_with_exempt_class_passes(tmp_path: Path) -> None:
+def test_finish_exempt_class_still_requires_committed_delivery(tmp_path: Path) -> None:
     _initialized_finish_project(tmp_path)
     _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        remote_ref="refs/heads/main",
         base_ref="HEAD",
         test_command=None,
         change_class="bugfix",
         memory_not_needed=True,
         runner=FakeGitRunner(status=" M src/app.py\n"),
     )
-    assert decision.allowed is True
+    assert decision.allowed is False
+    assert "PUSH_UNCOMMITTED_CHANGES" in decision.blocked_by
 
 
 def test_finish_formal_change_with_stale_research_blocks(tmp_path: Path) -> None:
@@ -459,6 +472,7 @@ def test_finish_formal_change_with_stale_research_blocks(tmp_path: Path) -> None
     _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        remote_ref="refs/heads/main",
         base_ref="HEAD",
         test_command=None,
         change_class="major_feature",
@@ -475,18 +489,22 @@ def test_finish_docs_only_change_needs_no_code_start(tmp_path: Path) -> None:
     _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        remote_ref="refs/heads/main",
         base_ref="HEAD",
         test_command=None,
         memory_not_needed=True,
         runner=FakeGitRunner(status=" M docs/notes.md\n"),
     )
-    assert decision.allowed is True
+    assert decision.allowed is False
+    assert "CODE_START_UNVERIFIED" not in decision.blocked_by
+    assert "PUSH_UNCOMMITTED_CHANGES" in decision.blocked_by
 
 
 def test_finish_without_memory_fact_blocks(tmp_path: Path) -> None:
     _initialized_finish_project(tmp_path)
     decision = evaluate_finish(
         tmp_path,
+        remote_ref="refs/heads/main",
         base_ref="HEAD",
         test_command=None,
         memory_written=False,

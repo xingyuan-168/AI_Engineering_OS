@@ -1,5 +1,15 @@
 # ADR-0018：门禁来源判定与 Finish 执行诊断
 
+## 2026-10-26 接续决定
+
+用户批准推送交付和网络卡点接续方案。恢复的是客观交付观察：提交、真实文件内容、选定远程全部推送 URL 的目标引用；Codex 原生执行提交/推送/fetch，Gate 不代办。只追加现有参数、调用诊断和原有 Worktree target_branch 的接口，不恢复 checkpoint、push_status 生命周期或验证缓存。
+
+共享网络预算在实际探测阶段开始，局部解析不预扣网络时间。小规模并发复用标准库 ThreadPoolExecutor、既有 GitRunner 和 ContextVar 取消控制，返回前收拢全部命令；不新增依赖或后台调度。
+
+历史 Finish 的 allowed=true 只保留原契约结论；缺少 delivery 时不推断 GitHub 已同步。业务仓库历史错误和用户授权文字仅作为证据；本轮不修改 OpenCV 或屏幕墙。
+
+当前维护边界缺口：部署的 Hook 无条件保护插件源码，用户已批准维护仍返回 PATH_POLICY_VIOLATION。核心改动不通过放宽该保护来完成自身部署；受保护文件需正常维护授权路径，未解决前整体完成状态保持否。
+
 - 状态：Accepted（用户明确要求实施完整修复方案，2026-10-02）
 - 基线：codex-os / .codex-os；保留三 Gate、8 MCP 工具、配置 1.2、SQLite 四表。
 

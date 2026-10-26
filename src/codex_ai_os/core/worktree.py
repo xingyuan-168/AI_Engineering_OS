@@ -78,6 +78,11 @@ class WorktreeManager:
                 "WORKTREE_EXISTS", f"worktree path already exists: {WORKTREE_ROOT}/{slug}"
             )
         branch = BRANCH_PREFIX + slug
+        if (
+            target_branch == branch
+            or self.git.run("check-ref-format", "refs/heads/" + target_branch).returncode
+        ):
+            raise WorktreeError("WORKTREE_TARGET_INVALID", "target must be a distinct local branch")
         result = self.git.run("worktree", "add", "-b", branch, str(path), base_ref)
         if result.returncode != 0:
             raise WorktreeError("WORKTREE_ADD_FAILED", _git_failure("git worktree add", result))
@@ -229,6 +234,14 @@ class WorktreeManager:
                     _git_failure("git worktree remove", result),
                 )
         if tip.returncode == 0:
+            # branch -d otherwise compares with the coordinator's unrelated HEAD.
+            # The registered target has already passed the ancestry proof above.
+            upstream = self.git.run("branch", "--set-upstream-to=" + target, record.branch)
+            if upstream.returncode != 0:
+                raise WorktreeError(
+                    "BRANCH_DELETE_FAILED",
+                    _git_failure("set proven branch deletion target", upstream),
+                )
             branch_delete = self.git.run("branch", "-d", record.branch)
             if branch_delete.returncode != 0 and not _branch_gone(branch_delete):
                 raise WorktreeError(

@@ -53,7 +53,9 @@ def test_ignore_negation_blocks_before_finish_command(governed_repo):
     )
     assert any(f.blocking for f in _gitignore_findings(governed_repo))
     with pytest.raises(DiagnosticError, match="ignored"):
-        execution.run_finish(governed_repo, base_ref="HEAD", test_command=None)
+        execution.run_finish(
+            governed_repo, remote_ref="refs/heads/main", base_ref="HEAD", test_command=None
+        )
     assert not (governed_repo / ".codex-os/state/check-runs").exists()
 
 
@@ -68,7 +70,11 @@ def test_write_failure_does_not_leave_a_live_process_running_forever(governed_re
     with monkeypatch.context() as scoped:
         scoped.setattr(execution, "atomic_text", fail_terminal)
         result = execution.run_finish(
-            governed_repo, base_ref="HEAD", test_command=None, memory_not_needed=True
+            governed_repo,
+            remote_ref="refs/heads/main",
+            base_ref="HEAD",
+            test_command=None,
+            memory_not_needed=True,
         )
     path = governed_repo / ".codex-os/state/check-runs" / (result["run_id"] + ".json")
     before = path.read_bytes()

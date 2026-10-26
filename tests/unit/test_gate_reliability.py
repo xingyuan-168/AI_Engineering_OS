@@ -248,7 +248,13 @@ def test_output_pollution_blocks_both_start_hygiene_and_finish(governed_repo):
         f.code == "OUTPUT_IMPURE" and f.blocking
         for f in hygiene_findings(governed_repo, GitRunner(governed_repo))
     )
-    record = run_finish(governed_repo, base_ref="HEAD", test_command=None, memory_not_needed=True)
+    record = run_finish(
+        governed_repo,
+        remote_ref="refs/heads/main",
+        base_ref="HEAD",
+        test_command=None,
+        memory_not_needed=True,
+    )
     assert not record["allowed"] and "OUTPUT_IMPURE" in record["blocked_by"]
 
 

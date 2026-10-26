@@ -25,10 +25,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from codex_ai_os.application.cleanup_policy import check_cleanup, literal_tokens
+from codex_ai_os.application.cleanup_policy import check_cleanup
 from codex_ai_os.application.command_syntax import (
     CommandSyntaxError,
+    ShellWord,
     executable_name,
+    git_config_argument,
+    requires_expansion,
     shell_commands,
 )
 from codex_ai_os.application.governance_policy import (
@@ -245,9 +248,14 @@ class GovernanceAuthorizationKernel:
                     option = args.pop(0)
                     if option == "-C" and args:
                         target = args.pop(0)
-                        literal_tokens(target)
+                        if requires_expansion(target):
+                            raise ValueError("Git -C target requires shell expansion")
                         cwd = (cwd / target).resolve()
                         local = local and cwd == request.checkout
+                    elif option == "-c" and args:
+                        git_config_argument(args.pop(0))
+                    elif option.startswith("-c") and len(option) > 2:
+                        git_config_argument(ShellWord(option[2:], requires_expansion(option)))
                     elif option in {
                         "--no-pager",
                         "--no-optional-locks",
@@ -259,7 +267,7 @@ class GovernanceAuthorizationKernel:
                         break
                     else:
                         raise ValueError("Git context/options cannot be verified: " + option)
-                if any(re.search(r"[$`%]|^@", value) for value in args):
+                if any(requires_expansion(value) for value in args):
                     raise ValueError("Git arguments require shell expansion")
             except ValueError as exc:
                 return AuthorizationOutcome(

@@ -1,6 +1,16 @@
 """
 # 接口契约
 
+## 2026-10-26 候选接口增量（尚未部署）
+
+- Finish 新增 `remote_ref` / `--remote-ref`，只接受显式的完整 `refs/heads/...`；缺失为 PUSH_TARGET_REQUIRED，非法为 PUSH_TARGET_INVALID，长检查不执行。`remote_required` 同时适用于代码和文档；fixture_local_only 不取得正式交付许可。
+- Finish 绑定开始时 HEAD 和实际工作区内容，检测索引隐藏修改、检查期间提交或内容改变。只比较当前交付 checkout；用户既有资料留在原 checkout，普通未跟踪资料不由门禁推断归属。
+- 最终 `delivery` 观察记录 commit、remote、remote_ref、verified、checked_at 和每个推送 URL 的实际分支头及关系。相等或可证明包含交付提交才通过；缺失、落后、分叉、浅历史不足和对象缺失分别阻断。不执行 fetch/push。
+- Code Start 复核和 delivery 共享同次真实网络观察，网络阶段位于测试之后。诊断格式 2 追加 delivery；历史记录缺失该字段时查询派生 verified=null，不改写历史。查询不证明当前仓库已交付。
+- `action=status` 不接受 remote_ref 等任何执行参数；CLI 显式传入默认值也拒绝。MCP 的 remote_ref 仅 Finish 接受。
+- Worktree prepare 新增可选 target_branch / --target-branch，默认沿用项目配置，并在响应中返回登记目标；其他 action 不接受该参数。目标必须为不同于自身分支的合法本地分支名；cleanup 不临时改目标，仍要求真实祖先关系。
+- MCP 仍为 8 工具，CLI 命令不增加。源码接口不代表当前宿主已更新；插件修改受到已安装 Hook 的保护规则拒绝，需先完成正常维护流程。
+
 MCP 与 CLI 共享实现和业务响应封装（`{ok, data} / {ok:false, error:{code,message}}`）。项目参数允许根、子目录或登记 Worktree；共用解析器区分当前 checkout 与协调根。文件目标支持相对/绝对路径，并独立验证所属项目。无模型推理。
 
 ## MCP 工具（8）

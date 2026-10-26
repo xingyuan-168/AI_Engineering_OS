@@ -14,6 +14,19 @@ def probe(target: Path, checkout: Path):
     )
 
 
+@pytest.mark.parametrize("option", ["-ErrorAction Stop", "-ErrorAction:Stop"])
+def test_fail_fast_common_parameter_keeps_the_same_literal_target(option):
+    command = "Remove-Item -Recurse -Force " + option + " -LiteralPath C:/Temp/exact-fixture"
+    assert cleanup_policy.literal_cleanup_target(command) == "C:/Temp/exact-fixture"
+
+
+def test_cleanup_error_action_cannot_suppress_failures():
+    with pytest.raises(ValueError, match="ErrorAction Stop"):
+        cleanup_policy.literal_cleanup_target(
+            "Remove-Item -ErrorAction Ignore -LiteralPath C:/Temp/leaf"
+        )
+
+
 @pytest.fixture
 def container(tmp_path, monkeypatch):
     temp = tmp_path / "temporary"
