@@ -71,9 +71,8 @@ def execution_lock_active(path: Path) -> bool:
 def file_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as handle:
-        if handle.tell() == 0:
-            handle.write(b"\0")
-            handle.flush()
+        # Range locks may extend beyond EOF. An initialization write before
+        # ownership races with another handle already locking byte zero.
         handle.seek(0)
         if os.name == "nt":
             import msvcrt

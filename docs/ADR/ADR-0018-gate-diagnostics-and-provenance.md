@@ -2,6 +2,8 @@
 
 ## 2026-10-26 接续决定
 
+完整验收又暴露原有共享锁初始化竞态：Memory writer 在取得系统锁前写入/flush sentinel，可与另一句柄已持有的锁冲突。file_lock 不再写初始化字节，直接取得 byte 0 的系统锁；独占创建的 UUID ExecutionLock 保持原义。Windows 允许锁定 EOF 以外区域，依据 [msvcrt.locking](https://docs.python.org/3.12/library/msvcrt.html#msvcrt.locking)。先以确定性夹具复现，再验证真实并发写入，原完整失败记录保留。
+
 用户批准推送交付和网络卡点接续方案。恢复的是客观交付观察：提交、真实文件内容、选定远程全部推送 URL 的目标引用；Codex 原生执行提交/推送/fetch，Gate 不代办。只追加现有参数、调用诊断和原有 Worktree target_branch 的接口，不恢复 checkpoint、push_status 生命周期或验证缓存。
 
 共享网络预算在实际探测阶段开始，局部解析不预扣网络时间。小规模并发复用标准库 ThreadPoolExecutor、既有 GitRunner 和 ContextVar 取消控制，返回前收拢全部命令；不新增依赖或后台调度。
